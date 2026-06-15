@@ -42,43 +42,20 @@ def create_bithumb_headers(params: dict = None) -> dict:
         "Content-Type": "application/json"
     }
 
-def get_current_price(ticker):
-    url = f"https://api.bithumb.com/public/ticker/{ticker}_KRW"
-    resp = requests.get(url)
+def get_orders_history():
+    url = "https://api.bithumb.com/v1/orders"
+    params = {
+        "state": "done",
+        "limit": 5
+    }
+    headers = create_bithumb_headers(params)
+    query_string = urlencode(params)
+    full_url = f"{url}?{query_string}"
+    
+    resp = requests.get(full_url, headers=headers)
     if resp.status_code == 200:
-        data = resp.json()
-        if data.get("status") == "0000":
-            return float(data["data"]["closing_price"])
-    return 0.0
-
-def get_balance_and_evaluate():
-    url = "https://api.bithumb.com/v1/accounts"
-    headers = create_bithumb_headers()
-    if not headers:
-        print("API Key not found")
-        return
-    resp = requests.get(url, headers=headers)
-    if resp.status_code == 200:
-        data = resp.json()
-        print("Bithumb Accounts Evaluation:")
-        for item in data:
-            curr = item.get("currency")
-            balance = float(item.get("balance", 0.0))
-            locked = float(item.get("locked", 0.0))
-            avg_buy_price = float(item.get("avg_buy_price", 0.0))
-            
-            qty = balance - locked
-            if curr == "KRW":
-                print(f"KRW -> Balance: {balance:,.2f}, Locked: {locked:,.2f}, Available: {qty:,.2f}")
-            else:
-                price = get_current_price(curr)
-                eval_val = qty * price
-                pnl_pct = 0.0
-                if avg_buy_price > 0:
-                    pnl_pct = (price - avg_buy_price) / avg_buy_price * 100
-                print(f"{curr} -> Qty: {qty:.8f}, Avg Buy: {avg_buy_price:,.2f}, Current: {price:,.2f}, Value: {eval_val:,.2f} KRW, PnL: {pnl_pct:+.2f}%")
-    else:
-        print("Response:", resp.text)
+        import json
+        print(json.dumps(resp.json(), indent=2))
 
 if __name__ == "__main__":
-    get_balance_and_evaluate()
+    get_orders_history()

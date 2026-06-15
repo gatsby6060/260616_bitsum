@@ -1281,6 +1281,74 @@ def manual_trade_order(payload: dict):
         
     return {"success": False, "error": "엔진이 기동되지 않았습니다."}
 
+@app.get("/api/trade/history")
+def get_trade_history(limit: int = 20):
+    url = "https://api.bithumb.com/v1/orders"
+    params = {
+        "state": "done",
+        "limit": limit
+    }
+    headers = create_bithumb_headers(params)
+    if not headers:
+        return []
+    
+    from urllib.parse import urlencode
+    import requests
+    
+    query_string = urlencode(params)
+    full_url = f"{url}?{query_string}"
+    
+    try:
+        resp = requests.get(full_url, headers=headers)
+        if resp.status_code == 200:
+            raw_orders = resp.json()
+            formatted_orders = []
+            for ord in raw_orders:
+                market = ord.get("market", "")
+                if not market.startswith("KRW-"):
+                    continue
+                ticker = market.split("-")[1]
+                
+                # 수량과 금액 구하기
+                executed_volume = float(ord.get("executed_volume", ord.get("volume", 0.0) or 0.0))
+                executed_funds = float(ord.get("executed_funds", 0.0) or 0.0)
+                
+                price_str = ord.get("price")
+                if price_str is not None:
+                    price = float(price_str)
+                elif executed_volume > 0:
+                    price = executed_funds / executed_volume
+                else:
+                    price = 0.0
+                
+                side = ord.get("side", "")
+                side_kr = "매수" if side == "bid" else ("매도" if side == "ask" else side)
+                
+                # datetime 포맷팅 (원시 데이터 예: 2026-06-15T20:24:47+09:00 -> 2026-06-15 20:24:47)
+                created_at = ord.get("created_at", "")
+                if created_at and "T" in created_at:
+                    dt_part = created_at.split("+")[0]
+                    formatted_time = dt_part.replace("T", " ")
+                else:
+                    formatted_time = created_at
+                
+                formatted_orders.append({
+                    "timestamp": formatted_time,
+                    "ticker": ticker,
+                    "side": side_kr,
+                    "price": price,
+                    "volume": executed_volume,
+                    "amount": executed_funds,
+                    "reason": "빗썸 실제 체결"
+                })
+            return formatted_orders
+        else:
+            print(f"[API] 빗썸 주문 이력 조회 실패 (Status: {resp.status_code}, Body: {resp.text})")
+            return []
+    except Exception as e:
+        print(f"[API] 빗썸 주문 이력 조회 중 예외 발생: {e}")
+        return []
+
 @app.get("/api/config")
 def get_configs():
     return active_ticker_configs
@@ -3311,6 +3379,29 @@ HTML_CONTENT = """
         // ══════════════════════════════════════════════════════════════
         let ws = null;
         
+        async function loadTradeHistory() {
+            try {
+                const response = await fetch('/api/trade/history');
+                const data = await response.json();
+                if (data && data.length > 0) {
+                    const reversed = [...data].reverse();
+                    reversed.forEach(ord => {
+                        const timeDisplay = ord.timestamp;
+                        const signalType = ord.side === '매수' ? 'BUY' : 'SELL';
+                        addLog(
+                            timeDisplay,
+                            ord.ticker,
+                            signalType,
+                            `[빗썸 실제거래] 체결 완료! 수량: ${ord.volume} | 단가: ${ord.price.toLocaleString()} KRW | 총액: ${ord.amount.toLocaleString()} KRW`
+                        );
+                    });
+                }
+            } catch (e) {
+                console.error("Failed to load trade history:", e);
+                addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', '빗썸 과거 거래 내역을 불러오는데 실패했습니다.');
+            }
+        }
+
         function connectWebSocket() {
             const loc = window.location;
             const wsUri = (loc.protocol === "https:" ? "wss:" : "ws:") + "//" + loc.host + "/ws/trading-status";
@@ -3325,7 +3416,10 @@ HTML_CONTENT = """
                 // 엔진 설정을 조회하여 UI와 동기화
                 loadAllConfigs();
                 
-                // 첫 진입 시 기본 종목 캐시 준비 및 로드
+                // 빗썸 과거 체결 내역 불러와 트레이딩 로그에 초기화 로드
+                loadTradeHistory();
+                
+                // 첫 진입 시 기본 종목 캐시 준비물 로드
                 loadHistoricalCandles('BTC', activeTimeframe);
                 loadHistoricalCandles('ETH', activeTimeframe);
             };

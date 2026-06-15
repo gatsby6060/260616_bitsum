@@ -133,7 +133,8 @@
                     "take_profit_pct": 0.03
                 }
             }
-        }
+        },
+        "regime_override": "BEAR"
     },
     "ETH": {
         "active": true,
@@ -268,6 +269,7 @@
                     "take_profit_pct": 0.03
                 }
             }
-        }
+        },
+        "regime_override": "RANGE"
     }
 }
