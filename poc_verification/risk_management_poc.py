@@ -576,6 +576,34 @@ class UITickerWorker(TickerWorker):
         from datetime import datetime, timezone, timedelta
         kst_now = datetime.now(timezone(timedelta(hours=9)))
         current_date_str = kst_now.strftime("%Y-%m-%d")
+
+        # 2-1. 장세 강제 고정 만료 여부 체크
+        expires_at_str = self.config.get("regime_override_expires_at", None)
+        if expires_at_str and self.config.get("regime_override", "AUTO") != "AUTO":
+            try:
+                expires_at = datetime.fromisoformat(expires_at_str)
+                if kst_now >= expires_at:
+                    self.config["regime_override"] = "AUTO"
+                    self.config["regime_override_expires_at"] = None
+                    active_ticker_configs[self.ticker]["regime_override"] = "AUTO"
+                    active_ticker_configs[self.ticker]["regime_override_expires_at"] = None
+                    save_persisted_configs()
+                    
+                    # UI 로그 전송
+                    ui_event = {
+                        "type": "regime_change",
+                        "data": {
+                            "ticker": self.ticker,
+                            "regime": "AUTO",
+                            "logic": "AUTO",
+                            "risk_type": "AUTO",
+                            "timestamp": int(time.time() * 1000)
+                        }
+                    }
+                    ui_event_queue.put(ui_event)
+                    print(f"[Worker-{self.ticker}] 장세 고정 만료 -> AUTO 모드로 자동 전환 완료!")
+            except Exception as e:
+                print(f"[Worker-{self.ticker}] 장세 고정 만료 체크 중 오류: {e}")
         
         # 2. 시장 국면 감지 및 동적 작전 스위칭 (수동 장세 고정 오버라이드 반영)
         override = self.config.get("regime_override", "AUTO")
@@ -1211,17 +1239,27 @@ def get_historical_candles(
 def override_ticker_regime(payload: dict):
     ticker = payload.get("ticker")
     regime = payload.get("regime", "AUTO")  # "AUTO", "BULL", "BEAR", "RANGE"
+    duration_days = payload.get("duration_days", 0)  # 만료 기한 (일수, 0은 무기한)
     
     if not ticker or ticker not in active_ticker_configs:
         return {"success": False, "error": "존재하지 않거나 올바르지 않은 심볼입니다."}
         
+    expires_at_str = None
+    if regime != "AUTO" and duration_days > 0:
+        from datetime import datetime, timezone, timedelta
+        kst_now = datetime.now(timezone(timedelta(hours=9)))
+        expires_at = kst_now + timedelta(days=duration_days)
+        expires_at_str = expires_at.isoformat()
+        
     active_ticker_configs[ticker]["regime_override"] = regime
+    active_ticker_configs[ticker]["regime_override_expires_at"] = expires_at_str
     save_persisted_configs()
     
     if engine_instance:
         worker = engine_instance._workers.get(ticker)
         if worker:
             worker.config["regime_override"] = regime
+            worker.config["regime_override_expires_at"] = expires_at_str
             # 워커가 즉시 강제 전환하도록 유도
             if regime != "AUTO":
                 worker.switch_regime(regime, log_to_ui=True)
@@ -2853,7 +2891,18 @@ HTML_CONTENT = """
                             <option value="BEAR">하락장 고정</option>
                             <option value="RANGE">횡보장 고정</option>
                         </select>
+                        <select id="regime-duration-${ticker}" onchange="changeRegimeOverride('${ticker}', document.getElementById('regime-select-${ticker}').value)" style="display:none; background:#090d16; border:1px solid rgba(255,255,255,0.1); border-radius:4px; color:#fff; font-size:10px; padding:2px; cursor:pointer; font-family:inherit; outline:none;">
+                            <option value="90" selected>3개월 고정</option>
+                            <option value="30">1개월 고정</option>
+                            <option value="7">1주일 고정</option>
+                            <option value="0">무기한 고정</option>
+                        </select>
                     </div>
+                </div>
+                <!-- 장세 오버라이드 만료 타이머 표시 영역 -->
+                <div id="regime-expiry-container-${ticker}" style="display:none; font-size:10px; margin-bottom:8px; align-items:center; gap:4px; background:rgba(239,68,68,0.05); padding:4px 8px; border-radius:6px; border:1px solid rgba(239,68,68,0.1);">
+                    <span style="background:rgba(239,68,68,0.15); color:var(--accent-red); padding:1px 4px; border-radius:4px; font-weight:600;" id="regime-expiry-badge-${ticker}">만료 예정</span>
+                    <span id="regime-expiry-time-${ticker}" style="color:var(--text-secondary); font-family:'JetBrains Mono', monospace;">-</span>
                 </div>
                 
                 <!-- AI 장세 판정 근거 설명 박스 -->
@@ -3047,21 +3096,33 @@ HTML_CONTENT = """
         }
 
         async function changeRegimeOverride(ticker, regime) {
-            addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', `장세 강제 고정 요청 중 -> ${regime}`);
+            const durationEl = document.getElementById(`regime-duration-${ticker}`);
+            const durationDays = durationEl ? parseInt(durationEl.value) : 0;
+            
+            if (durationEl) {
+                durationEl.style.display = (regime === 'AUTO') ? 'none' : 'inline-block';
+            }
+            
+            addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', `장세 강제 고정 요청 -> ${regime} (기간: ${durationDays}일)`);
             try {
                 const response = await fetch('/api/tickers/regime-override', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ticker: ticker, regime: regime })
+                    body: JSON.stringify({ 
+                        ticker: ticker, 
+                        regime: regime,
+                        duration_days: durationDays
+                    })
                 });
                 const res = await response.json();
                 if (res.success) {
                     if (tickerConfigs[ticker]) {
                         tickerConfigs[ticker].regime_override = regime;
                     }
-                    addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', `장세 설정이 ${regime}(으)로 성공적으로 반영되었습니다.`);
+                    addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', `장세가 ${regime}(으)로 성공적으로 반영되었습니다.`);
+                    await loadAllConfigs();
                 } else {
-                    alert("장세 고정 실패: " + res.error);
+                    alert("장세 변경 실패: " + res.error);
                 }
             } catch(e) {
                 console.error(e);
@@ -3139,6 +3200,42 @@ HTML_CONTENT = """
                     const logic = tactic ? tactic.logic : 'AND';
                     createTickerCardIfNotExist(ticker, logic, config.active !== false);
                     updateStrategyDetailsTable(ticker, config);
+                    
+                    // 장세 고정 및 기간 드롭다운 동기화
+                    const regSelect = document.getElementById(`regime-select-${ticker}`);
+                    const durSelect = document.getElementById(`regime-duration-${ticker}`);
+                    if (regSelect && config.regime_override) {
+                        regSelect.value = config.regime_override;
+                        if (durSelect) {
+                            durSelect.style.display = (config.regime_override === 'AUTO') ? 'none' : 'inline-block';
+                        }
+                    }
+                    
+                    // 만료 시간 뱃지 동적 갱신
+                    const expiryContainer = document.getElementById(`regime-expiry-container-${ticker}`);
+                    const expiryTimeEl = document.getElementById(`regime-expiry-time-${ticker}`);
+                    if (expiryContainer && expiryTimeEl) {
+                        if (config.regime_override && config.regime_override !== 'AUTO' && config.regime_override_expires_at) {
+                            expiryContainer.style.display = 'flex';
+                            
+                            const expiresAt = new Date(config.regime_override_expires_at);
+                            const now = new Date();
+                            const diffMs = expiresAt - now;
+                            if (diffMs > 0) {
+                                const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+                                const dateStr = expiresAt.getFullYear() + '-' + 
+                                    String(expiresAt.getMonth() + 1).padStart(2, '0') + '-' + 
+                                    String(expiresAt.getDate()).padStart(2, '0') + ' ' + 
+                                    String(expiresAt.getHours()).padStart(2, '0') + ':' + 
+                                    String(expiresAt.getMinutes()).padStart(2, '0');
+                                expiryTimeEl.innerText = `${dateStr} (${diffDays}일 남음)`;
+                            } else {
+                                expiryContainer.style.display = 'none';
+                            }
+                        } else {
+                            expiryContainer.style.display = 'none';
+                        }
+                    }
                 });
                 
                 loadConfigForTicker(activeTicker);
