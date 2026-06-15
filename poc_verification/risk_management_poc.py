@@ -845,7 +845,8 @@ class BithumbRealAccountManager(AccountManager):
                 avg_buy_price = float(item.get("avg_buy_price", 0.0))
                 
                 if curr == "KRW":
-                    krw_balance = balance - locked
+                    # 빗썸 API의 KRW 'balance' 필드는 이미 Locked(사용중)가 제외된 '주문가능원화'를 반환하므로, locked를 이중으로 뺄 필요가 없습니다.
+                    krw_balance = balance
                 else:
                     # 보유 코인 정보
                     positions[curr] = {
