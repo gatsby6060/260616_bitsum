@@ -890,8 +890,20 @@ class BithumbRealAccountManager(AccountManager):
                 for ticker, worker in self.engine_ref._workers.items():
                     if ticker in positions:
                         pos_info = positions[ticker]
-                        worker.position.quantity = pos_info["quantity"]
-                        worker.position.avg_price = pos_info["avg_price"]
+                        qty = pos_info["quantity"]
+                        avg_price = pos_info["avg_price"]
+                        
+                        # 먼지 잔고(Dust) 처리: 평가금액이 2,000원 미만인 경우 포지션을 없는 것으로 처리
+                        curr_price = getattr(worker.position, "current_price", 0.0) or avg_price
+                        est_value = qty * curr_price
+                        
+                        if est_value < 2000.0:
+                            # 2000원 미만 소액은 DUST로 무시
+                            worker.position.quantity = 0.0
+                            worker.position.avg_price = 0.0
+                        else:
+                            worker.position.quantity = qty
+                            worker.position.avg_price = avg_price
                     else:
                         # 빗썸에 잔고가 없는 경우
                         worker.position.quantity = 0.0
@@ -980,7 +992,7 @@ class MultiTickerUIEngine(TradingEngine):
                         print(f"[REAL ORDER SHIELD] 잔고 부족 또는 최소 주문금액({MIN_BITHUMB_ORDER_KRW}원) 미달로 주문을 생략합니다. (가능 금액: {buy_amount:,.0f} KRW)")
                         return
                     
-                    volume = int((buy_amount / price) * 10000) / 10000
+                    volume = int((buy_amount / price) * 100000000) / 100000000
                     if volume <= 0:
                         print(f"[REAL ORDER SHIELD] 계산된 매수 수량이 0이하입니다. 주문 취소. (금액: {buy_amount:,.0f} KRW)")
                         return
@@ -1026,7 +1038,7 @@ class MultiTickerUIEngine(TradingEngine):
                         worker._last_order_signal = ""
                         return
                     
-                    volume = int(sell_qty * 10000) / 10000
+                    volume = int(sell_qty * 100000000) / 100000000
                     if volume <= 0:
                         print(f"[REAL ORDER SHIELD] 계산된 매도 수량이 너무 작아 주문을 취소합니다. (수량: {sell_qty})")
                         return
@@ -2916,7 +2928,7 @@ HTML_CONTENT = """
                 <div class="position-info-box" style="background:rgba(0,0,0,0.25); border-radius:10px; padding:8px 12px; margin-top:8px; margin-bottom:8px; font-size:11px; display:flex; flex-direction:column; gap:4px; border: 1px solid rgba(255,255,255,0.03);">
                     <div style="display:flex; justify-content:space-between;">
                         <span style="color:var(--text-secondary);">수량</span>
-                        <span id="pos-qty-${ticker}" style="font-family:'JetBrains Mono', monospace; font-weight:600;">0.0000 ${ticker}</span>
+                        <span id="pos-qty-${ticker}" style="font-family:'JetBrains Mono', monospace; font-weight:600;">0.00000000 ${ticker}</span>
                     </div>
                     <div style="display:flex; justify-content:space-between;">
                         <span style="color:var(--text-secondary);">평단가</span>
@@ -3612,7 +3624,7 @@ HTML_CONTENT = """
                         const valEl = document.getElementById(`pos-val-${ticker}`);
                         const pnlEl = document.getElementById(`pos-pnl-${ticker}`);
                         
-                        if (qtyEl) qtyEl.innerText = `${pos.quantity.toFixed(4)} ${ticker}`;
+                        if (qtyEl) qtyEl.innerText = `${parseFloat(pos.quantity.toFixed(8))} ${ticker}`;
                         if (avgEl) avgEl.innerText = `${Math.floor(pos.avg_price).toLocaleString()} KRW`;
                         if (valEl) valEl.innerText = `${Math.floor(pos.krw_value).toLocaleString()} KRW`;
                         
