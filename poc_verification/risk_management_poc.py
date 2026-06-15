@@ -18,6 +18,28 @@ import numpy as np
 import hashlib
 import jwt
 from urllib.parse import urlencode, quote
+import sys
+import importlib
+
+# ── 백테스팅 모듈 임포트 (같은 폴더) ──
+try:
+    _bt_spec = importlib.util.spec_from_file_location(
+        "backtester",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "backtester.py")
+    )
+    _bt_mod = importlib.util.module_from_spec(_bt_spec)
+    _bt_spec.loader.exec_module(_bt_mod)
+    run_optimization    = _bt_mod.run_optimization
+    get_latest_results  = _bt_mod.get_latest_results
+    get_progress        = _bt_mod.get_progress
+    BACKTEST_AVAILABLE  = True
+    print("[Backtester] 모듈 로드 성공")
+except Exception as _bt_err:
+    BACKTEST_AVAILABLE = False
+    print(f"[Backtester] 모듈 로드 실패 (무시): {_bt_err}")
+    def run_optimization(markets=None): return {}
+    def get_latest_results(): return None
+    def get_progress(): return {"stage": "unavailable", "percent": 0, "message": "모듈 없음"}
 
 # .env 환경 변수 파일 로더 구현
 def load_env_file():
@@ -4174,10 +4196,89 @@ def start_composite_engine():
     engine_instance = engine
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 백테스팅 일일 스케줄러
+# ─────────────────────────────────────────────────────────────────────────────
+_optimizer_running = False
+_optimizer_thread: threading.Thread = None
+
+def _run_optimizer_bg():
+    global _optimizer_running
+    _optimizer_running = True
+    print("[DailyOptimizer] 백테스팅 최적화 시작 (백그라운드)")
+    try:
+        result = run_optimization()
+        msg = {"type": "optimizer_done", "message": "일일 백테스팅 최적화 완료", "updated_at": datetime.now(timezone(timedelta(hours=9))).isoformat()}
+        ui_event_queue.put_nowait(json.dumps(msg))
+        print("[DailyOptimizer] 최적화 완료 — UI 알림 전송")
+    except Exception as e:
+        print(f"[DailyOptimizer] 최적화 중 오류: {e}")
+    finally:
+        _optimizer_running = False
+
+def _daily_optimizer_scheduler():
+    """매일 새벽 02:00 KST에 자동 최적화 실행."""
+    print("[DailyOptimizer] 스케줄러 시작 (매일 02:00 KST 자동 최적화)")
+    while True:
+        try:
+            _KST = timezone(timedelta(hours=9))
+            now = datetime.now(_KST)
+            # 오늘 02:00 타겟
+            target = now.replace(hour=2, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+            wait_sec = (target - now).total_seconds()
+            print(f"[DailyOptimizer] 다음 실행까지 {wait_sec/3600:.1f}시간 대기 ({target.strftime('%Y-%m-%d %H:%M')} KST)")
+            time.sleep(wait_sec)
+            if BACKTEST_AVAILABLE and not _optimizer_running:
+                t = threading.Thread(target=_run_optimizer_bg, daemon=True, name="OptimizerBG")
+                t.start()
+        except Exception as e:
+            print(f"[DailyOptimizer] 스케줄러 오류: {e}")
+            time.sleep(60)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 백테스팅 API 엔드포인트
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/api/backtest/results")
+def api_backtest_results():
+    """최신 백테스팅 최적화 결과 반환."""
+    result = get_latest_results()
+    if result is None:
+        return {"status": "no_data", "message": "아직 최적화 결과가 없습니다. 처음 실행 시 약 5~20분 소요됩니다.",
+                "available": BACKTEST_AVAILABLE}
+    return {"status": "ok", "data": result, "available": BACKTEST_AVAILABLE}
+
+@app.post("/api/backtest/run-now")
+def api_backtest_run_now():
+    """즉시 백테스팅 최적화 트리거 (비동기 백그라운드 실행)."""
+    global _optimizer_running, _optimizer_thread
+    if not BACKTEST_AVAILABLE:
+        return {"success": False, "message": "backtester.py 모듈을 찾을 수 없습니다."}
+    if _optimizer_running:
+        return {"success": False, "message": "이미 최적화가 실행 중입니다. 완료 후 다시 시도하세요."}
+    _optimizer_thread = threading.Thread(target=_run_optimizer_bg, daemon=True, name="OptimizerBG")
+    _optimizer_thread.start()
+    return {"success": True, "message": "백테스팅 최적화가 백그라운드에서 시작되었습니다."}
+
+@app.get("/api/backtest/progress")
+def api_backtest_progress():
+    """백테스팅 진행 상태 반환."""
+    prog = get_progress()
+    prog["is_running"] = _optimizer_running
+    prog["available"]  = BACKTEST_AVAILABLE
+    return prog
+
+
 @app.on_event("startup")
 def startup_event():
     asyncio.create_task(ui_event_broadcaster())
     start_composite_engine()
+    # 백테스팅 일일 스케줄러 시작
+    if BACKTEST_AVAILABLE:
+        sched_thread = threading.Thread(target=_daily_optimizer_scheduler, daemon=True, name="DailyOptimizerScheduler")
+        sched_thread.start()
+        print("[DailyOptimizer] 일일 스케줄러 가동 완료 (매일 02:00 KST)")
 
 if __name__ == "__main__":
     import uvicorn
