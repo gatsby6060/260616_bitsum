@@ -1,0 +1,273 @@
+{
+    "initial_balance": 10000000,
+    "BTC": {
+        "active": true,
+        "current_regime": "BEAR",
+        "long_term_ma_period": 4000,
+        "bull_duration_limit_days": 100,
+        "bear_duration_limit_days": 350,
+        "tactics": {
+            "BULL": {
+                "logic": "OR",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "RSI",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "5m",
+                        "params": {
+                            "period": 5,
+                            "oversold": 38,
+                            "overbought": 65
+                        }
+                    },
+                    {
+                        "name": "Bollinger",
+                        "enabled": false,
+                        "weight": 1.0,
+                        "timeframe": "D",
+                        "params": {
+                            "period": 5,
+                            "std_dev": 1.5
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "1h",
+                        "params": {
+                            "fast": 5,
+                            "slow": 10,
+                            "signal_period": 3
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "None",
+                    "stop_loss_pct": 0.0,
+                    "take_profit_pct": 0.06
+                }
+            },
+            "BEAR": {
+                "logic": "OR",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "RSI",
+                        "enabled": true,
+                        "weight": 1,
+                        "params": {
+                            "period": 5,
+                            "oversold": 20,
+                            "overbought": 60
+                        }
+                    },
+                    {
+                        "name": "Bollinger",
+                        "enabled": true,
+                        "weight": 1,
+                        "params": {
+                            "period": 5,
+                            "std_dev": 1.5
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "enabled": true,
+                        "weight": 1,
+                        "params": {
+                            "fast": 5,
+                            "slow": 10,
+                            "signal_period": 3
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "StopLoss",
+                    "stop_loss_pct": 0.01,
+                    "take_profit_pct": 0.015
+                }
+            },
+            "RANGE": {
+                "logic": "OR",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "RSI",
+                        "enabled": false,
+                        "weight": 1.0,
+                        "timeframe": "5m",
+                        "params": {
+                            "period": 5,
+                            "oversold": 35,
+                            "overbought": 65
+                        }
+                    },
+                    {
+                        "name": "Bollinger",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "D",
+                        "params": {
+                            "period": 5,
+                            "std_dev": 1.5
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "enabled": false,
+                        "weight": 1.0,
+                        "timeframe": "1h",
+                        "params": {
+                            "fast": 5,
+                            "slow": 10,
+                            "signal_period": 3
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "StopLoss",
+                    "stop_loss_pct": 0.025,
+                    "take_profit_pct": 0.03
+                }
+            }
+        }
+    },
+    "ETH": {
+        "active": true,
+        "current_regime": "BEAR",
+        "long_term_ma_period": 4000,
+        "bull_duration_limit_days": 100,
+        "bear_duration_limit_days": 350,
+        "tactics": {
+            "BULL": {
+                "logic": "OR",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "RSI",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "5m",
+                        "params": {
+                            "period": 5,
+                            "oversold": 38,
+                            "overbought": 65
+                        }
+                    },
+                    {
+                        "name": "Bollinger",
+                        "enabled": false,
+                        "weight": 1.0,
+                        "timeframe": "D",
+                        "params": {
+                            "period": 5,
+                            "std_dev": 1.5
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "1h",
+                        "params": {
+                            "fast": 5,
+                            "slow": 10,
+                            "signal_period": 3
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "None",
+                    "stop_loss_pct": 0.0,
+                    "take_profit_pct": 0.06
+                }
+            },
+            "BEAR": {
+                "logic": "OR",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "RSI",
+                        "enabled": true,
+                        "weight": 1,
+                        "params": {
+                            "period": 5,
+                            "oversold": 25,
+                            "overbought": 60
+                        }
+                    },
+                    {
+                        "name": "Bollinger",
+                        "enabled": true,
+                        "weight": 1,
+                        "params": {
+                            "period": 5,
+                            "std_dev": 1.5
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "enabled": true,
+                        "weight": 1,
+                        "params": {
+                            "fast": 5,
+                            "slow": 10,
+                            "signal_period": 3
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "AveragingDown",
+                    "drop_trigger_pct": 0.04,
+                    "max_add_count": 1
+                }
+            },
+            "RANGE": {
+                "logic": "OR",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "RSI",
+                        "enabled": false,
+                        "weight": 1.0,
+                        "timeframe": "5m",
+                        "params": {
+                            "period": 5,
+                            "oversold": 35,
+                            "overbought": 65
+                        }
+                    },
+                    {
+                        "name": "Bollinger",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "D",
+                        "params": {
+                            "period": 5,
+                            "std_dev": 1.5
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "enabled": false,
+                        "weight": 1.0,
+                        "timeframe": "1h",
+                        "params": {
+                            "fast": 5,
+                            "slow": 10,
+                            "signal_period": 3
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "StopLoss",
+                    "stop_loss_pct": 0.025,
+                    "take_profit_pct": 0.03
+                }
+            }
+        }
+    }
+}

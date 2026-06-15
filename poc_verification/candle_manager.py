@@ -1,0 +1,213 @@
+import time
+import requests
+from datetime import datetime, timezone
+import threading
+
+class CandleManager:
+    """
+    빗썸 REST API로부터 과거 캔들을 조회하여 메모리에 적재(Warm-up)하고,
+    실시간 체결 틱을 수신하여 캔들을 실시간으로 빌드(Merge) 및 업데이트하는 클래스.
+    """
+    
+    TIMEFRAME_MAP = {
+        "1m": "minutes/1",
+        "3m": "minutes/3",
+        "5m": "minutes/5",
+        "10m": "minutes/10",
+        "15m": "minutes/15",
+        "30m": "minutes/30",
+        "1h": "minutes/60",
+        "4h": "minutes/240",
+        "D": "days",
+        "W": "weeks",
+        "M": "months"
+    }
+
+    TIMEFRAME_INTERVALS = {
+        "1m": 60, "3m": 180, "5m": 300, "10m": 600, "15m": 900, "30m": 1800,
+        "1h": 3600, "4h": 14400
+    }
+
+    def __init__(self, ticker: str, timeframes=None, max_candles=4500):
+        self.ticker = ticker
+        self.market = f"KRW-{ticker}"
+        self.timeframes = timeframes or ["1m", "5m", "1h", "D"]
+        self.max_candles = max_candles
+        self.candles = {tf: [] for tf in self.timeframes}
+        self.lock = threading.Lock()
+
+    def warmup(self):
+        """
+        프로그램 기동 시 각 타임프레임별 과거 캔들을 조회하여 Warm-up합니다.
+        """
+        print(f"[CandleManager] {self.ticker} 과거 캔들 데이터 로딩(Warm-up)을 시작합니다. 대상: {self.timeframes}")
+        base_url = "https://api.bithumb.com/v1"
+        
+        for tf in self.timeframes:
+            sub_path = self.TIMEFRAME_MAP.get(tf)
+            if not sub_path:
+                print(f"[CandleManager] 지원하지 않는 타임프레임: {tf}")
+                continue
+                
+            url = f"{base_url}/candles/{sub_path}"
+            # 10년 치 분석을 위해 일봉은 3650개 로드
+            count = 4200 if tf == "D" else 150
+            
+            success = False
+            for attempt in range(3):
+                try:
+                    raw_candles = []
+                    to_time = None
+                    remaining = count
+                    api_success = True
+                    
+                    while remaining > 0:
+                        req_count = min(remaining, 200)
+                        params = {"market": self.market, "count": req_count}
+                        if to_time:
+                            params["to"] = to_time
+                            
+                        resp = requests.get(url, params=params, timeout=5)
+                        if resp.status_code == 200:
+                            chunk = resp.json()
+                            if not chunk:
+                                break
+                            raw_candles.extend(chunk)
+                            remaining -= len(chunk)
+                            if len(chunk) < req_count:
+                                # 더 이상 가져올 데이터가 없음
+                                break
+                            # 다음 요청을 위해 가장 오래된 캔들의 시간 설정 (KST)
+                            to_time = chunk[-1]["candle_date_time_kst"]
+                        else:
+                            print(f"[CandleManager] {self.ticker} {tf} 로드 실패 (상태 코드: {resp.status_code}): {resp.text}")
+                            api_success = False
+                            break
+                        time.sleep(0.1) # API Rate Limit 방지를 위해 짧은 대기
+                    
+                    if api_success and raw_candles:
+                        formatted = []
+                        # 빗썸 응답은 최신순(0번 인덱스가 최신)이므로 역순 정렬하여 과거 -> 최신 순서로 삽입
+                        for c in reversed(raw_candles):
+                            if tf in ["D", "W", "M"]:
+                                dt = datetime.strptime(c["candle_date_time_utc"], "%Y-%m-%dT%H:%M:%S")
+                                t_val = int(dt.replace(tzinfo=timezone.utc).timestamp())
+                            else:
+                                t_val = c["timestamp"] // 1000
+                                
+                            formatted.append({
+                                "time": t_val,
+                                "open": float(c["opening_price"]),
+                                "high": float(c["high_price"]),
+                                "low": float(c["low_price"]),
+                                "close": float(c["trade_price"]),
+                                "volume": float(c["candle_acc_trade_volume"])
+                            })
+                        
+                        with self.lock:
+                            self.candles[tf] = formatted
+                        print(f"[CandleManager] {self.ticker} {tf} 캔들 {len(formatted)}개 로드 완료.")
+                        success = True
+                        break
+                    else:
+                        print(f"[CandleManager] {self.ticker} {tf} 데이터 로드 실패 또는 데이터 없음.")
+                except Exception as e:
+                    print(f"[CandleManager] {self.ticker} {tf} API 요청 중 예외 발생 (시도 {attempt+1}/3): {e}")
+                time.sleep(0.5)
+            
+            if not success:
+                print(f"[CandleManager] {self.ticker} {tf} 캔들 데이터 로드에 최종 실패했습니다. 빈 데이터로 시작합니다.")
+
+    def update(self, tick: dict):
+        """
+        실시간 틱 데이터를 입력받아 모든 타임프레임의 캔들을 업데이트합니다.
+        tick = {"price": float, "volume": float, "timestamp": int(ms)}
+        """
+        price = tick.get("price")
+        volume = tick.get("volume", 0.0)
+        timestamp_ms = tick.get("timestamp", int(time.time() * 1000))
+        timestamp_sec = timestamp_ms // 1000
+
+        with self.lock:
+            for tf in self.timeframes:
+                cache = self.candles[tf]
+                
+                # 캔들의 기준 시간 계산
+                if tf in ["D", "W", "M"]:
+                    # 일/주/월 봉: KST 09:00 (UTC 00:00) 기준 일 정렬
+                    # 9시간 offset 적용해 하루 주기를 구함
+                    kst_offset = 9 * 60 * 60
+                    kst_time = datetime.fromtimestamp(timestamp_sec + kst_offset, tz=timezone.utc)
+                    
+                    if tf == 'D':
+                        candle_time = int(datetime(kst_time.year, kst_time.month, kst_time.day).timestamp()) - kst_offset
+                    elif tf == 'W':
+                        # 월요일 09:00 KST 기준
+                        day_of_week = kst_time.weekday() # 0(월) ~ 6(일)
+                        monday_kst = kst_time.timestamp() - (day_of_week * 24 * 60 * 60)
+                        dt_mon = datetime.fromtimestamp(monday_kst, tz=timezone.utc)
+                        candle_time = int(datetime(dt_mon.year, dt_mon.month, dt_mon.day).timestamp()) - kst_offset
+                    else: # M
+                        candle_time = int(datetime(kst_time.year, kst_time.month, 1).timestamp()) - kst_offset
+                else:
+                    # 분/시간 봉
+                    interval = self.TIMEFRAME_INTERVALS.get(tf, 60)
+                    candle_time = (timestamp_sec // interval) * interval
+
+                if not cache:
+                    # 데이터가 아예 없을 경우 새로 추가
+                    cache.append({
+                        "time": candle_time,
+                        "open": price,
+                        "high": price,
+                        "low": price,
+                        "close": price,
+                        "volume": volume
+                    })
+                    continue
+
+                last_candle = cache[-1]
+                if last_candle["time"] == candle_time:
+                    # 동일 시간대 캔들 업데이트
+                    last_candle["high"] = max(last_candle["high"], price)
+                    last_candle["low"] = min(last_candle["low"], price)
+                    last_candle["close"] = price
+                    last_candle["volume"] += volume
+                else:
+                    # 새로운 시간대 캔들 생성
+                    new_candle = {
+                        "time": candle_time,
+                        "open": price,
+                        "high": price,
+                        "low": price,
+                        "close": price,
+                        "volume": volume
+                    }
+                    cache.append(new_candle)
+                    if len(cache) > self.max_candles:
+                        cache.pop(0)
+
+    def get_prices(self, timeframe: str) -> list:
+        """
+        특정 타임프레임의 종가(close) 리스트를 반환합니다.
+        """
+        with self.lock:
+            cache = self.candles.get(timeframe, [])
+            return [c["close"] for c in cache]
+
+    def get_candles(self, timeframe: str) -> list:
+        """
+        특정 타임프레임의 전체 캔들 복사본을 반환합니다.
+        """
+        with self.lock:
+            return list(self.candles.get(timeframe, []))
+
+
+if __name__ == "__main__":
+    # 간단한 단독 검증 테스트
+    manager = CandleManager("BTC", timeframes=["1m", "D"])
+    manager.warmup()
+    print("로드된 1분봉 개수:", len(manager.get_candles("1m")))
+    print("로드된 일봉 개수:", len(manager.get_candles("D")))
+    if manager.get_prices("D"):
+        print("최신 일봉 종가:", manager.get_prices("D")[-1])
