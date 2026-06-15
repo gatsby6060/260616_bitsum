@@ -1711,6 +1711,30 @@ HTML_CONTENT = """
             display: inline-block;
         }
 
+        .status-badge-inline {
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.3s ease;
+            margin-left: 8px;
+        }
+        .status-badge-inline.default {
+            background-color: rgba(16, 185, 129, 0.15);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: var(--accent-green);
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.1);
+        }
+        .status-badge-inline.custom {
+            background-color: rgba(245, 158, 11, 0.15);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            color: #f59e0b;
+            box-shadow: 0 0 10px rgba(245, 158, 11, 0.1);
+        }
+
         .main-layout {
             display: grid;
             grid-template-columns: 320px 1fr 360px;
@@ -2407,9 +2431,12 @@ HTML_CONTENT = """
 
             <!-- 3열: 우측 (전략 설정 패널) -->
             <div class="strategy-card glass-card" id="strategy-panel">
-                <div class="strategy-header">
-                    <span class="strategy-panel-title">전략 구성 및 설정</span>
-                    <span class="refresh-icon" onclick="resetStrategyUI()" style="cursor:pointer; opacity:0.7;" title="원래대로 설정 초기화">&#8635;</span>
+                <div class="strategy-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="strategy-panel-title">전략 구성 및 설정</span>
+                        <span id="config-status-badge"></span>
+                    </div>
+                    <span class="refresh-icon" onclick="resetStrategyUI()" style="cursor:pointer; opacity:0.7;" title="원래대로 설정 초기화">&#8635; 설정 복구</span>
                 </div>
                 
                 <div class="strategy-tabs">
@@ -3407,11 +3434,210 @@ HTML_CONTENT = """
                     if (valEl) valEl.innerText = s.weight || 1.0;
                 }
             });
+            updateConfigStatusBadge();
+        }
+
+        const FACTORY_DEFAULTS = {
+            "BULL": {
+                "logic": "OR",
+                "threshold": 0.5,
+                "strategies": {
+                    "RSI": {"enabled": true, "weight": 1.0, "period": 5, "oversold": 38, "overbought": 65},
+                    "Bollinger": {"enabled": false, "weight": 1.0, "period": 5, "std_dev": 1.5},
+                    "MACD": {"enabled": true, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+                },
+                "risk": {"type": "None"}
+            },
+            "BEAR": {
+                "logic": "OR",
+                "threshold": 0.5,
+                "strategies": {
+                    "RSI": {"enabled": true, "weight": 1.0, "period": 5, "oversold": 25, "overbought": 60},
+                    "Bollinger": {"enabled": true, "weight": 1.0, "period": 10, "std_dev": 2.0},
+                    "MACD": {"enabled": false, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+                },
+                "risk": {"type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03}
+            },
+            "RANGE": {
+                "logic": "OR",
+                "threshold": 0.5,
+                "strategies": {
+                    "RSI": {"enabled": false, "weight": 1.0, "period": 5, "oversold": 35, "overbought": 65},
+                    "Bollinger": {"enabled": true, "weight": 1.0, "period": 5, "std_dev": 1.5},
+                    "MACD": {"enabled": false, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+                },
+                "risk": {"type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.03}
+            }
+        };
+
+        function checkIfConfigIsDefault() {
+            if (!activeTicker || !tickerConfigs[activeTicker]) return true;
+            const currentRegime = tickerConfigs[activeTicker].current_regime || 'BEAR';
+            const defaults = FACTORY_DEFAULTS[currentRegime];
+            if (!defaults) return true;
+
+            // 1. Logic comparison
+            const uiLogic = document.getElementById('logic-select').value;
+            if (uiLogic !== defaults.logic) return false;
+
+            // 2. Threshold comparison
+            const uiThreshold = parseFloat(document.getElementById('weighted-threshold').value);
+            if (Math.abs(uiThreshold - defaults.threshold) > 0.001) return false;
+
+            // 3. Strategies comparison
+            // RSI
+            const rsiEnabled = document.getElementById('toggle-rsi').checked;
+            const rsiWeight = parseFloat(document.getElementById('rsi-weight').value);
+            const rsiPeriod = parseInt(document.getElementById('rsi-period').value);
+            const rsiOverbought = parseInt(document.getElementById('rsi-overbought').value);
+            const rsiOversold = parseInt(document.getElementById('rsi-oversold').value);
+            
+            const defRsi = defaults.strategies.RSI;
+            if (rsiEnabled !== defRsi.enabled) return false;
+            if (Math.abs(rsiWeight - defRsi.weight) > 0.001) return false;
+            if (rsiPeriod !== defRsi.period) return false;
+            if (rsiOverbought !== defRsi.overbought) return false;
+            if (rsiOversold !== defRsi.oversold) return false;
+
+            // Bollinger
+            const bbEnabled = document.getElementById('toggle-bb').checked;
+            const bbWeight = parseFloat(document.getElementById('bb-weight').value);
+            const bbPeriod = parseInt(document.getElementById('bb-period').value);
+            const bbStddev = parseFloat(document.getElementById('bb-stddev').value);
+
+            const defBb = defaults.strategies.Bollinger;
+            if (bbEnabled !== defBb.enabled) return false;
+            if (Math.abs(bbWeight - defBb.weight) > 0.001) return false;
+            if (bbPeriod !== defBb.period) return false;
+            if (Math.abs(bbStddev - defBb.std_dev) > 0.001) return false;
+
+            // MACD
+            const macdEnabled = document.getElementById('toggle-macd').checked;
+            const macdWeight = parseFloat(document.getElementById('macd-weight').value);
+            const macdFast = parseInt(document.getElementById('macd-fast').value);
+            const macdSlow = parseInt(document.getElementById('macd-slow').value);
+            const macdSignal = parseInt(document.getElementById('macd-signal').value);
+
+            const defMacd = defaults.strategies.MACD;
+            if (macdEnabled !== defMacd.enabled) return false;
+            if (Math.abs(macdWeight - defMacd.weight) > 0.001) return false;
+            if (macdFast !== defMacd.fast) return false;
+            if (macdSlow !== defMacd.slow) return false;
+            if (macdSignal !== defMacd.signal_period) return false;
+
+            // 4. Risk comparison
+            const uiRiskType = document.getElementById('risk-type-select').value;
+            if (uiRiskType !== defaults.risk.type) return false;
+
+            if (uiRiskType === 'StopLoss') {
+                const uiStopLoss = parseFloat(document.getElementById('risk-stoploss-pct').value) / 100;
+                const uiTakeProfit = parseFloat(document.getElementById('risk-takeprofit-pct').value) / 100;
+                if (Math.abs(uiStopLoss - defaults.risk.stop_loss_pct) > 0.001) return false;
+                if (Math.abs(uiTakeProfit - defaults.risk.take_profit_pct) > 0.001) return false;
+            } else if (uiRiskType === 'TrailingStop') {
+                const uiTrail = parseFloat(document.getElementById('risk-trail-pct').value) / 100;
+                if (Math.abs(uiTrail - defaults.risk.trail_pct) > 0.001) return false;
+            } else if (uiRiskType === 'AveragingDown') {
+                const uiDrop = parseFloat(document.getElementById('risk-drop-trigger-pct').value) / 100;
+                const uiMaxAdd = parseInt(document.getElementById('risk-max-add-count').value);
+                if (Math.abs(uiDrop - defaults.risk.drop_trigger_pct) > 0.001) return false;
+                if (uiMaxAdd !== defaults.risk.max_add_count) return false;
+            }
+
+            return true;
+        }
+
+        function updateConfigStatusBadge() {
+            const badge = document.getElementById('config-status-badge');
+            if (!badge) return;
+            const isDefault = checkIfConfigIsDefault();
+            if (isDefault) {
+                badge.className = 'status-badge-inline default';
+                badge.innerHTML = '🟢 [검증된 기본 설정]';
+            } else {
+                badge.className = 'status-badge-inline custom';
+                badge.innerHTML = '🟠 [사용자임의 설정]';
+            }
         }
 
         function resetStrategyUI() {
-            loadConfigForTicker(activeTicker);
-            addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', '전략 UI 설정이 엔진 저장 기준값으로 복구되었습니다.');
+            if (!activeTicker || !tickerConfigs[activeTicker]) return;
+            const currentRegime = tickerConfigs[activeTicker].current_regime || 'BEAR';
+            const defaults = FACTORY_DEFAULTS[currentRegime];
+            if (!defaults) return;
+
+            // UI 값을 디폴트로 업데이트
+            document.getElementById('logic-select').value = defaults.logic;
+            toggleThresholdDisplay(defaults.logic);
+            
+            document.getElementById('weighted-threshold').value = defaults.threshold;
+            document.getElementById('threshold-val').innerText = defaults.threshold;
+
+            // 리스크 설정
+            document.getElementById('risk-type-select').value = defaults.risk.type;
+            toggleRiskParamsDisplay(defaults.risk.type);
+
+            if (defaults.risk.type === 'StopLoss') {
+                const slVal = (defaults.risk.stop_loss_pct * 100).toFixed(1);
+                const tpVal = (defaults.risk.take_profit_pct * 100).toFixed(1);
+                document.getElementById('risk-stoploss-pct').value = slVal;
+                document.getElementById('risk-stoploss-pct-val').innerText = slVal;
+                document.getElementById('risk-takeprofit-pct').value = tpVal;
+                document.getElementById('risk-takeprofit-pct-val').innerText = tpVal;
+            } else if (defaults.risk.type === 'TrailingStop') {
+                const trailVal = (defaults.risk.trail_pct * 100).toFixed(1);
+                document.getElementById('risk-trail-pct').value = trailVal;
+                document.getElementById('risk-trail-pct-val').innerText = trailVal;
+            } else if (defaults.risk.type === 'AveragingDown') {
+                const dropVal = (defaults.risk.drop_trigger_pct * 100).toFixed(1);
+                const maxAddCount = defaults.risk.max_add_count;
+                document.getElementById('risk-drop-trigger-pct').value = dropVal;
+                document.getElementById('risk-drop-trigger-val').innerText = dropVal;
+                document.getElementById('risk-max-add-count').value = maxAddCount;
+                document.getElementById('risk-max-add-count-val').innerText = maxAddCount;
+            }
+
+            // 개별 전략
+            Object.entries(defaults.strategies).forEach(([sName, sCfg]) => {
+                const prefix = sName.toLowerCase();
+                const toggle = document.getElementById(`toggle-${prefix}`);
+                if (toggle) {
+                    toggle.checked = sCfg.enabled;
+                    toggleStrategyControlsState(sName, sCfg.enabled);
+                }
+                
+                if (sName === 'RSI') {
+                    document.getElementById('rsi-period').value = sCfg.period;
+                    document.getElementById('rsi-period-val').innerText = sCfg.period;
+                    document.getElementById('rsi-overbought').value = sCfg.overbought;
+                    document.getElementById('rsi-overbought-val').innerText = sCfg.overbought;
+                    document.getElementById('rsi-oversold').value = sCfg.oversold;
+                    document.getElementById('rsi-oversold-val').innerText = sCfg.oversold;
+                } else if (sName === 'Bollinger') {
+                    document.getElementById('bb-period').value = sCfg.period;
+                    document.getElementById('bb-period-val').innerText = sCfg.period;
+                    document.getElementById('bb-stddev').value = sCfg.std_dev;
+                    document.getElementById('bb-stddev-val').innerText = sCfg.std_dev;
+                } else if (sName === 'MACD') {
+                    document.getElementById('macd-fast').value = sCfg.fast;
+                    document.getElementById('macd-fast-val').innerText = sCfg.fast;
+                    document.getElementById('macd-slow').value = sCfg.slow;
+                    document.getElementById('macd-slow-val').innerText = sCfg.slow;
+                    document.getElementById('macd-signal').value = sCfg.signal_period;
+                    document.getElementById('macd-signal-val').innerText = sCfg.signal_period;
+                }
+
+                const weightEl = document.getElementById(`${prefix}-weight`);
+                if (weightEl) {
+                    weightEl.value = sCfg.weight;
+                    const valEl = document.getElementById(`${prefix}-weight-val`);
+                    if (valEl) valEl.innerText = sCfg.weight;
+                }
+            });
+
+            // 엔진에 적용 및 로그 기록
+            applySettingsToEngine();
+            addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', '전략 UI 및 엔진 설정이 검증된 기본 설정으로 복구되었습니다.');
         }
 
         async function applySettingsToEngine() {
@@ -3499,6 +3725,7 @@ HTML_CONTENT = """
                     if (badgeEl) badgeEl.innerText = `${logic} 결합`;
                     addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `복합 전략 설정이 런타임 엔진에 실시간 적용되었습니다. (${logic})`);
                     updateStrategyDetailsTable(activeTicker, tickerConfigs[activeTicker]);
+                    updateConfigStatusBadge();
                 } else {
                     addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `설정 적용 실패: ${res.error}`);
                 }
@@ -3883,6 +4110,13 @@ HTML_CONTENT = """
 
         // 초기 시작
         connectWebSocket();
+
+        // 실시간 사용자 조작 감지 이벤트 바인딩
+        const strategyPanel = document.getElementById('strategy-panel');
+        if (strategyPanel) {
+            strategyPanel.addEventListener('input', updateConfigStatusBadge);
+            strategyPanel.addEventListener('change', updateConfigStatusBadge);
+        }
     </script>
 </body>
 </html>
