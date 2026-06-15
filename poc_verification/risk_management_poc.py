@@ -489,6 +489,55 @@ class UITickerWorker(TickerWorker):
         kst_now = datetime.now(timezone(timedelta(hours=9)))
         self.last_regime_check_date = kst_now.strftime("%Y-%m-%d")
 
+    def check_portfolio_allocation_limit(self, buy_amount: float) -> bool:
+        """
+        신규 매수(buy_amount) 실행 시, 
+        해당 종목의 총 가치가 전체 자산(가용원화 + 총 포지션 평가금)의 50%를 초과하는지 여부를 검증합니다.
+        True: 한도 내 (허용) / False: 한도 초과 (차단)
+        """
+        global engine_instance
+        if not engine_instance:
+            return True
+            
+        # 1. 전체 자산 가치 계산
+        krw_balance = self.account.get_balance()
+        total_crypto_value = 0.0
+        
+        for ticker, worker in engine_instance._workers.items():
+            qty = worker.position.quantity
+            curr_price = worker.position.current_price
+            if qty > 0 and curr_price > 0:
+                total_crypto_value += qty * curr_price
+                
+        total_asset_value = krw_balance + total_crypto_value
+        
+        # 2. 현재 종목의 예상 평가 금액 (현재 포지션 평가 금액 + 추가 매수 예정 금액)
+        current_position_value = self.position.quantity * self.position.current_price
+        expected_position_value = current_position_value + buy_amount
+        
+        if total_asset_value <= 0:
+            return True
+            
+        ratio = expected_position_value / total_asset_value
+        if ratio > 0.50:
+            print(f"[Portfolio Guard] {self.ticker} 매수 차단: 예상 비중 {ratio*100:.1f}%가 포트폴리오 한도(50.0%)를 초과합니다.")
+            
+            # UI 로그 큐에 차단 이벤트 발송
+            ui_event = {
+                "type": "order",
+                "data": {
+                    "ticker": self.ticker,
+                    "signal": "HOLD",
+                    "price": self.position.current_price,
+                    "risk_reason": f"PORTFOLIO_LIMIT_EXCEEDED ({ratio*100:.1f}% > 50%)",
+                    "timestamp": int(time.time() * 1000)
+                }
+            }
+            ui_event_queue.put(ui_event)
+            return False
+            
+        return True
+
     def switch_regime(self, regime: str, log_to_ui=True):
         """
         감지된 장세(BULL, BEAR, RANGE)에 맞춰 전략 조합 및 리스크 매니저를 실시간 전환합니다.
@@ -693,6 +742,10 @@ class UITickerWorker(TickerWorker):
                 })
                 return
             elif risk_signal == "FORCE_ADD_BUY_AVERAGING":
+                # 포트폴리오 비중 한도 검증
+                if not self.check_portfolio_allocation_limit(self.order_amount):
+                    return
+                    
                 if self.account.reserve(self.order_amount):
                     print(f"[Risk Engine] {self.ticker} 물타기 추가 매수 집행")
                     self.order_queue.put({
@@ -719,6 +772,10 @@ class UITickerWorker(TickerWorker):
             if last_order_signal == "BUY" and (now_ts - last_order_ts) < 30:
                 return  # 30초 쿨다운 중
             
+            # 포트폴리오 비중 한도 검증
+            if not self.check_portfolio_allocation_limit(self.order_amount):
+                return
+                
             if not self.account.reserve(self.order_amount):
                 return  # 잔고 부족
 
@@ -3713,6 +3770,9 @@ HTML_CONTENT = """
                         } else if (riskReason === 'FORCE_ADD_BUY_AVERAGING') {
                             riskDesc = '💧💧 [리스크 관리자 물타기 집행] 평단 낮추기 추가 매수!';
                             logType = 'BUY';
+                        } else if (riskReason.startsWith('PORTFOLIO_LIMIT_EXCEEDED')) {
+                            riskDesc = `🛡️🛡️ [자산 배분 차단] 한 종목당 최대 투자 한도(50%) 초과로 주문 차단! (${riskReason.split('(')[1] ? riskReason.split('(')[1].replace(')', '') : ''})`;
+                            logType = 'SYSTEM';
                         }
                         addLog(
                             timeStr,
