@@ -110,6 +110,7 @@ active_ticker_configs = {
         "active": True,
         "current_regime": "BEAR",
         "regime_override": "AUTO",
+        "selected_bear_strategy": "custom_bear",
         "long_term_ma_period": 250,
         "tactics": {
             "BULL": {
@@ -123,14 +124,12 @@ active_ticker_configs = {
                 "risk": {"type": "None"}
             },
             "BEAR": {
-                "logic": "OR",
+                "logic": "CUSTOM_BEAR",
                 "threshold": 0.5,
                 "strategies": [
-                    {"name": "RSI", "enabled": True, "weight": 1.0, "timeframe": "5m", "params": {"period": 5, "oversold": 25, "overbought": 60}},
-                    {"name": "Bollinger", "enabled": True, "weight": 1.0, "timeframe": "15m", "params": {"period": 10, "std_dev": 2.0}},
-                    {"name": "MACD", "enabled": False, "weight": 1.0, "timeframe": "1h", "params": {"fast": 5, "slow": 10, "signal_period": 3}}
+                    {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "30m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 24}}
                 ],
-                "risk": {"type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03}
+                "risk": {"type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.02}
             },
             "RANGE": {
                 "logic": "OR",
@@ -148,6 +147,7 @@ active_ticker_configs = {
         "active": True,
         "current_regime": "BEAR",
         "regime_override": "AUTO",
+        "selected_bear_strategy": "custom_bear",
         "long_term_ma_period": 250,
         "tactics": {
             "BULL": {
@@ -161,14 +161,49 @@ active_ticker_configs = {
                 "risk": {"type": "None"}
             },
             "BEAR": {
+                "logic": "CUSTOM_BEAR",
+                "threshold": 0.5,
+                "strategies": [
+                    {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "30m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 24}}
+                ],
+                "risk": {"type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.02}
+            },
+            "RANGE": {
                 "logic": "OR",
                 "threshold": 0.5,
                 "strategies": [
-                    {"name": "RSI", "enabled": True, "weight": 1.0, "timeframe": "5m", "params": {"period": 5, "oversold": 25, "overbought": 60}},
-                    {"name": "Bollinger", "enabled": True, "weight": 1.0, "timeframe": "15m", "params": {"period": 10, "std_dev": 2.0}},
+                    {"name": "RSI", "enabled": False, "weight": 1.0, "timeframe": "5m", "params": {"period": 5, "oversold": 35, "overbought": 65}},
+                    {"name": "Bollinger", "enabled": True, "weight": 1.0, "timeframe": "D", "params": {"period": 5, "std_dev": 1.5}},
                     {"name": "MACD", "enabled": False, "weight": 1.0, "timeframe": "1h", "params": {"fast": 5, "slow": 10, "signal_period": 3}}
                 ],
-                "risk": {"type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03}
+                "risk": {"type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.03}
+            }
+        }
+    },
+    "XRP": {
+        "active": True,
+        "current_regime": "BEAR",
+        "regime_override": "AUTO",
+        "selected_bear_strategy": "custom_bear",
+        "long_term_ma_period": 250,
+        "tactics": {
+            "BULL": {
+                "logic": "OR",
+                "threshold": 0.5,
+                "strategies": [
+                    {"name": "RSI", "enabled": True, "weight": 1.0, "timeframe": "5m", "params": {"period": 5, "oversold": 38, "overbought": 65}},
+                    {"name": "Bollinger", "enabled": False, "weight": 1.0, "timeframe": "D", "params": {"period": 5, "std_dev": 1.5}},
+                    {"name": "MACD", "enabled": True, "weight": 1.0, "timeframe": "1h", "params": {"fast": 5, "slow": 10, "signal_period": 3}}
+                ],
+                "risk": {"type": "None"}
+            },
+            "BEAR": {
+                "logic": "CUSTOM_BEAR",
+                "threshold": 0.5,
+                "strategies": [
+                    {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "30m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 24}}
+                ],
+                "risk": {"type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.02}
             },
             "RANGE": {
                 "logic": "OR",
@@ -196,10 +231,19 @@ def load_persisted_configs():
         try:
             with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
                 saved_configs = json.load(f)
-                active_ticker_configs = saved_configs
-                print(f"[Storage] 설정을 {CONFIG_FILE_PATH}에서 성공적으로 불러왔습니다.")
+                # Merge saved configs into default config to prevent missing new tickers (like XRP) or parameters
+                for k, v in saved_configs.items():
+                    if k not in active_ticker_configs:
+                        active_ticker_configs[k] = v
+                    else:
+                        if isinstance(v, dict) and isinstance(active_ticker_configs[k], dict):
+                            for sub_k, sub_v in v.items():
+                                active_ticker_configs[k][sub_k] = sub_v
+                        else:
+                            active_ticker_configs[k] = v
+                print(f"[Storage] 설정을 {CONFIG_FILE_PATH}에서 불러와 기본 설정과 병합했습니다.")
         except Exception as e:
-            print(f"[Storage] 설정 파일 읽기 실패: {e}")
+            print(f"[Storage] 설정 파일 읽기 및 병합 실패: {e}")
     else:
         save_persisted_configs()
 
@@ -211,8 +255,100 @@ def save_persisted_configs():
     except Exception as e:
         print(f"[Storage] 설정 파일 저장 실패: {e}")
 
+def update_configs_with_optimized_params():
+    global active_ticker_configs
+    results = get_latest_results()
+    if not results:
+        return
+        
+    updated = False
+    for market in ["KRW-BTC", "KRW-ETH", "KRW-XRP"]:
+        ticker = market.replace("KRW-", "")
+        if market not in results or ticker not in active_ticker_configs:
+            continue
+            
+        for regime in ["BULL", "BEAR", "RANGE"]:
+            opt_reg = results[market].get(regime)
+            if not opt_reg:
+                continue
+                
+            # BEAR 장세인 경우 selected_bear_strategy 에 맞춰 추출
+            if regime == "BEAR":
+                selected = active_ticker_configs[ticker].get("selected_bear_strategy", "custom_bear")
+                if selected == "custom_bear" and "custom_bear_strategy" in opt_reg:
+                    opt_reg = opt_reg["custom_bear_strategy"]
+                elif selected == "mixed" and "mixed_strategy" in opt_reg:
+                    opt_reg = opt_reg["mixed_strategy"]
+                    
+            opt_strats = opt_reg.get("strategies", {})
+            new_strategies = []
+            for s_name, s_data in opt_strats.items():
+                if s_name == "RSI":
+                    tf = "5m"
+                    params = {"period": s_data.get("period", 14), "oversold": s_data.get("oversold", 30), "overbought": s_data.get("overbought", 70)}
+                elif s_name == "Bollinger":
+                    tf = "D"
+                    params = {"period": s_data.get("period", 20), "std_dev": s_data.get("std_dev", 2.0)}
+                elif s_name == "MACD":
+                    tf = "1h"
+                    params = {"fast": s_data.get("fast", 12), "slow": s_data.get("slow", 26), "signal_period": s_data.get("signal_period", 9)}
+                elif s_name == "CustomBear":
+                    tf = "30m"
+                    params = {
+                        "lookback": s_data.get("lookback", 8),
+                        "drop_pct": s_data.get("drop_pct", 0.05),
+                        "volume_ratio": s_data.get("volume_ratio", 2.0),
+                        "take_profit": s_data.get("take_profit", 0.02),
+                        "stop_loss": s_data.get("stop_loss", 0.015),
+                        "time_cut": s_data.get("time_cut", 24)
+                    }
+                else:
+                    continue
+                    
+                new_strategies.append({
+                    "name": s_name,
+                    "enabled": s_data.get("enabled", False),
+                    "weight": s_data.get("weight", 1.0),
+                    "timeframe": tf,
+                    "params": params
+                })
+            
+            risk_info = opt_reg.get("risk", {"type": "None"})
+            
+            active_ticker_configs[ticker]["tactics"][regime] = {
+                "logic": opt_reg.get("logic", "OR"),
+                "threshold": opt_reg.get("threshold", 0.5),
+                "strategies": new_strategies,
+                "risk": risk_info
+            }
+            updated = True
+            
+    if updated:
+        save_persisted_configs()
+        print("[Storage] 최적화 파라미터가 최신 결과에 맞춰 강제 갱신/병합되었습니다.")
+                
+    if updated:
+        save_persisted_configs()
+        print("[Storage] 최적화 파라미터가 기존 설정에 자동 병합 및 반영되었습니다.")
+
+def update_configs_and_apply_to_engine():
+    update_configs_with_optimized_params()
+    if engine_instance:
+        for ticker in ["BTC", "ETH", "XRP"]:
+            if ticker in engine_instance._workers:
+                worker = engine_instance._workers[ticker]
+                worker.config = active_ticker_configs[ticker]
+                override = worker.config.get("regime_override", "AUTO")
+                curr_reg = worker.regime_detector.detect_regime()
+                if override != "AUTO":
+                    curr_reg = override
+                worker.switch_regime(curr_reg, log_to_ui=True)
+                worker.current_regime = curr_reg
+        print("[Engine] 최적화 파라미터가 구동 중인 엔진 워커들에 핫스왑 적용되었습니다.")
+
 # 초기 구동 시 저장된 설정 로드 적용
 load_persisted_configs()
+update_configs_with_optimized_params()
 
 # ══════════════════════════════════════════════════════════════
 # 0. 전역 스레드 세이프 UI 이벤트 큐
@@ -319,6 +455,73 @@ class BithumbBollingerStrategy(BaseStrategy):
 
         if price < curr_lower: return "BUY"
         if price > curr_upper: return "SELL"
+        return "HOLD"
+
+
+class BithumbCustomBearStrategy(BaseStrategy):
+    NAME = "CustomBear"
+    PARAMS = {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 24}
+
+    def __init__(self, candle_manager, timeframe="30m", params=None):
+        super().__init__(params)
+        self.candle_manager = candle_manager
+        self.timeframe = timeframe
+        self.entry_price = 0.0
+        self.entry_time = None
+
+    def generate_signal(self, data: dict) -> str:
+        # candle_manager로부터 30분봉 캔들 조회
+        candles = self.candle_manager.get_candles(self.timeframe)
+        if not candles or len(candles) < max(self.params.get("lookback", 8), 20):
+            return "HOLD"
+
+        closes = [c["close"] for c in candles]
+        opens = [c["open"] for c in candles]
+        volumes = [c["volume"] for c in candles]
+        
+        qty = data.get("position_qty", 0.0)
+        
+        if qty == 0.0:
+            # 매수 조건
+            lookback = self.params["lookback"]
+            window_closes = closes[-lookback-1:-1]
+            highest = max(window_closes) if window_closes else closes[-1]
+            curr_price = closes[-1]
+            drop = (highest - curr_price) / highest if highest > 0 else 0
+            
+            vol_window = volumes[-11:-1]
+            avg_vol = sum(vol_window) / len(vol_window) if vol_window else 1.0
+            curr_vol = volumes[-1]
+            
+            is_bullish = closes[-1] > opens[-1]
+            
+            buy = (drop >= self.params["drop_pct"]) and (curr_vol >= avg_vol * self.params["volume_ratio"]) and is_bullish
+            
+            if buy:
+                self.entry_price = curr_price
+                self.entry_time = datetime.now()
+                return "BUY"
+        else:
+            # 매도 조건 (익절, 손절, 시간청산)
+            curr_price = closes[-1]
+            if self.entry_price == 0.0:
+                self.entry_price = data.get("avg_price", curr_price)
+                
+            pnl = (curr_price - self.entry_price) / self.entry_price
+            exit_tp = pnl >= self.params["take_profit"]
+            exit_sl = pnl <= -self.params["stop_loss"]
+            
+            exit_tc = False
+            if self.entry_time:
+                elapsed_sec = (datetime.now() - self.entry_time).total_seconds()
+                if elapsed_sec >= self.params["time_cut"] * 1800: # 30분봉 N개
+                    exit_tc = True
+            
+            if exit_tp or exit_sl or exit_tc:
+                self.entry_price = 0.0
+                self.entry_time = None
+                return "SELL"
+                
         return "HOLD"
 
 
@@ -588,6 +791,8 @@ class UITickerWorker(TickerWorker):
                 strategies.append(BithumbMacdStrategy(self.candle_manager, timeframe=tf, params=params))
             elif name == "Bollinger":
                 strategies.append(BithumbBollingerStrategy(self.candle_manager, timeframe=tf, params=params))
+            elif name == "CustomBear":
+                strategies.append(BithumbCustomBearStrategy(self.candle_manager, timeframe="30m", params=params))
 
         logic = t_cfg.get("logic", "AND")
         threshold = t_cfg.get("threshold", 0.5)
@@ -704,6 +909,8 @@ class UITickerWorker(TickerWorker):
             self.current_regime = detected_regime
 
         # 3. 갱신된 전략 세팅으로 시그널 도출
+        data["position_qty"] = self.position.quantity
+        data["avg_price"] = self.position.avg_price
         final_signal = self.strategy.generate_signal(data)
         composite_details = data.get("composite_details", {
             "logic": "UNKNOWN", "sub_signals": {}, "indicators": {}, "final": final_signal
@@ -828,7 +1035,7 @@ class UITickerWorker(TickerWorker):
 # 3. 다중 종목 실시간 웹소켓 리스너
 # ══════════════════════════════════════════════════════════════
 class MultiTickerWebSocketListener:
-    def __init__(self, dispatcher, markets=["KRW-BTC", "KRW-ETH"]):
+    def __init__(self, dispatcher, markets=["KRW-BTC", "KRW-ETH", "KRW-XRP"]):
         self.dispatcher = dispatcher
         self.markets = markets
         self.url = "wss://ws-api.bithumb.com/websocket/v1"
@@ -1482,6 +1689,24 @@ def get_trade_history(limit: int = 20):
 def get_configs():
     return active_ticker_configs
 
+@app.post("/api/config/select-bear-strategy")
+def select_bear_strategy(payload: dict):
+    ticker = payload.get("ticker")
+    strategy = payload.get("strategy") # "custom_bear" or "mixed"
+    if not ticker or not strategy:
+        return {"success": False, "error": "Ticker or strategy missing"}
+        
+    if ticker not in active_ticker_configs:
+        return {"success": False, "error": "Ticker not found"}
+        
+    if strategy not in ["custom_bear", "mixed"]:
+        return {"success": False, "error": "Invalid strategy type"}
+        
+    active_ticker_configs[ticker]["selected_bear_strategy"] = strategy
+    save_persisted_configs()
+    update_configs_and_apply_to_engine()
+    return {"success": True, "message": f"{ticker}의 하락장 전략이 {strategy}로 변경 및 적용되었습니다."}
+
 @app.post("/api/config/update")
 def update_config(payload: dict):
     ticker = payload.get("ticker")
@@ -1619,6 +1844,20 @@ HTML_CONTENT = """
             --glow-blue: 0 0 15px rgba(59, 130, 246, 0.45);
             --glow-green: 0 0 15px rgba(16, 185, 129, 0.45);
             --glow-red: 0 0 15px rgba(239, 68, 68, 0.45);
+        }
+        
+        .bear-strategy-card {
+            transition: all 0.2s ease;
+        }
+        .bear-strategy-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(255, 255, 255, 0.2) !important;
+            background: rgba(255, 255, 255, 0.05) !important;
+        }
+        .bear-strategy-card.selected {
+            border-color: var(--accent-green) !important;
+            background: rgba(16, 185, 129, 0.05) !important;
+            box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
         }
 
         .status-indicator {
@@ -2398,6 +2637,34 @@ HTML_CONTENT = """
                 box-shadow: 0 0 20px rgba(59, 130, 246, 0.7);
             }
         }
+
+        .backtest-section {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 20px;
+            box-shadow: 0 12px 28px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .progress-container {
+            width: 100%;
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 9999px;
+            height: 12px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--accent-blue) 0%, #10b981 100%);
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+            transition: width 0.4s ease;
+        }
     </style>
 </head>
 <body>
@@ -2664,6 +2931,118 @@ HTML_CONTENT = """
         </div>
 
         <!-- 수동 거래 데스크 패널 -->
+        <!-- 백테스팅 및 파라미터 최적화 현황 패널 -->
+        <div class="backtest-section" id="backtest-progress-section" style="margin-top: 10px; margin-bottom: 10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                <h2 style="margin:0; font-size:14px; font-weight:700; color:#fff; display:flex; align-items:center; gap:8px;">
+                    <span style="display:inline-block; width:6px; height:6px; background-color:#10b981; border-radius:50%; box-shadow:var(--glow-green);"></span>
+                    백그라운드 백테스팅 및 최적화 현황
+                </h2>
+                <div style="display:flex; gap:16px; align-items:center;">
+                    <span style="font-size:12px; color:var(--text-secondary);">현재 진행 단계:</span>
+                    <span id="bt-stage" style="font-size:12px; font-weight:bold; color:#fff; font-family:inherit;">
+                        <span style="display:inline-block; width:8px; height:8px; background-color:#94a3b8; border-radius:50%; margin-right:6px;"></span>대기 중
+                    </span>
+                    <span id="bt-percent" style="font-size:12px; font-weight:bold; color:var(--accent-blue); font-family:'JetBrains Mono', monospace;">0.0%</span>
+                </div>
+            </div>
+            
+            <div style="display:flex; align-items:center; gap:16px; width:100%; margin-top:4px;">
+                <div class="progress-container" style="flex:1;">
+                    <div class="progress-bar-fill" id="bt-bar-fill" style="width:0%;"></div>
+                </div>
+                <button class="apply-btn" id="bt-run-btn" onclick="runBacktestNow()" style="margin:0; padding:8px 16px; border-radius:8px; font-size:12px; width:auto; height:36px; line-height:20px; font-weight:700; min-width:140px;">최적화 즉시 실행</button>
+            </div>
+            
+            <div style="font-size:11px; color:var(--text-secondary); margin-top:-4px;" id="bt-message">
+                대기 상태
+            </div>
+        </div>
+
+        <!-- 하락장 극복 전략 선택 및 비교 모니터 패널 -->
+        <div class="bear-strategy-compare-section" id="bear-compare-panel" style="margin-top: 10px; margin-bottom: 10px; padding:15px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); border-radius:12px; display:none;">
+            <h2 style="margin:0 0 12px 0; font-size:14px; font-weight:700; color:#fff; display:flex; align-items:center; gap:8px;">
+                <span style="display:inline-block; width:6px; height:6px; background-color:var(--accent-red); border-radius:50%; box-shadow:var(--glow-red);"></span>
+                하락장(BEAR) 최적화 전략 선택 및 성능 비교 데스크
+            </h2>
+            
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
+                <!-- 카드 1: 기존 3대 지표 믹스 전략 -->
+                <div class="bear-strategy-card" id="bear-card-mixed" onclick="selectBearStrategy('mixed')" style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:15px; cursor:pointer;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <span style="font-size:14px; font-weight:700; color:#fff;">기존 3대 지표 결합 (Mixed)</span>
+                        <span class="active-badge" id="badge-mixed" style="display:none; background:var(--accent-blue); color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; font-weight:bold;">적용 중</span>
+                    </div>
+                    <p style="font-size:11px; color:var(--text-secondary); margin:0 0 12px 0; line-height:1.4;">RSI, 볼린저밴드, MACD 보조지표의 최적 조합을 바탕으로 횡보/반등/추세를 필터링하여 이윤을 도출하는 기존 핵심 전략입니다.</p>
+                    <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:8px 12px;">
+                        <div style="font-size:11px; color:#94a3b8; font-weight:bold; margin-bottom:4px;">예상 기대 이윤 (복리 환산)</div>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; font-size:11px;">
+                            <div>1주일: <span id="mixed-profit-1w" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>1개월: <span id="mixed-profit-1m" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>3개월: <span id="mixed-profit-3m" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>6개월: <span id="mixed-profit-6m" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 카드 2: 나만의 하락장 롱테일 극복 전략 -->
+                <div class="bear-strategy-card" id="bear-card-custom" onclick="selectBearStrategy('custom_bear')" style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:15px; cursor:pointer;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <span style="font-size:14px; font-weight:700; color:#fff; display:flex; align-items:center; gap:6px;">
+                            나만의 하락장 전략 (Custom Bear) 🔥
+                        </span>
+                        <span class="active-badge" id="badge-custom" style="display:none; background:var(--accent-green); color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; font-weight:bold;">적용 중</span>
+                    </div>
+                    <p style="font-size:11px; color:var(--text-secondary); margin:0 0 12px 0; line-height:1.4;">롱테일 우하향 패턴 극복을 위해, 급락 후 거래량이 실린 기술적 반등(Dead-cat)의 최적 순간만 발라먹는 전용 단독 전략입니다.</p>
+                    <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:8px 12px;">
+                        <div style="font-size:11px; color:#94a3b8; font-weight:bold; margin-bottom:4px;">예상 기대 이윤 (복리 환산)</div>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; font-size:11px;">
+                            <div>1주일: <span id="custom-profit-1w" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>1개월: <span id="custom-profit-1m" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>3개월: <span id="custom-profit-3m" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>6개월: <span id="custom-profit-6m" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 백테스팅 과거 데이터 하락장 성과 비교 보고서 -->
+            <div style="margin-top:12px; background:rgba(0,0,0,0.2); border-radius:8px; padding:12px;">
+                <div style="font-size:12px; font-weight:700; color:#fff; margin-bottom:8px;">과거 9년 하락장(BEAR) 비교 백테스팅 성과 비교표</div>
+                <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:left; color:var(--text-secondary);">
+                    <thead>
+                        <tr style="border-bottom:1px solid rgba(255,255,255,0.1); color:#fff;">
+                            <th style="padding:6px 4px;">지표</th>
+                            <th style="padding:6px 4px;">기존 믹스 전략 (Mixed)</th>
+                            <th style="padding:6px 4px; color:var(--accent-green);">나만의 하락장 전략 (Custom Bear)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                            <td style="padding:6px 4px;">하락장 누적 수익률</td>
+                            <td style="padding:6px 4px;" id="compare-mixed-ret">-</td>
+                            <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-ret">-</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                            <td style="padding:6px 4px;">Sharpe Ratio (위험대비수익)</td>
+                            <td style="padding:6px 4px;" id="compare-mixed-sharpe">-</td>
+                            <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-sharpe">-</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                            <td style="padding:6px 4px;">최대 낙폭 (MDD)</td>
+                            <td style="padding:6px 4px;" id="compare-mixed-mdd">-</td>
+                            <td style="padding:6px 4px; font-weight:bold;" id="compare-custom-mdd">-</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:6px 4px;">총 거래 횟수 / 승률</td>
+                            <td style="padding:6px 4px;" id="compare-mixed-trades">-</td>
+                            <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-trades">-</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <div class="manual-trade-section" style="margin-top: 10px; margin-bottom: 10px;">
             <h2 style="margin:0; font-size:14px; font-weight:700; color:#fff; display:flex; align-items:center; gap:8px;">
                 <span style="display:inline-block; width:6px; height:6px; background-color:var(--accent-blue); border-radius:50%; box-shadow:var(--glow-blue);"></span>
@@ -2989,6 +3368,7 @@ HTML_CONTENT = """
             let badgeClass = 'badge-other';
             if (ticker === 'BTC') badgeClass = 'badge-btc';
             else if (ticker === 'ETH') badgeClass = 'badge-eth';
+            else if (ticker === 'XRP') badgeClass = 'badge-xrp';
             
             card.innerHTML = `
                 <div class="ticker-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -3457,45 +3837,84 @@ HTML_CONTENT = """
                 }
             });
             updateConfigStatusBadge();
+            syncBearStrategyUI(ticker);
+            loadBacktestCompareData(ticker);
         }
 
+        /* DYNAMIC_FACTORY_DEFAULTS_START */
         const FACTORY_DEFAULTS = {
-            "BULL": {
-                "logic": "OR",
-                "threshold": 0.5,
-                "strategies": {
-                    "RSI": {"enabled": true, "weight": 1.0, "period": 5, "oversold": 38, "overbought": 65},
-                    "Bollinger": {"enabled": false, "weight": 1.0, "period": 5, "std_dev": 1.5},
-                    "MACD": {"enabled": true, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+            "BTC": {
+                "BULL": {
+                    "logic": "OR",
+                    "threshold": 0.5,
+                    "strategies": {
+                        "RSI": {"enabled": true, "weight": 1.0, "period": 5, "oversold": 38, "overbought": 65},
+                        "Bollinger": {"enabled": false, "weight": 1.0, "period": 5, "std_dev": 1.5},
+                        "MACD": {"enabled": true, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+                    },
+                    "risk": {"type": "None"}
                 },
-                "risk": {"type": "None"}
+                "BEAR": {
+                    "logic": "OR",
+                    "threshold": 0.5,
+                    "strategies": {
+                        "RSI": {"enabled": true, "weight": 1.0, "period": 5, "oversold": 25, "overbought": 60},
+                        "Bollinger": {"enabled": true, "weight": 1.0, "period": 10, "std_dev": 2.0},
+                        "MACD": {"enabled": false, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+                    },
+                    "risk": {"type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03}
+                },
+                "RANGE": {
+                    "logic": "OR",
+                    "threshold": 0.5,
+                    "strategies": {
+                        "RSI": {"enabled": false, "weight": 1.0, "period": 5, "oversold": 35, "overbought": 65},
+                        "Bollinger": {"enabled": true, "weight": 1.0, "period": 5, "std_dev": 1.5},
+                        "MACD": {"enabled": false, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+                    },
+                    "risk": {"type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.03}
+                }
             },
-            "BEAR": {
-                "logic": "OR",
-                "threshold": 0.5,
-                "strategies": {
-                    "RSI": {"enabled": true, "weight": 1.0, "period": 5, "oversold": 25, "overbought": 60},
-                    "Bollinger": {"enabled": true, "weight": 1.0, "period": 10, "std_dev": 2.0},
-                    "MACD": {"enabled": false, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+            "ETH": {
+                "BULL": {
+                    "logic": "OR",
+                    "threshold": 0.5,
+                    "strategies": {
+                        "RSI": {"enabled": true, "weight": 1.0, "period": 5, "oversold": 38, "overbought": 65},
+                        "Bollinger": {"enabled": false, "weight": 1.0, "period": 5, "std_dev": 1.5},
+                        "MACD": {"enabled": true, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+                    },
+                    "risk": {"type": "None"}
                 },
-                "risk": {"type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03}
-            },
-            "RANGE": {
-                "logic": "OR",
-                "threshold": 0.5,
-                "strategies": {
-                    "RSI": {"enabled": false, "weight": 1.0, "period": 5, "oversold": 35, "overbought": 65},
-                    "Bollinger": {"enabled": true, "weight": 1.0, "period": 5, "std_dev": 1.5},
-                    "MACD": {"enabled": false, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+                "BEAR": {
+                    "logic": "OR",
+                    "threshold": 0.5,
+                    "strategies": {
+                        "RSI": {"enabled": true, "weight": 1.0, "period": 5, "oversold": 25, "overbought": 60},
+                        "Bollinger": {"enabled": true, "weight": 1.0, "period": 10, "std_dev": 2.0},
+                        "MACD": {"enabled": false, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+                    },
+                    "risk": {"type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03}
                 },
-                "risk": {"type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.03}
+                "RANGE": {
+                    "logic": "OR",
+                    "threshold": 0.5,
+                    "strategies": {
+                        "RSI": {"enabled": false, "weight": 1.0, "period": 5, "oversold": 35, "overbought": 65},
+                        "Bollinger": {"enabled": true, "weight": 1.0, "period": 5, "std_dev": 1.5},
+                        "MACD": {"enabled": false, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+                    },
+                    "risk": {"type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.03}
+                }
             }
         };
+        /* DYNAMIC_FACTORY_DEFAULTS_END */
 
         function checkIfConfigIsDefault() {
             if (!activeTicker || !tickerConfigs[activeTicker]) return true;
             const currentRegime = tickerConfigs[activeTicker].current_regime || 'BEAR';
-            const defaults = FACTORY_DEFAULTS[currentRegime];
+            const tickerDefaults = FACTORY_DEFAULTS[activeTicker] || FACTORY_DEFAULTS["BTC"];
+            const defaults = tickerDefaults ? tickerDefaults[currentRegime] : null;
             if (!defaults) return true;
 
             // 1. Logic comparison
@@ -3585,7 +4004,8 @@ HTML_CONTENT = """
         function resetStrategyUI() {
             if (!activeTicker || !tickerConfigs[activeTicker]) return;
             const currentRegime = tickerConfigs[activeTicker].current_regime || 'BEAR';
-            const defaults = FACTORY_DEFAULTS[currentRegime];
+            const tickerDefaults = FACTORY_DEFAULTS[activeTicker] || FACTORY_DEFAULTS["BTC"];
+            const defaults = tickerDefaults ? tickerDefaults[currentRegime] : null;
             if (!defaults) return;
 
             // UI 값을 디폴트로 업데이트
@@ -3837,6 +4257,7 @@ HTML_CONTENT = """
                 // 첫 진입 시 기본 종목 캐시 준비물 로드
                 loadHistoricalCandles('BTC', activeTimeframe);
                 loadHistoricalCandles('ETH', activeTimeframe);
+                loadHistoricalCandles('XRP', activeTimeframe);
             };
 
             ws.onmessage = (event) => {
@@ -4131,7 +4552,86 @@ HTML_CONTENT = """
         }
 
         // 초기 시작
+        // 백테스트 진행률 조회 및 제어 함수 정의
+        async function fetchBacktestProgress() {
+            try {
+                const res = await fetch('/api/backtest/progress');
+                if (!res.ok) return;
+                const data = await res.json();
+                
+                const progressSection = document.getElementById('backtest-progress-section');
+                if (!progressSection) return;
+                
+                const stageEl = document.getElementById('bt-stage');
+                const percentEl = document.getElementById('bt-percent');
+                const messageEl = document.getElementById('bt-message');
+                const barFillEl = document.getElementById('bt-bar-fill');
+                const runBtn = document.getElementById('bt-run-btn');
+                
+                const pct = data.percent || 0;
+                const stage = data.stage || 'idle';
+                const message = data.message || '';
+                
+                percentEl.innerText = `${pct.toFixed(1)}%`;
+                barFillEl.style.width = `${pct}%`;
+                
+                let stageStr = '대기 중';
+                let dotColor = '#94a3b8'; // grey
+                let isRunning = data.is_running;
+                
+                if (stage === 'collecting') {
+                    stageStr = '데이터 수집 중';
+                    dotColor = '#3b82f6'; // blue
+                    if (isRunning === undefined) isRunning = true;
+                } else if (stage === 'optimizing') {
+                    stageStr = '그리드 최적화 중';
+                    dotColor = '#f59e0b'; // orange
+                    if (isRunning === undefined) isRunning = true;
+                } else if (stage === 'done') {
+                    stageStr = '최근 최적화 완료';
+                    dotColor = '#10b981'; // green
+                    if (isRunning === undefined) isRunning = false;
+                }
+                isRunning = !!isRunning;
+                
+                stageEl.innerHTML = `<span style="display:inline-block; width:8px; height:8px; background-color:${dotColor}; border-radius:50%; margin-right:6px;"></span>${stageStr}`;
+                messageEl.innerText = message || (isRunning ? '진행 중...' : '대기 상태');
+                
+                if (isRunning) {
+                    runBtn.disabled = true;
+                    runBtn.innerText = '최적화 진행 중...';
+                    runBtn.style.opacity = 0.6;
+                    runBtn.style.cursor = 'not-allowed';
+                } else {
+                    runBtn.disabled = false;
+                    runBtn.innerText = '최적화 즉시 실행';
+                    runBtn.style.opacity = 1;
+                    runBtn.style.cursor = 'pointer';
+                }
+            } catch (e) {
+                console.error("Failed to fetch backtest progress:", e);
+            }
+        }
+        
+        async function runBacktestNow() {
+            if (!confirm(`백그라운드에서 실시간 9년 데이터 최적화를 즉시 시작하시겠습니까?
+(약 5~10분 정도 소요되며 거래 엔진은 중단 없이 계속 동작합니다)`)) return;
+            try {
+                const res = await fetch('/api/backtest/run-now', { method: 'POST' });
+                const data = await res.json();
+                alert(data.message || "최적화를 시작했습니다.");
+                fetchBacktestProgress();
+            } catch (e) {
+                alert("최적화 요청 중 오류가 발생했습니다.");
+                console.error(e);
+            }
+        }
+
         connectWebSocket();
+        
+        // 백테스트 진행률 주기적 체크 (4초 주기)
+        fetchBacktestProgress();
+        setInterval(fetchBacktestProgress, 4000);
 
         // 실시간 사용자 조작 감지 이벤트 바인딩
         const strategyPanel = document.getElementById('strategy-panel');
@@ -4139,14 +4639,217 @@ HTML_CONTENT = """
             strategyPanel.addEventListener('input', updateConfigStatusBadge);
             strategyPanel.addEventListener('change', updateConfigStatusBadge);
         }
+
+        // ══════════════════════════════════════════════════════════════
+        // 하락장 전용 최적화 전략 제어 및 시각화 연동
+        // ══════════════════════════════════════════════════════════════
+        async function loadBacktestCompareData(ticker) {
+            try {
+                const response = await fetch('/api/backtest/results');
+                const resData = await response.json();
+                
+                const comparePanel = document.getElementById('bear-compare-panel');
+                if (!comparePanel) return;
+                
+                if (resData.status === 'ok' && resData.data) {
+                    const market = `KRW-${ticker}`;
+                    const optData = resData.data[market];
+                    if (optData && optData.BEAR) {
+                        const bearData = optData.BEAR;
+                        
+                        if (bearData.mixed_strategy && bearData.custom_bear_strategy) {
+                            comparePanel.style.display = 'block';
+                            
+                            const mixed = bearData.mixed_strategy;
+                            const custom = bearData.custom_bear_strategy;
+                            
+                            const mixedProfits = mixed.period_expected_profits || { "1w": 0, "1m": 0, "3m": 0, "6m": 0 };
+                            const customProfits = custom.period_expected_profits || { "1w": 0, "1m": 0, "3m": 0, "6m": 0 };
+                            
+                            document.getElementById('mixed-profit-1w').innerText = `${mixedProfits["1w"] >= 0 ? '+' : ''}${mixedProfits["1w"]}%`;
+                            document.getElementById('mixed-profit-1m').innerText = `${mixedProfits["1m"] >= 0 ? '+' : ''}${mixedProfits["1m"]}%`;
+                            document.getElementById('mixed-profit-3m').innerText = `${mixedProfits["3m"] >= 0 ? '+' : ''}${mixedProfits["3m"]}%`;
+                            document.getElementById('mixed-profit-6m').innerText = `${mixedProfits["6m"] >= 0 ? '+' : ''}${mixedProfits["6m"]}%`;
+                            
+                            document.getElementById('custom-profit-1w').innerText = `${customProfits["1w"] >= 0 ? '+' : ''}${customProfits["1w"]}%`;
+                            document.getElementById('custom-profit-1m').innerText = `${customProfits["1m"] >= 0 ? '+' : ''}${customProfits["1m"]}%`;
+                            document.getElementById('custom-profit-3m').innerText = `${customProfits["3m"] >= 0 ? '+' : ''}${customProfits["3m"]}%`;
+                            document.getElementById('custom-profit-6m').innerText = `${customProfits["6m"] >= 0 ? '+' : ''}${customProfits["6m"]}%`;
+                            
+                            document.getElementById('compare-mixed-ret').innerText = `${mixed.backtest.total_return_pct >= 0 ? '+' : ''}${mixed.backtest.total_return_pct.toFixed(2)}%`;
+                            document.getElementById('compare-custom-ret').innerText = `${custom.backtest.total_return_pct >= 0 ? '+' : ''}${custom.backtest.total_return_pct.toFixed(2)}%`;
+                            
+                            document.getElementById('compare-mixed-sharpe').innerText = mixed.backtest.sharpe_ratio.toFixed(4);
+                            document.getElementById('compare-custom-sharpe').innerText = custom.backtest.sharpe_ratio.toFixed(4);
+                            
+                            document.getElementById('compare-mixed-mdd').innerText = `-${mixed.backtest.mdd_pct.toFixed(1)}%`;
+                            document.getElementById('compare-custom-mdd').innerText = `-${custom.backtest.mdd_pct.toFixed(1)}%`;
+                            
+                            document.getElementById('compare-mixed-trades').innerText = `${mixed.backtest.trade_count}회 / ${mixed.backtest.win_rate_pct.toFixed(1)}%`;
+                            document.getElementById('compare-custom-trades').innerText = `${custom.backtest.trade_count}회 / ${custom.backtest.win_rate_pct.toFixed(1)}%`;
+                            
+                            return;
+                        }
+                    }
+                }
+                comparePanel.style.display = 'none';
+            } catch (e) {
+                console.error("Failed to load backtest compare data:", e);
+            }
+        }
+
+        function syncBearStrategyUI(ticker) {
+            const config = tickerConfigs[ticker];
+            if (!config) return;
+            
+            const selected = config.selected_bear_strategy || 'custom_bear';
+            
+            const cardMixed = document.getElementById('bear-card-mixed');
+            const cardCustom = document.getElementById('bear-card-custom');
+            const badgeMixed = document.getElementById('badge-mixed');
+            const badgeCustom = document.getElementById('badge-custom');
+            
+            if (selected === 'mixed') {
+                if (cardMixed) cardMixed.className = 'bear-strategy-card selected';
+                if (cardCustom) cardCustom.className = 'bear-strategy-card';
+                if (badgeMixed) badgeMixed.style.display = 'inline-block';
+                if (badgeCustom) badgeCustom.style.display = 'none';
+            } else {
+                if (cardMixed) cardMixed.className = 'bear-strategy-card';
+                if (cardCustom) cardCustom.className = 'bear-strategy-card selected';
+                if (badgeMixed) badgeMixed.style.display = 'none';
+                if (badgeCustom) badgeCustom.style.display = 'inline-block';
+            }
+        }
+
+        async function selectBearStrategy(strategy) {
+            if (!activeTicker) return;
+            try {
+                const response = await fetch('/api/config/select-bear-strategy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticker: activeTicker, strategy: strategy })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    if (tickerConfigs[activeTicker]) {
+                        tickerConfigs[activeTicker].selected_bear_strategy = strategy;
+                    }
+                    syncBearStrategyUI(activeTicker);
+                    // 핫스왑된 세부 UI 로드
+                    loadConfigForTicker(activeTicker);
+                    addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `${activeTicker} 하락장 전략을 ${strategy === 'custom_bear' ? 'CustomBear(나만의기법)' : 'Mixed(믹스기법)'}으로 변경 적용했습니다.`);
+                } else {
+                    alert("전략 변경 실패: " + data.error);
+                }
+            } catch (e) {
+                console.error("Failed to select bear strategy:", e);
+            }
+        }
     </script>
 </body>
 </html>
 """
 
+def load_dynamic_factory_defaults():
+    results = get_latest_results()
+    fallback_defaults = {
+        "BULL": {
+            "logic": "OR",
+            "threshold": 0.5,
+            "strategies": {
+                "RSI": {"enabled": True, "weight": 1.0, "period": 5, "oversold": 38, "overbought": 65},
+                "Bollinger": {"enabled": False, "weight": 1.0, "period": 5, "std_dev": 1.5},
+                "MACD": {"enabled": True, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+            },
+            "risk": {"type": "None"}
+        },
+        "BEAR": {
+            "logic": "OR",
+            "threshold": 0.5,
+            "strategies": {
+                "RSI": {"enabled": True, "weight": 1.0, "period": 5, "oversold": 25, "overbought": 60},
+                "Bollinger": {"enabled": True, "weight": 1.0, "period": 10, "std_dev": 2.0},
+                "MACD": {"enabled": False, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+            },
+            "risk": {"type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03}
+        },
+        "RANGE": {
+            "logic": "OR",
+            "threshold": 0.5,
+            "strategies": {
+                "RSI": {"enabled": False, "weight": 1.0, "period": 5, "oversold": 35, "overbought": 65},
+                "Bollinger": {"enabled": True, "weight": 1.0, "period": 5, "std_dev": 1.5},
+                "MACD": {"enabled": False, "weight": 1.0, "fast": 5, "slow": 10, "signal_period": 3}
+            },
+            "risk": {"type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.03}
+        }
+    }
+    
+    defaults = {
+        "BTC": fallback_defaults,
+        "ETH": fallback_defaults,
+        "XRP": fallback_defaults
+    }
+    
+    if results:
+        for market in ["KRW-BTC", "KRW-ETH", "KRW-XRP"]:
+            ticker = market.replace("KRW-", "")
+            if market in results:
+                ticker_data = {}
+                for regime in ["BULL", "BEAR", "RANGE"]:
+                    reg_data = results[market].get(regime)
+                    if reg_data:
+                        strats_src = reg_data.get("strategies", {})
+                        strats_dest = {}
+                        for s_name in ["RSI", "Bollinger", "MACD"]:
+                            s_src = strats_src.get(s_name, {})
+                            if s_name == "RSI":
+                                strats_dest["RSI"] = {
+                                    "enabled": s_src.get("enabled", False),
+                                    "weight": s_src.get("weight", 1.0),
+                                    "period": s_src.get("period", 14),
+                                    "oversold": s_src.get("oversold", 30),
+                                    "overbought": s_src.get("overbought", 70)
+                                }
+                            elif s_name == "Bollinger":
+                                strats_dest["Bollinger"] = {
+                                    "enabled": s_src.get("enabled", False),
+                                    "weight": s_src.get("weight", 1.0),
+                                    "period": s_src.get("period", 20),
+                                    "std_dev": s_src.get("std_dev", 2.0)
+                                }
+                            elif s_name == "MACD":
+                                strats_dest["MACD"] = {
+                                    "enabled": s_src.get("enabled", False),
+                                    "weight": s_src.get("weight", 1.0),
+                                    "fast": s_src.get("fast", 12),
+                                    "slow": s_src.get("slow", 26),
+                                    "signal_period": s_src.get("signal_period", 9)
+                                }
+                        ticker_data[regime] = {
+                            "logic": reg_data.get("logic", "OR"),
+                            "threshold": reg_data.get("threshold", 0.5),
+                            "strategies": strats_dest,
+                            "risk": reg_data.get("risk", {"type": "None"})
+                        }
+                    else:
+                        ticker_data[regime] = fallback_defaults[regime]
+                defaults[ticker] = ticker_data
+    return defaults
+
 @app.get("/")
 async def get_dashboard():
-    return HTMLResponse(HTML_CONTENT)
+    import re
+    defaults = load_dynamic_factory_defaults()
+    defaults_json = json.dumps(defaults, ensure_ascii=False, indent=12)
+    defaults_js = f"const FACTORY_DEFAULTS = {defaults_json};"
+    
+    pattern = r"/\* DYNAMIC_FACTORY_DEFAULTS_START \*/.*?/\* DYNAMIC_FACTORY_DEFAULTS_END \*/"
+    replacement = f"/* DYNAMIC_FACTORY_DEFAULTS_START */\n        {defaults_js}\n        /* DYNAMIC_FACTORY_DEFAULTS_END */"
+    
+    modified_html = re.sub(pattern, replacement, HTML_CONTENT, flags=re.DOTALL)
+    return HTMLResponse(modified_html)
 
 @app.websocket("/ws/trading-status")
 async def websocket_endpoint(websocket: WebSocket):
@@ -4208,6 +4911,13 @@ def _run_optimizer_bg():
     print("[DailyOptimizer] 백테스팅 최적화 시작 (백그라운드)")
     try:
         result = run_optimization()
+        
+        # 최적화 완료 후 엔진 설정 및 워커 전략 핫스왑 동적 적용
+        try:
+            update_configs_and_apply_to_engine()
+        except Exception as apply_err:
+            print(f"[DailyOptimizer] 최적화 결과 엔진 적용 중 오류: {apply_err}")
+
         msg = {"type": "optimizer_done", "message": "일일 백테스팅 최적화 완료", "updated_at": datetime.now(timezone(timedelta(hours=9))).isoformat()}
         ui_event_queue.put_nowait(json.dumps(msg))
         print("[DailyOptimizer] 최적화 완료 — UI 알림 전송")

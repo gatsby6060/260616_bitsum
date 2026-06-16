@@ -1,11 +1,11 @@
 """
 backtester.py — 9년 실 데이터 기반 자동 파라미터 최적화 모듈
 =====================================================================
-■ 데이터:    빗썸 30분봉 캔들, 하루 8개 포인트 (01:00, 01:30, 07:00, 07:30, 14:00, 14:30, 23:00, 23:30 KST)
+■ 데이터:    빗썸 30분봉 캔들, 하루 8개 포인트 (00:00, 03:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00 KST)
 ■ 최초 수집: 9년치 전체 (약 26,280개 × 2종목), 이후 매일 8개만 추가(증분)
 ■ 최적화:   BULL/BEAR/RANGE 장세별 독립 그리드 서치
-■ 기준:     Sharpe Ratio 최대 + MDD ≤ 30% 필터
-■ 수수료:   빗썸 0.04% + 슬리피지 0.05% → 왕복 총 0.18%
+■ 기준:     Sharpe Ratio 최대 + MDD ≤ 50% 필터
+■ 수수료:   빗썸 0.04% + 슬리피지 0.05% -> 왕복 총 0.18%
 """
 
 import os
@@ -14,8 +14,18 @@ import time
 import math
 import logging
 import requests
+import sys
+import io
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+# Windows 터미널 인코딩 오류 방지 (UTF-8 강제 지정)
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except Exception:
+        pass
 
 try:
     import numpy as np
@@ -32,9 +42,8 @@ logger = logging.getLogger("Backtester")
 KST = timezone(timedelta(hours=9))
 BITHUMB_BASE = "https://api.bithumb.com"
 
-# 하루 중 수집할 KST 시각 (시, 분)
-TARGET_TIMES_KST = [(1, 0), (1, 30), (7, 0), (7, 30),
-                    (14, 0), (14, 30), (23, 0), (23, 30)]
+# 하루 중 수집할 KST 시각 (시, 분) - 3시간 간격 (하루 8개)
+TARGET_TIMES_KST = [(0, 0), (3, 0), (6, 0), (9, 0), (12, 0), (15, 0), (18, 0), (21, 0)]
 
 # 수수료: maker 0.04% + taker 0.04% + 슬리피지 0.05% = 편도 0.09%, 왕복 0.18%
 FEE_RATE = 0.0009          # 편도 1회 수수료+슬리피지
@@ -46,7 +55,7 @@ CACHE_FILE    = os.path.join(_DIR, "historical_data_cache.json")
 RESULT_FILE   = os.path.join(_DIR, "optimized_params.json")
 PROGRESS_FILE = os.path.join(_DIR, "backtest_progress.json")
 
-MARKETS = ["KRW-BTC", "KRW-ETH"]
+MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP"]
 
 # 그리드 서치 파라미터 공간
 GRID = {
@@ -71,23 +80,25 @@ STRATEGY_COMBOS = [
     {"rsi": True,  "bb": True,  "macd": True},
 ]
 
-MDD_LIMIT = 0.30  # MDD 허용 한계 30%
+MDD_LIMIT = 0.50  # MDD 허용 한계 50%
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 진행 상태 업데이트 헬퍼
 # ─────────────────────────────────────────────────────────────────────────────
 def _save_progress(stage: str, pct: float, msg: str = ""):
-    try:
-        with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
-            json.dump({
-                "stage": stage,
-                "percent": round(pct, 1),
-                "message": msg,
-                "updated_at": datetime.now(KST).isoformat()
-            }, f, ensure_ascii=False)
-    except Exception:
-        pass
+    for attempt in range(10):
+        try:
+            with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+                json.dump({
+                    "stage": stage,
+                    "percent": round(pct, 1),
+                    "message": msg,
+                    "updated_at": datetime.now(KST).isoformat()
+                }, f, ensure_ascii=False)
+            break
+        except Exception:
+            time.sleep(0.05)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -122,10 +133,10 @@ class HistoricalDataFetcher:
         """KST 기준으로 TARGET_TIMES_KST에 해당하는 시각인지 확인."""
         return (dt_kst.hour, dt_kst.minute) in TARGET_TIMES_KST
 
-    def fetch_full_history(self, market: str, years: int = 9) -> list:
+    def fetch_full_history(self, market: str, years: int = 9, m_idx: int = 0, num_markets: int = 3) -> list:
         """
         최초 1회 전체 히스토리 수집.
-        반환: [{"ts": "2017-09-01T01:00:00+09:00", "close": 3000000.0, "volume": 12.3}, ...]
+        반환: [{"ts": "2017-09-01T01:00:00+09:00", "open": ..., "high": ..., "low": ..., "close": 3000000.0, "volume": 12.3}, ...]
         """
         cutoff = datetime.now(KST) - timedelta(days=years * 365)
         collected = []
@@ -152,6 +163,9 @@ class HistoricalDataFetcher:
                 if self._is_target_time(dt_kst):
                     collected.append({
                         "ts":     dt_kst.isoformat(),
+                        "open":   float(c["opening_price"]),
+                        "high":   float(c["high_price"]),
+                        "low":    float(c["low_price"]),
                         "close":  float(c["trade_price"]),
                         "volume": float(c.get("candle_acc_trade_volume", 0))
                     })
@@ -164,7 +178,11 @@ class HistoricalDataFetcher:
             cursor = oldest_kst
 
             if call_count % 20 == 0:
-                pct = min(99, (1 - (cursor - cutoff).days / (years * 365)) * 100)
+                market_weight = 100.0 / num_markets
+                collect_weight = market_weight * 0.2
+                base_pct = m_idx * market_weight
+                pct = base_pct + (1 - (cursor - cutoff).days / (years * 365)) * collect_weight
+                pct = min(base_pct + collect_weight - 0.1, pct)
                 _save_progress("collecting", pct, f"{market}: {len(collected)}개 수집중")
                 logger.info(f"[Fetcher] {market} {len(collected)}개 수집 (API 호출 {call_count}회, 현재: {cursor.date()})")
 
@@ -204,6 +222,9 @@ class HistoricalDataFetcher:
                 if self._is_target_time(dt_kst):
                     new_data.append({
                         "ts":     dt_kst.isoformat(),
+                        "open":   float(c["opening_price"]),
+                        "high":   float(c["high_price"]),
+                        "low":    float(c["low_price"]),
                         "close":  float(c["trade_price"]),
                         "volume": float(c.get("candle_acc_trade_volume", 0))
                     })
@@ -229,11 +250,47 @@ class DataCache:
     def load(self) -> dict:
         if os.path.exists(CACHE_FILE):
             try:
+                is_invalid = False
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    cache = json.load(f)
+                    if self._check_cache_invalid(cache):
+                        is_invalid = True
+                
+                if is_invalid:
+                    logger.warning("[Cache] 수집 시각 설정(TARGET_TIMES_KST) 또는 데이터 스키마가 변경된 것으로 감지되었습니다. 기존 캐시를 백업하고 새로 수집합니다.")
+                    bak_file = CACHE_FILE + ".bak"
+                    try:
+                        if os.path.exists(bak_file):
+                            os.remove(bak_file)
+                        os.rename(CACHE_FILE, bak_file)
+                    except Exception as e:
+                        logger.error(f"[Cache] 백업 중 오류: {e}")
+                    return {}
+                return cache
             except Exception:
                 pass
         return {}
+
+    def _check_cache_invalid(self, cache: dict) -> bool:
+        """기존 캐시가 현재 TARGET_TIMES_KST 설정과 호환되지 않거나 open/high/low 데이터가 누락되었는지 검사."""
+        for market, m_data in cache.items():
+            rows = m_data.get("data", [])
+            if not rows:
+                continue
+            for r in rows[:10]:
+                try:
+                    if not all(k in r for k in ["open", "high", "low", "close", "volume"]):
+                        return True
+                    dt = datetime.fromisoformat(r["ts"])
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=KST)
+                    else:
+                        dt = dt.astimezone(KST)
+                    if (dt.hour, dt.minute) not in TARGET_TIMES_KST:
+                        return True
+                except Exception:
+                    return True
+        return False
 
     def save(self, cache: dict):
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
@@ -260,8 +317,24 @@ class DataCache:
 # 3. 기술 지표 계산 (numpy 기반)
 # ─────────────────────────────────────────────────────────────────────────────
 class Indicators:
+    _rsi_cache = {}
+    _bb_cache = {}
+    _macd_cache = {}
+
+    @staticmethod
+    def clear_cache():
+        Indicators._rsi_cache.clear()
+        Indicators._bb_cache.clear()
+        Indicators._macd_cache.clear()
+
     @staticmethod
     def rsi(closes: list, period: int) -> list:
+        if not closes:
+            return []
+        key = (len(closes), closes[0], closes[-1], period)
+        if key in Indicators._rsi_cache:
+            return Indicators._rsi_cache[key]
+
         if not HAS_NUMPY or len(closes) < period + 1:
             return [50.0] * len(closes)
         arr = np.array(closes, dtype=float)
@@ -284,10 +357,18 @@ class Indicators:
         for i, v in enumerate(result):
             if not math.isnan(v):
                 filled[i] = v
+        
+        Indicators._rsi_cache[key] = filled
         return filled
 
     @staticmethod
     def bollinger(closes: list, period: int, std_dev: float):
+        if not closes:
+            return [], [], []
+        key = (len(closes), closes[0], closes[-1], period, std_dev)
+        if key in Indicators._bb_cache:
+            return Indicators._bb_cache[key]
+
         if not HAS_NUMPY or len(closes) < period:
             return [0.0]*len(closes), [c for c in closes], [c*2 for c in closes]
         arr = np.array(closes, dtype=float)
@@ -302,10 +383,19 @@ class Indicators:
                 mid.append(m)
                 upper.append(m + std_dev * s)
                 lower.append(m - std_dev * s)
-        return mid, upper, lower
+        
+        res = (mid, upper, lower)
+        Indicators._bb_cache[key] = res
+        return res
 
     @staticmethod
     def macd(closes: list, fast: int, slow: int, signal_period: int):
+        if not closes:
+            return [], [], []
+        key = (len(closes), closes[0], closes[-1], fast, slow, signal_period)
+        if key in Indicators._macd_cache:
+            return Indicators._macd_cache[key]
+
         if not HAS_NUMPY or len(closes) < slow:
             n = len(closes)
             return [0.0]*n, [0.0]*n, [0.0]*n
@@ -323,7 +413,10 @@ class Indicators:
         macd_line = ema_fast - ema_slow
         signal_line = ema(macd_line, signal_period)
         histogram = macd_line - signal_line
-        return macd_line.tolist(), signal_line.tolist(), histogram.tolist()
+        
+        res = (macd_line.tolist(), signal_line.tolist(), histogram.tolist())
+        Indicators._macd_cache[key] = res
+        return res
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -387,6 +480,8 @@ class StrategySimulator:
           "rsi": bool, "rsi_period": int, "rsi_oversold": int, "rsi_overbought": int,
           "bb": bool, "bb_period": int, "bb_std": float,
           "macd": bool, "macd_fast": int, "macd_slow": int, "macd_signal": int,
+          "custom_bear": bool, "lookback": int, "drop_pct": float, "volume_ratio": float,
+          "take_profit": float, "stop_loss": float, "time_cut": int,
           "target_regime": "BULL"|"BEAR"|"RANGE"
         }
         """
@@ -396,6 +491,106 @@ class StrategySimulator:
         if len(regime_data) < 30:
             return {"sharpe": -999, "mdd": 1.0, "total_return": 0, "win_rate": 0, "trades": 0}
 
+        # 1. CustomBear 전용 분기 (하락장 롱테일 극복)
+        if params.get("custom_bear", False):
+            opens = [d["open"] for d in regime_data]
+            closes = [d["close"] for d in regime_data]
+            volumes = [d["volume"] for d in regime_data]
+
+            capital = 1_000_000.0
+            position = 0.0
+            entry_price = 0.0
+            entry_idx = 0
+            equity_curve = [capital]
+            wins = 0
+            total_trades = 0
+
+            lookback = params["lookback"]
+            drop_pct = params["drop_pct"]
+            volume_ratio = params["volume_ratio"]
+            take_profit = params["take_profit"]
+            stop_loss = params["stop_loss"]
+            time_cut = params["time_cut"]
+
+            warmup = max(lookback, 20)
+
+            for i in range(warmup, len(closes)):
+                price = closes[i]
+
+                if position == 0:
+                    # lookback 기간의 최고가 대비 하락폭 감시
+                    window_closes = closes[i - lookback: i]
+                    highest = max(window_closes) if window_closes else price
+                    drop = (highest - price) / highest if highest > 0 else 0
+
+                    # 거래량 10평균 대비 급증 감시
+                    vol_window = volumes[i - 10: i]
+                    avg_vol = sum(vol_window) / len(vol_window) if vol_window else 1.0
+                    curr_vol = volumes[i]
+
+                    # 반등 양봉 조건 (시가 대비 종가 상승)
+                    is_bullish = closes[i] > opens[i]
+
+                    buy = (drop >= drop_pct) and (curr_vol >= avg_vol * volume_ratio) and is_bullish
+
+                    if buy:
+                        cost = capital * FEE_RATE
+                        position = (capital - cost) / price
+                        entry_price = price
+                        entry_idx = i
+                        capital = 0.0
+                        total_trades += 1
+                else:
+                    # 청산 조건 (익절, 손절, 시간청산)
+                    pnl = (price - entry_price) / entry_price
+                    exit_tp = pnl >= take_profit
+                    exit_sl = pnl <= -stop_loss
+                    exit_tc = (i - entry_idx) >= time_cut
+
+                    if exit_tp or exit_sl or exit_tc:
+                        gross = position * price
+                        fee = gross * FEE_RATE
+                        capital = gross - fee
+                        if price > entry_price:
+                            wins += 1
+                        position = 0.0
+                        equity_curve.append(capital)
+
+            if position > 0:
+                capital = position * closes[-1] * (1 - FEE_RATE)
+                equity_curve.append(capital)
+
+            if len(equity_curve) < 2 or total_trades == 0:
+                return {"sharpe": -999, "mdd": 1.0, "total_return": 0, "win_rate": 0, "trades": 0}
+
+            total_return = (equity_curve[-1] / equity_curve[0]) - 1.0
+
+            peak = equity_curve[0]
+            mdd = 0.0
+            for v in equity_curve:
+                if v > peak:
+                    peak = v
+                dd = (peak - v) / peak
+                if dd > mdd:
+                    mdd = dd
+
+            returns = [(equity_curve[j] / equity_curve[j-1]) - 1 for j in range(1, len(equity_curve))]
+            if len(returns) > 1 and HAS_NUMPY:
+                arr = np.array(returns)
+                std = float(np.std(arr, ddof=1))
+                sharpe = float(np.mean(arr)) / std if std > 0 else 0.0
+            else:
+                sharpe = 0.0
+
+            return {
+                "sharpe":       round(sharpe, 4),
+                "mdd":          round(mdd, 4),
+                "total_return": round(total_return * 100, 2),
+                "win_rate":     round(wins / total_trades * 100, 2) if total_trades > 0 else 0.0,
+                "trades":       total_trades
+            }
+
+        # 2. 기존 보조지표 믹스 분기
         closes = [d["close"] for d in regime_data]
         ind = Indicators()
 
@@ -481,8 +676,8 @@ class StrategySimulator:
                 mdd = dd
 
         # Sharpe Ratio (거래 단위 수익률 기반)
-        returns = [(equity_curve[i] / equity_curve[i-1]) - 1
-                   for i in range(1, len(equity_curve))]
+        returns = [(equity_curve[idx] / equity_curve[idx-1]) - 1
+                   for idx in range(1, len(equity_curve))]
         if len(returns) > 1 and HAS_NUMPY:
             arr = np.array(returns)
             std = float(np.std(arr, ddof=1))
@@ -499,6 +694,36 @@ class StrategySimulator:
             "win_rate":     round(win_rate * 100, 2),       # %
             "trades":       total_trades
         }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. 그리드 서치 최적화
+# ─────────────────────────────────────────────────────────────────────────────
+def _calculate_expected_profits(total_return_pct: float, regime_data: list) -> dict:
+    """전체 백테스트 기간 기반 1주/1달/3개월/6개월 기대 수익률(복리) 계산."""
+    if len(regime_data) >= 2:
+        try:
+            t1 = datetime.fromisoformat(regime_data[0]["ts"])
+            t2 = datetime.fromisoformat(regime_data[-1]["ts"])
+            days = max((t2 - t1).days, 1)
+        except Exception:
+            days = 365
+    else:
+        days = 365
+        
+    daily_rate = (1 + total_return_pct / 100.0) ** (1.0 / days) - 1.0
+    
+    w1 = ((1 + daily_rate) ** 7 - 1.0) * 100.0
+    m1 = ((1 + daily_rate) ** 30 - 1.0) * 100.0
+    m3 = ((1 + daily_rate) ** 90 - 1.0) * 100.0
+    m6 = ((1 + daily_rate) ** 180 - 1.0) * 100.0
+    
+    return {
+        "1w": round(w1, 2),
+        "1m": round(m1, 2),
+        "3m": round(m3, 2),
+        "6m": round(m6, 2)
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -531,29 +756,98 @@ class GridSearchOptimizer:
                               continue  # fast < slow 강제
                           for msig in macd_sigs:
                             yield {
+                                "custom_bear": False,
                                 **combo,
                                 "rsi_period": rp, "rsi_oversold": ro, "rsi_overbought": rob,
                                 "bb_period": bp, "bb_std": bs,
                                 "macd_fast": mf, "macd_slow": ms, "macd_signal": msig,
                             }
 
-    def optimize_regime(self, data: list, regime: str, market: str) -> dict:
+    def _iter_custom_bear_params(self):
+        """CustomBear 전략용 파라미터 조합 생성기."""
+        lookbacks     = [6, 8, 12]
+        drop_pcts     = [0.03, 0.05, 0.08]
+        volume_ratios = [1.5, 2.0, 3.0]
+        take_profits  = [0.015, 0.02, 0.03]
+        stop_losses   = [0.01, 0.015, 0.02]
+        time_cuts     = [12, 24]
+        
+        for lb in lookbacks:
+            for dp in drop_pcts:
+                for vr in volume_ratios:
+                    for tp in take_profits:
+                        for sl in stop_losses:
+                            for tc in time_cuts:
+                                yield {
+                                    "custom_bear": True,
+                                    "rsi": False, "bb": False, "macd": False,
+                                    "lookback": lb,
+                                    "drop_pct": dp,
+                                    "volume_ratio": vr,
+                                    "take_profit": tp,
+                                    "stop_loss": sl,
+                                    "time_cut": tc
+                                }
+
+    def optimize_regime(self, data: list, regime: str, market: str, base_pct: float = 20.0, span_pct: float = 60.0) -> dict:
         """
         지정 장세에 대해 그리드 서치 실행.
-        반환: 최적 파라미터 + 성과 지표
+        BEAR 장세는 믹스 전략과 CustomBear 전략을 각각 돌려 비교 결과 출력.
         """
+        regime_data = [d for d in data if d["regime"] == regime]
+        
+        def get_profits(ret_pct):
+            return _calculate_expected_profits(ret_pct, regime_data)
+
+        if regime != "BEAR":
+            # BULL, RANGE는 기존 믹스 전략만 수행
+            best_params, best_result = self._optimize_mixed(data, regime, market, base_pct, span_pct)
+            if best_params is None:
+                return _default_regime_params(regime)
+            return _build_output(best_params, best_result, get_profits(best_result["total_return"]))
+        else:
+            # BEAR 장세: 믹스 전략(50%) + CustomBear 전략(50%) 수행
+            mixed_span = span_pct * 0.5
+            custom_span = span_pct * 0.5
+            
+            mixed_params, mixed_result = self._optimize_mixed(data, regime, market, base_pct, mixed_span)
+            custom_params, custom_result = self._optimize_custom_bear(data, regime, market, base_pct + mixed_span, custom_span)
+            
+            if mixed_params is None:
+                mixed_out = _default_regime_params(regime)
+                mixed_out["period_expected_profits"] = {"1w": 0, "1m": 0, "3m": 0, "6m": 0}
+            else:
+                mixed_out = _build_output(mixed_params, mixed_result, get_profits(mixed_result["total_return"]))
+                
+            if custom_params is None:
+                custom_out = _default_custom_bear_params(regime)
+            else:
+                custom_out = _build_custom_bear_output(custom_params, custom_result, get_profits(custom_result["total_return"]))
+                
+            return {
+                "mixed_strategy": mixed_out,
+                "custom_bear_strategy": custom_out,
+                **mixed_out  # 하위 호환 병합
+            }
+
+    def _optimize_mixed(self, data: list, regime: str, market: str, base_pct: float, span_pct: float):
         best_sharpe = -999
         best_result = None
         best_params = None
         total = 0
         valid = 0
 
+        total_combos = sum(1 for _ in self._iter_params())
+        last_update_time = time.time()
+
+        first_span = span_pct * 0.8
+        fallback_span = span_pct * 0.2
+
         for params in self._iter_params():
             params["target_regime"] = regime
             result = self.sim.simulate(data, params)
             total += 1
 
-            # MDD 필터
             if result["mdd"] > MDD_LIMIT:
                 continue
             if result["trades"] < 5:
@@ -565,42 +859,128 @@ class GridSearchOptimizer:
                 best_result = result
                 best_params = dict(params)
 
-        logger.info(f"[Optimizer] {market}/{regime}: 총 {total}조합 검색, {valid}개 통과, 최적 Sharpe={best_sharpe:.4f}")
+            current_time = time.time()
+            if total % 200 == 0 or (current_time - last_update_time) > 4.0:
+                combo_pct = (total / total_combos) * first_span
+                pct = base_pct + combo_pct
+                _save_progress("optimizing", pct, f"{market} {regime} 믹스전략 최적화 중 ({total}/{total_combos})")
+                last_update_time = current_time
+
+        logger.info(f"[Optimizer] {market}/{regime} Mixed: 총 {total}조합 검색, {valid}개 통과, 최적 Sharpe={best_sharpe:.4f}")
 
         if best_params is None:
-            # 필터 통과 없으면 MDD 무시하고 최고 Sharpe
-            logger.warning(f"[Optimizer] {market}/{regime}: MDD 필터 통과 없음 → 차선책 선택")
+            logger.warning(f"[Optimizer] {market}/{regime} Mixed: MDD 필터 통과 없음 → 차선책 선택")
+            fb_total = 0
+            last_update_time = time.time()
             for params in self._iter_params():
                 params["target_regime"] = regime
                 result = self.sim.simulate(data, params)
+                fb_total += 1
+                
                 if result["sharpe"] > best_sharpe and result["trades"] >= 3:
                     best_sharpe = result["sharpe"]
                     best_result = result
                     best_params = dict(params)
+                    
+                current_time = time.time()
+                if fb_total % 200 == 0 or (current_time - last_update_time) > 4.0:
+                    fb_pct = (fb_total / total_combos) * fallback_span
+                    pct = base_pct + first_span + fb_pct
+                    _save_progress("optimizing", pct, f"{market} {regime} 믹스 차선책 최적화 중 ({fb_total}/{total_combos})")
+                    last_update_time = current_time
+
+        _save_progress("optimizing", base_pct + span_pct, f"{market} {regime} 믹스전략 최적화 완료")
+        return best_params, best_result
+
+    def _optimize_custom_bear(self, data: list, regime: str, market: str, base_pct: float, span_pct: float):
+        best_sharpe = -999
+        best_result = None
+        best_params = None
+        total = 0
+        valid = 0
+
+        total_combos = sum(1 for _ in self._iter_custom_bear_params())
+        last_update_time = time.time()
+
+        first_span = span_pct * 0.8
+        fallback_span = span_pct * 0.2
+
+        for params in self._iter_custom_bear_params():
+            params["target_regime"] = regime
+            result = self.sim.simulate(data, params)
+            total += 1
+
+            if result["mdd"] > MDD_LIMIT:
+                continue
+            if result["trades"] < 3:
+                continue
+
+            valid += 1
+            if result["sharpe"] > best_sharpe:
+                best_sharpe = result["sharpe"]
+                best_result = result
+                best_params = dict(params)
+
+            current_time = time.time()
+            if total % 50 == 0 or (current_time - last_update_time) > 4.0:
+                combo_pct = (total / total_combos) * first_span
+                pct = base_pct + combo_pct
+                _save_progress("optimizing", pct, f"{market} {regime} CustomBear 최적화 중 ({total}/{total_combos})")
+                last_update_time = current_time
+
+        logger.info(f"[Optimizer] {market}/{regime} CustomBear: 총 {total}조합 검색, {valid}개 통과, 최적 Sharpe={best_sharpe:.4f}")
 
         if best_params is None:
-            return _default_regime_params(regime)
+            logger.warning(f"[Optimizer] {market}/{regime} CustomBear: 필터 통과 없음 → 차선책 선택")
+            fb_total = 0
+            last_update_time = time.time()
+            for params in self._iter_custom_bear_params():
+                params["target_regime"] = regime
+                result = self.sim.simulate(data, params)
+                fb_total += 1
+                
+                if result["sharpe"] > best_sharpe and result["trades"] >= 1:
+                    best_sharpe = result["sharpe"]
+                    best_result = result
+                    best_params = dict(params)
+                    
+                current_time = time.time()
+                if fb_total % 50 == 0 or (current_time - last_update_time) > 4.0:
+                    fb_pct = (fb_total / total_combos) * fallback_span
+                    pct = base_pct + first_span + fb_pct
+                    _save_progress("optimizing", pct, f"{market} {regime} CustomBear 차선책 최적화 중 ({fb_total}/{total_combos})")
+                    last_update_time = current_time
 
-        return _build_output(best_params, best_result)
+        _save_progress("optimizing", base_pct + span_pct, f"{market} {regime} CustomBear 최적화 완료")
+        return best_params, best_result
 
-    def run_full_optimization(self, market: str, data: list) -> dict:
-        """BTC 또는 ETH 전체 장세 최적화."""
+    def run_full_optimization(self, market: str, data: list, m_idx: int = 0, num_markets: int = 3) -> dict:
+        """종목 전체 장세 최적화."""
         labeler = RegimeLabeler()
         labeled = labeler.label(data)
         output = {}
         regimes = ["BULL", "BEAR", "RANGE"]
-        for idx, regime in enumerate(regimes):
-            pct = 20 + (idx / len(regimes)) * 60
-            _save_progress("optimizing", pct, f"{market} {regime} 장세 그리드서치 중...")
-            output[regime] = self.optimize_regime(labeled, regime, market)
+        
+        market_weight = 100.0 / num_markets
+        optimize_weight = market_weight * 0.8
+        regime_weight = optimize_weight / len(regimes)
+        collect_weight = market_weight * 0.2
+        
+        for r_idx, regime in enumerate(regimes):
+            base_pct = (m_idx * market_weight) + collect_weight + (r_idx * regime_weight)
+            output[regime] = self.optimize_regime(
+                labeled, regime, market, 
+                base_pct=base_pct, 
+                span_pct=regime_weight
+            )
         return output
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. 출력 포맷 헬퍼
 # ─────────────────────────────────────────────────────────────────────────────
-def _build_output(params: dict, result: dict) -> dict:
-    return {
+def _build_output(params: dict, result: dict, expected_profits: dict = None) -> dict:
+    out = {
         "strategies": {
             "RSI": {
                 "enabled":    params["rsi"],
@@ -638,6 +1018,40 @@ def _build_output(params: dict, result: dict) -> dict:
             "trade_count":      result["trades"]
         }
     }
+    if expected_profits:
+        out["period_expected_profits"] = expected_profits
+    return out
+
+
+def _build_custom_bear_output(params: dict, result: dict, expected_profits: dict) -> dict:
+    return {
+        "strategies": {
+            "CustomBear": {
+                "enabled":      True,
+                "lookback":     params["lookback"],
+                "drop_pct":     params["drop_pct"],
+                "volume_ratio": params["volume_ratio"],
+                "take_profit":  params["take_profit"],
+                "stop_loss":    params["stop_loss"],
+                "time_cut":     params["time_cut"]
+            }
+        },
+        "logic": "CUSTOM_BEAR",
+        "threshold": 0.5,
+        "risk": {
+            "type": "StopLoss",
+            "stop_loss_pct": params["stop_loss"],
+            "take_profit_pct": params["take_profit"]
+        },
+        "backtest": {
+            "total_return_pct": result["total_return"],
+            "sharpe_ratio":     result["sharpe"],
+            "mdd_pct":          round(result["mdd"] * 100, 2),
+            "win_rate_pct":     result["win_rate"],
+            "trade_count":      result["trades"]
+        },
+        "period_expected_profits": expected_profits
+    }
 
 
 def _default_regime_params(regime: str) -> dict:
@@ -652,6 +1066,37 @@ def _default_regime_params(regime: str) -> dict:
         "risk": {"type": "StopLoss" if regime != "BULL" else "None",
                  "stop_loss_pct": 0.02, "take_profit_pct": 0.03},
         "backtest": {"total_return_pct": 0, "sharpe_ratio": 0, "mdd_pct": 0, "win_rate_pct": 0, "trade_count": 0}
+    }
+
+
+def _default_custom_bear_params(regime: str) -> dict:
+    return {
+        "strategies": {
+            "CustomBear": {
+                "enabled": True,
+                "lookback": 8,
+                "drop_pct": 0.05,
+                "volume_ratio": 2.0,
+                "take_profit": 0.02,
+                "stop_loss": 0.015,
+                "time_cut": 24
+            }
+        },
+        "logic": "CUSTOM_BEAR",
+        "threshold": 0.5,
+        "risk": {
+            "type": "StopLoss",
+            "stop_loss_pct": 0.015,
+            "take_profit_pct": 0.02
+        },
+        "backtest": {
+            "total_return_pct": 0,
+            "sharpe_ratio": 0,
+            "mdd_pct": 0,
+            "win_rate_pct": 0,
+            "trade_count": 0
+        },
+        "period_expected_profits": {"1w": 0, "1m": 0, "3m": 0, "6m": 0}
     }
 
 
@@ -680,21 +1125,27 @@ def run_optimization(markets: list = None) -> dict:
         "source": f"빗썸 30분봉 ({len(TARGET_TIMES_KST)}포인트/일, "
                   f"KST {[f'{h:02d}:{m:02d}' for h,m in TARGET_TIMES_KST]})",
         "fee_assumption": "편도 0.09% (수수료 0.04% + 슬리피지 0.05%)",
-        "optimization_criteria": "Sharpe Ratio 최대 + MDD ≤ 30%"
+        "optimization_criteria": f"Sharpe Ratio 최대 + MDD <= {int(MDD_LIMIT * 100)}%"
     }
+
+    num_markets = len(markets)
+    market_weight = 100.0 / num_markets
+    collect_weight = market_weight * 0.2
 
     for m_idx, market in enumerate(markets):
         logger.info(f"\n{'='*60}")
         logger.info(f"[Pipeline] {market} 처리 시작")
-        _save_progress("collecting", m_idx * 50, f"{market} 데이터 준비중...")
+        
+        base_collect_pct = m_idx * market_weight
+        _save_progress("collecting", base_collect_pct, f"{market} 데이터 준비중...")
 
         # 데이터 수집 (최초 or 증분)
         last_ts = cache_mgr.get_last_ts(cache, market)
         if last_ts is None:
-            logger.info(f"[Pipeline] {market} 캐시 없음 → 전체 9년 수집")
-            new_data = fetcher.fetch_full_history(market, years=9)
+            logger.info(f"[Pipeline] {market} 캐시 없음 -> 전체 9년 수집")
+            new_data = fetcher.fetch_full_history(market, years=9, m_idx=m_idx, num_markets=num_markets)
         else:
-            logger.info(f"[Pipeline] {market} 캐시 있음 (마지막: {last_ts}) → 증분 수집")
+            logger.info(f"[Pipeline] {market} 캐시 있음 (마지막: {last_ts}) -> 증분 수집")
             new_data = fetcher.fetch_incremental(market, last_ts)
 
         cache = cache_mgr.append(cache, market, new_data)
@@ -703,9 +1154,9 @@ def run_optimization(markets: list = None) -> dict:
         # 최적화 실행
         data = cache[market]["data"]
         logger.info(f"[Pipeline] {market} 총 {len(data)}개 데이터로 최적화 시작")
-        _save_progress("optimizing", m_idx * 50 + 5, f"{market} 그리드서치 실행중...")
+        _save_progress("optimizing", base_collect_pct + collect_weight, f"{market} 그리드서치 실행중...")
 
-        regime_results = optimizer.run_full_optimization(market, data)
+        regime_results = optimizer.run_full_optimization(market, data, m_idx=m_idx, num_markets=num_markets)
         results[market] = regime_results
 
     # 결과 저장
@@ -713,7 +1164,7 @@ def run_optimization(markets: list = None) -> dict:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
     _save_progress("done", 100, f"최적화 완료! {datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST")
-    logger.info(f"[Pipeline] 최적화 완료 → {RESULT_FILE}")
+    logger.info(f"[Pipeline] 최적화 완료 -> {RESULT_FILE}")
     return results
 
 
@@ -731,11 +1182,12 @@ def get_latest_results() -> Optional[dict]:
 def get_progress() -> dict:
     """현재 최적화 진행 상태 반환."""
     if os.path.exists(PROGRESS_FILE):
-        try:
-            with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
+        for attempt in range(10):
+            try:
+                with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                time.sleep(0.05)
     return {"stage": "idle", "percent": 0, "message": "대기중"}
 
 
@@ -754,7 +1206,7 @@ if __name__ == "__main__":
     print(f"수집 포인트: {[f'{h:02d}:{m:02d}' for h,m in TARGET_TIMES_KST]}")
     print("=" * 60)
     result = run_optimization()
-    print("\n✅ 최적화 완료!")
+    print("\n[SUCCESS] 최적화 완료!")
     for market in MARKETS:
         if market in result:
             for regime in ["BULL", "BEAR", "RANGE"]:
@@ -762,7 +1214,7 @@ if __name__ == "__main__":
                 bt = r.get("backtest", {})
                 strats = r.get("strategies", {})
                 active = [k for k, v in strats.items() if v.get("enabled")]
-                print(f"  {market}/{regime}: {active} → "
+                print(f"  {market}/{regime}: {active} -> "
                       f"수익 {bt.get('total_return_pct',0):.1f}%, "
                       f"Sharpe {bt.get('sharpe_ratio',0):.3f}, "
                       f"MDD {bt.get('mdd_pct',0):.1f}%")
