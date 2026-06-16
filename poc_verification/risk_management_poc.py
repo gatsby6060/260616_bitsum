@@ -3087,40 +3087,122 @@ HTML_CONTENT = """
                 </div>
             </div>
 
-            <!-- 백테스팅 과거 데이터 하락장 성과 비교 보고서 -->
-            <div style="margin-top:12px; background:rgba(0,0,0,0.2); border-radius:8px; padding:12px;">
-                <div style="font-size:12px; font-weight:700; color:#fff; margin-bottom:8px;">과거 9년 하락장(BEAR) 비교 백테스팅 성과 비교표</div>
-                <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:left; color:var(--text-secondary);">
-                    <thead>
-                        <tr style="border-bottom:1px solid rgba(255,255,255,0.1); color:#fff;">
-                            <th style="padding:6px 4px;">지표</th>
-                            <th style="padding:6px 4px;">기존 믹스 전략 (Mixed)</th>
-                            <th style="padding:6px 4px; color:var(--accent-green);">나만의 하락장 전략 (Custom Bear)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
-                            <td style="padding:6px 4px;">하락장 누적 수익률</td>
-                            <td style="padding:6px 4px;" id="compare-mixed-ret">-</td>
-                            <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-ret">-</td>
-                        </tr>
-                        <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
-                            <td style="padding:6px 4px;">Sharpe Ratio (위험대비수익)</td>
-                            <td style="padding:6px 4px;" id="compare-mixed-sharpe">-</td>
-                            <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-sharpe">-</td>
-                        </tr>
-                        <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
-                            <td style="padding:6px 4px;">최대 낙폭 (MDD)</td>
-                            <td style="padding:6px 4px;" id="compare-mixed-mdd">-</td>
-                            <td style="padding:6px 4px; font-weight:bold;" id="compare-custom-mdd">-</td>
-                        </tr>
-                        <tr>
-                            <td style="padding:6px 4px;">총 거래 횟수 / 승률</td>
-                            <td style="padding:6px 4px;" id="compare-mixed-trades">-</td>
-                            <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-trades">-</td>
-                        </tr>
-                    </tbody>
-                </table>
+            <!-- 백테스팅 과거 데이터 하락장/상승장/횡보장 종합 성과 모니터 -->
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:12px; margin-top:12px;">
+                <!-- 1. 하락장 (BEAR) 성과 비교 카드 -->
+                <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:12px;">
+                    <div style="font-size:12px; font-weight:700; color:#fff; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                        <span style="display:inline-block; width:6px; height:6px; background-color:var(--accent-red); border-radius:50%; box-shadow:var(--glow-red);"></span>
+                        과거 9년 하락장(BEAR) 성과 비교
+                    </div>
+                    <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:left; color:var(--text-secondary);">
+                        <thead>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.1); color:#fff;">
+                                <th style="padding:6px 4px;">지표</th>
+                                <th style="padding:6px 4px;">기존 믹스</th>
+                                <th style="padding:6px 4px; color:var(--accent-green);">Custom Bear</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">누적 수익률</td>
+                                <td style="padding:6px 4px;" id="compare-mixed-ret">-</td>
+                                <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-ret">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">Sharpe Ratio</td>
+                                <td style="padding:6px 4px;" id="compare-mixed-sharpe">-</td>
+                                <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-sharpe">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">최대 낙폭(MDD)</td>
+                                <td style="padding:6px 4px;" id="compare-mixed-mdd">-</td>
+                                <td style="padding:6px 4px; font-weight:bold;" id="compare-custom-mdd">-</td>
+                            </tr>
+                            <tr>
+                                <td style="padding:6px 4px;">거래 횟수/승률</td>
+                                <td style="padding:6px 4px;" id="compare-mixed-trades">-</td>
+                                <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-trades">-</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- 2. 상승장 (BULL) 성과 카드 -->
+                <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:12px;">
+                    <div style="font-size:12px; font-weight:700; color:#fff; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                        <span style="display:inline-block; width:6px; height:6px; background-color:var(--accent-green); border-radius:50%; box-shadow:var(--glow-green);"></span>
+                        과거 9년 상승장(BULL) 최적화 성과
+                    </div>
+                    <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:left; color:var(--text-secondary);">
+                        <thead>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.1); color:#fff;">
+                                <th style="padding:6px 4px;">지표</th>
+                                <th style="padding:6px 4px; color:var(--accent-green);">최적화 믹스 전략</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">누적 수익률</td>
+                                <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="bull-ret">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">Sharpe Ratio</td>
+                                <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="bull-sharpe">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">최대 낙폭(MDD)</td>
+                                <td style="padding:6px 4px; font-weight:bold;" id="bull-mdd">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">거래 횟수/승률</td>
+                                <td style="padding:6px 4px;" id="bull-trades">-</td>
+                            </tr>
+                            <tr>
+                                <td style="padding:6px 4px;">기대 이윤 (3M/6M)</td>
+                                <td style="padding:6px 4px;" id="bull-expected">-</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- 3. 횡보장 (RANGE) 성과 카드 -->
+                <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:12px;">
+                    <div style="font-size:12px; font-weight:700; color:#fff; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                        <span style="display:inline-block; width:6px; height:6px; background-color:var(--accent-blue); border-radius:50%; box-shadow:var(--glow-blue);"></span>
+                        과거 9년 횡보장(RANGE) 최적화 성과
+                    </div>
+                    <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:left; color:var(--text-secondary);">
+                        <thead>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.1); color:#fff;">
+                                <th style="padding:6px 4px;">지표</th>
+                                <th style="padding:6px 4px; color:var(--accent-blue);">최적화 믹스 전략</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">누적 수익률</td>
+                                <td style="padding:6px 4px; font-weight:bold; color:var(--accent-blue);" id="range-ret">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">Sharpe Ratio</td>
+                                <td style="padding:6px 4px; font-weight:bold; color:var(--accent-blue);" id="range-sharpe">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">최대 낙폭(MDD)</td>
+                                <td style="padding:6px 4px; font-weight:bold;" id="range-mdd">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">거래 횟수/승률</td>
+                                <td style="padding:6px 4px;" id="range-trades">-</td>
+                            </tr>
+                            <tr>
+                                <td style="padding:6px 4px;">기대 이윤 (3M/6M)</td>
+                                <td style="padding:6px 4px;" id="range-expected">-</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
 
@@ -4832,6 +4914,28 @@ HTML_CONTENT = """
                             
                             document.getElementById('compare-mixed-trades').innerText = `${mixed.backtest.trade_count}회 / ${mixed.backtest.win_rate_pct.toFixed(1)}%`;
                             document.getElementById('compare-custom-trades').innerText = `${custom.backtest.trade_count}회 / ${custom.backtest.win_rate_pct.toFixed(1)}%`;
+                            
+                            // BULL 데이터 바인딩
+                            if (optData.BULL && optData.BULL.backtest) {
+                                const b = optData.BULL.backtest;
+                                const bProfits = optData.BULL.period_expected_profits || { "3m": 0, "6m": 0 };
+                                document.getElementById('bull-ret').innerText = `${b.total_return_pct >= 0 ? '+' : ''}${b.total_return_pct.toFixed(2)}%`;
+                                document.getElementById('bull-sharpe').innerText = b.sharpe_ratio.toFixed(4);
+                                document.getElementById('bull-mdd').innerText = `-${b.mdd_pct.toFixed(1)}%`;
+                                document.getElementById('bull-trades').innerText = `${b.trade_count}회 / ${b.win_rate_pct.toFixed(1)}%`;
+                                document.getElementById('bull-expected').innerText = `3m: +${bProfits["3m"]}% / 6m: +${bProfits["6m"]}%`;
+                            }
+                            
+                            // RANGE 데이터 바인딩
+                            if (optData.RANGE && optData.RANGE.backtest) {
+                                const r = optData.RANGE.backtest;
+                                const rProfits = optData.RANGE.period_expected_profits || { "3m": 0, "6m": 0 };
+                                document.getElementById('range-ret').innerText = `${r.total_return_pct >= 0 ? '+' : ''}${r.total_return_pct.toFixed(2)}%`;
+                                document.getElementById('range-sharpe').innerText = r.sharpe_ratio.toFixed(4);
+                                document.getElementById('range-mdd').innerText = `-${r.mdd_pct.toFixed(1)}%`;
+                                document.getElementById('range-trades').innerText = `${r.trade_count}회 / ${r.win_rate_pct.toFixed(1)}%`;
+                                document.getElementById('range-expected').innerText = `3m: +${rProfits["3m"]}% / 6m: +${rProfits["6m"]}%`;
+                            }
                             
                             return;
                         }

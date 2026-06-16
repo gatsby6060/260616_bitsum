@@ -125,7 +125,7 @@
     "ETH": {
         "active": true,
         "current_regime": "BEAR",
-        "regime_override": "AUTO",
+        "regime_override": "RANGE",
         "selected_bear_strategy": "mixed",
         "long_term_ma_period": 4000,
         "tactics": {
@@ -261,7 +261,7 @@
         },
         "bull_duration_limit_days": 100,
         "bear_duration_limit_days": 350,
-        "regime_override_expires_at": null
+        "regime_override_expires_at": "2026-07-16T17:27:44.841506+09:00"
     },
     "XRP": {
         "active": true,
