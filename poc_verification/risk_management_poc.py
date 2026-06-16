@@ -500,6 +500,9 @@ class BithumbCustomBearStrategy(BaseStrategy):
             
             buy = (drop >= self.params["drop_pct"]) and (curr_vol >= avg_vol * self.params["volume_ratio"]) and is_bullish
             
+            # 실시간 지표 상태 기록
+            data["custom_bear_val"] = f"낙폭:{drop*100:.1f}%(기준:{self.params['drop_pct']*100:.1f}%) / 거래량비율:{curr_vol/avg_vol:.1f}배(기준:{self.params['volume_ratio']:.1f}배)"
+            
             if buy:
                 self.entry_price = curr_price
                 self.entry_time = datetime.now()
@@ -529,6 +532,9 @@ class BithumbCustomBearStrategy(BaseStrategy):
                 elapsed_sec = (datetime.now() - self.entry_time).total_seconds()
                 if elapsed_sec >= self.params["time_cut"] * 1800: # 30분봉 N개
                     exit_tc = True
+            
+            # 실시간 지표 상태 기록
+            data["custom_bear_val"] = f"익절(TS):{drawdown*100:.1f}%(기준:{self.params['trail_pct']*100:.1f}%) / 손절(SL):{pnl*100:.1f}%(기준:-{self.params['stop_loss']*100:.1f}%)"
             
             if exit_ts or exit_sl or exit_tc:
                 self.entry_price = 0.0
@@ -584,14 +590,21 @@ class VerboseCompositeStrategy(CompositeStrategy):
                 elif sell_ratio >= self.threshold:
                     final_signal = "SELL"
 
+        indicators = {}
+        for s in self.strategies:
+            if s.NAME == "RSI":
+                indicators["RSI"] = data.get("rsi_val", "-")
+            elif s.NAME == "MACD":
+                indicators["MACD"] = data.get("macd_val", "-")
+            elif s.NAME == "Bollinger":
+                indicators["Bollinger"] = data.get("bb_val", "-")
+            elif s.NAME == "CustomBear":
+                indicators["CustomBear"] = data.get("custom_bear_val", "-")
+
         data["composite_details"] = {
             "logic": self.logic,
             "sub_signals": signals,
-            "indicators": {
-                "RSI": data.get("rsi_val", "-"),
-                "MACD": data.get("macd_val", "-"),
-                "Bollinger": data.get("bb_val", "-")
-            },
+            "indicators": indicators,
             "weights": self.weights,
             "threshold": self.threshold,
             "final": final_signal
@@ -2750,7 +2763,7 @@ HTML_CONTENT = """
                 
                 <div id="strategies-tab-content" class="tab-content">
                     <!-- RSI 전략 -->
-                    <div class="strategy-item-card">
+                    <div class="strategy-item-card" id="card-item-rsi">
                         <div class="strategy-item-header">
                             <div class="strategy-icon-title">
                                 <span class="strategy-icon icon-rsi">RSI</span>
@@ -2789,7 +2802,7 @@ HTML_CONTENT = """
                     </div>
 
                     <!-- Bollinger Bands 전략 -->
-                    <div class="strategy-item-card">
+                    <div class="strategy-item-card" id="card-item-bollinger">
                         <div class="strategy-item-header">
                             <div class="strategy-icon-title">
                                 <span class="strategy-icon icon-bb">BB</span>
@@ -2799,31 +2812,31 @@ HTML_CONTENT = """
                                 </div>
                             </div>
                             <label class="toggle-switch">
-                                <input type="checkbox" id="toggle-bb" onchange="toggleStrategy('Bollinger')">
+                                <input type="checkbox" id="toggle-bollinger" onchange="toggleStrategy('Bollinger')">
                                 <span class="slider-round"></span>
                             </label>
                         </div>
-                        <div class="strategy-item-controls" id="controls-bb">
+                        <div class="strategy-item-controls" id="controls-bollinger">
                             <div class="control-row">
                                 <span class="control-label">분석 기간</span>
-                                <input type="range" class="param-slider" id="bb-period" min="2" max="25" value="5" oninput="updateParamValue('bb-period-val', this.value)">
-                                <span class="param-val" id="bb-period-val">5</span>
+                                <input type="range" class="param-slider" id="bollinger-period" min="2" max="25" value="5" oninput="updateParamValue('bollinger-period-val', this.value)">
+                                <span class="param-val" id="bollinger-period-val">5</span>
                             </div>
                             <div class="control-row">
                                 <span class="control-label">표준편차</span>
-                                <input type="range" class="param-slider" id="bb-stddev" min="0.5" max="3.5" step="0.1" value="1.5" oninput="updateParamValue('bb-stddev-val', this.value)">
-                                <span class="param-val" id="bb-stddev-val">1.5</span>
+                                <input type="range" class="param-slider" id="bollinger-stddev" min="0.5" max="3.5" step="0.1" value="1.5" oninput="updateParamValue('bollinger-stddev-val', this.value)">
+                                <span class="param-val" id="bollinger-stddev-val">1.5</span>
                             </div>
                             <div class="control-row weight-row">
                                 <span class="control-label" style="color:var(--accent-blue); font-weight:700;">전략 가중치</span>
-                                <input type="range" class="param-slider weight-slider" id="bb-weight" min="0.1" max="3.0" step="0.1" value="1.0" oninput="updateParamValue('bb-weight-val', this.value)">
-                                <span class="param-val" id="bb-weight-val">1.0</span>
+                                <input type="range" class="param-slider weight-slider" id="bollinger-weight" min="0.1" max="3.0" step="0.1" value="1.0" oninput="updateParamValue('bollinger-weight-val', this.value)">
+                                <span class="param-val" id="bollinger-weight-val">1.0</span>
                             </div>
                         </div>
                     </div>
 
                     <!-- MACD 전략 -->
-                    <div class="strategy-item-card">
+                    <div class="strategy-item-card" id="card-item-macd">
                         <div class="strategy-item-header">
                             <div class="strategy-icon-title">
                                 <span class="strategy-icon icon-macd">MACD</span>
@@ -2857,6 +2870,60 @@ HTML_CONTENT = """
                                 <span class="control-label" style="color:var(--accent-blue); font-weight:700;">전략 가중치</span>
                                 <input type="range" class="param-slider weight-slider" id="macd-weight" min="0.1" max="3.0" step="0.1" value="1.0" oninput="updateParamValue('macd-weight-val', this.value)">
                                 <span class="param-val" id="macd-weight-val">1.0</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- CustomBear 전략 -->
+                    <div class="strategy-item-card" id="card-item-custombear" style="display:none;">
+                        <div class="strategy-item-header">
+                            <div class="strategy-icon-title">
+                                <span class="strategy-icon icon-rsi" style="color: #ef4444; background: rgba(239, 68, 68, 0.1);">BEAR</span>
+                                <div class="strategy-label-desc">
+                                    <span class="strategy-item-name">CustomBear (나만의 하락장 전략)</span>
+                                    <span class="strategy-item-desc">급락 후 기술적 반등의 최적 순간 포착</span>
+                                </div>
+                            </div>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="toggle-custombear" onchange="toggleStrategy('CustomBear')">
+                                <span class="slider-round"></span>
+                            </label>
+                        </div>
+                        <div class="strategy-item-controls" id="controls-custombear">
+                            <div class="control-row">
+                                <span class="control-label">분석 캔들수(lookback)</span>
+                                <input type="range" class="param-slider" id="custombear-lookback" min="3" max="20" value="8" oninput="updateParamValue('custombear-lookback-val', this.value)">
+                                <span class="param-val" id="custombear-lookback-val">8</span>
+                            </div>
+                            <div class="control-row">
+                                <span class="control-label">낙폭 임계치(drop_pct %)</span>
+                                <input type="range" class="param-slider" id="custombear-drop_pct" min="1.0" max="15.0" step="0.5" value="5.0" oninput="updateParamValue('custombear-drop_pct-val', this.value)">
+                                <span class="param-val" id="custombear-drop_pct-val">5.0</span>
+                            </div>
+                            <div class="control-row">
+                                <span class="control-label">거래량 비율(volume_ratio)</span>
+                                <input type="range" class="param-slider" id="custombear-volume_ratio" min="1.0" max="5.0" step="0.1" value="2.0" oninput="updateParamValue('custombear-volume_ratio-val', this.value)">
+                                <span class="param-val" id="custombear-volume_ratio-val">2.0</span>
+                            </div>
+                            <div class="control-row">
+                                <span class="control-label">트레일링스탑(trail_pct %)</span>
+                                <input type="range" class="param-slider" id="custombear-trail_pct" min="0.5" max="5.0" step="0.1" value="1.5" oninput="updateParamValue('custombear-trail_pct-val', this.value)">
+                                <span class="param-val" id="custombear-trail_pct-val">1.5</span>
+                            </div>
+                            <div class="control-row">
+                                <span class="control-label">손절 기준선(stop_loss %)</span>
+                                <input type="range" class="param-slider" id="custombear-stop_loss" min="0.5" max="5.0" step="0.1" value="1.5" oninput="updateParamValue('custombear-stop_loss-val', this.value)">
+                                <span class="param-val" id="custombear-stop_loss-val">1.5</span>
+                            </div>
+                            <div class="control-row">
+                                <span class="control-label">시간청산(time_cut 캔들수)</span>
+                                <input type="range" class="param-slider" id="custombear-time_cut" min="2" max="48" value="24" oninput="updateParamValue('custombear-time_cut-val', this.value)">
+                                <span class="param-val" id="custombear-time_cut-val">24</span>
+                            </div>
+                            <div class="control-row weight-row">
+                                <span class="control-label" style="color:var(--accent-blue); font-weight:700;">전략 가중치</span>
+                                <input type="range" class="param-slider weight-slider" id="custombear-weight" min="0.1" max="3.0" step="0.1" value="1.0" oninput="updateParamValue('custombear-weight-val', this.value)">
+                                <span class="param-val" id="custombear-weight-val">1.0</span>
                             </div>
                         </div>
                     </div>
@@ -3822,9 +3889,21 @@ HTML_CONTENT = """
                 document.getElementById('risk-max-add-count-val').innerText = maxAddCount;
             }
             
+            // 모든 전략 카드 숨기기
+            document.querySelectorAll('#strategies-tab-content .strategy-item-card').forEach(card => {
+                card.style.display = 'none';
+            });
+            
             const strategies = tactic.strategies || [];
             strategies.forEach(s => {
                 const prefix = s.name.toLowerCase();
+                
+                // 해당 전략 카드 보여주기
+                const cardEl = document.getElementById(`card-item-${prefix}`);
+                if (cardEl) {
+                    cardEl.style.display = 'flex';
+                }
+                
                 const toggle = document.getElementById(`toggle-${prefix}`);
                 if (toggle) {
                     toggle.checked = s.enabled;
@@ -3836,9 +3915,13 @@ HTML_CONTENT = """
                         const htmlParamName = paramName === 'std_dev' ? 'stddev' : paramName;
                         const inputEl = document.getElementById(`${prefix}-${htmlParamName}`);
                         if (inputEl) {
-                            inputEl.value = paramVal;
+                            let displayVal = paramVal;
+                            if (prefix === 'custombear' && ['drop_pct', 'trail_pct', 'stop_loss'].includes(paramName)) {
+                                displayVal = (paramVal * 100).toFixed(1);
+                            }
+                            inputEl.value = displayVal;
                             const valEl = document.getElementById(`${prefix}-${htmlParamName}-val`);
-                            if (valEl) valEl.innerText = paramVal;
+                            if (valEl) valEl.innerText = displayVal;
                         }
                     });
                 }
@@ -4081,6 +4164,27 @@ HTML_CONTENT = """
                     document.getElementById('macd-slow-val').innerText = sCfg.slow;
                     document.getElementById('macd-signal').value = sCfg.signal_period;
                     document.getElementById('macd-signal-val').innerText = sCfg.signal_period;
+                } else if (sName === 'CustomBear') {
+                    document.getElementById('custombear-lookback').value = sCfg.lookback;
+                    document.getElementById('custombear-lookback-val').innerText = sCfg.lookback;
+                    
+                    const dropPctVal = (sCfg.drop_pct * 100).toFixed(1);
+                    document.getElementById('custombear-drop_pct').value = dropPctVal;
+                    document.getElementById('custombear-drop_pct-val').innerText = dropPctVal;
+                    
+                    document.getElementById('custombear-volume_ratio').value = sCfg.volume_ratio;
+                    document.getElementById('custombear-volume_ratio-val').innerText = sCfg.volume_ratio;
+                    
+                    const trailPctVal = (sCfg.trail_pct * 100).toFixed(1);
+                    document.getElementById('custombear-trail_pct').value = trailPctVal;
+                    document.getElementById('custombear-trail_pct-val').innerText = trailPctVal;
+                    
+                    const stopLossVal = (sCfg.stop_loss * 100).toFixed(1);
+                    document.getElementById('custombear-stop_loss').value = stopLossVal;
+                    document.getElementById('custombear-stop_loss-val').innerText = stopLossVal;
+                    
+                    document.getElementById('custombear-time_cut').value = sCfg.time_cut;
+                    document.getElementById('custombear-time_cut-val').innerText = sCfg.time_cut;
                 }
 
                 const weightEl = document.getElementById(`${prefix}-weight`);
@@ -4103,39 +4207,66 @@ HTML_CONTENT = """
             const strategies = [];
             
             // RSI
-            strategies.push({
-                name: 'RSI',
-                enabled: document.getElementById('toggle-rsi').checked,
-                weight: parseFloat(document.getElementById('rsi-weight').value),
-                params: {
-                    period: parseInt(document.getElementById('rsi-period').value),
-                    oversold: parseInt(document.getElementById('rsi-oversold').value),
-                    overbought: parseInt(document.getElementById('rsi-overbought').value)
-                }
-            });
+            const toggleRsi = document.getElementById('toggle-rsi');
+            if (toggleRsi) {
+                strategies.push({
+                    name: 'RSI',
+                    enabled: toggleRsi.checked,
+                    weight: parseFloat(document.getElementById('rsi-weight').value),
+                    params: {
+                        period: parseInt(document.getElementById('rsi-period').value),
+                        oversold: parseInt(document.getElementById('rsi-oversold').value),
+                        overbought: parseInt(document.getElementById('rsi-overbought').value)
+                    }
+                });
+            }
             
             // Bollinger
-            strategies.push({
-                name: 'Bollinger',
-                enabled: document.getElementById('toggle-bb').checked,
-                weight: parseFloat(document.getElementById('bb-weight').value),
-                params: {
-                    period: parseInt(document.getElementById('bb-period').value),
-                    std_dev: parseFloat(document.getElementById('bb-stddev').value)
-                }
-            });
+            const toggleBb = document.getElementById('toggle-bollinger');
+            if (toggleBb) {
+                strategies.push({
+                    name: 'Bollinger',
+                    enabled: toggleBb.checked,
+                    weight: parseFloat(document.getElementById('bollinger-weight').value),
+                    params: {
+                        period: parseInt(document.getElementById('bollinger-period').value),
+                        std_dev: parseFloat(document.getElementById('bollinger-stddev').value)
+                    }
+                });
+            }
             
             // MACD
-            strategies.push({
-                name: 'MACD',
-                enabled: document.getElementById('toggle-macd').checked,
-                weight: parseFloat(document.getElementById('macd-weight').value),
-                params: {
-                    fast: parseInt(document.getElementById('macd-fast').value),
-                    slow: parseInt(document.getElementById('macd-slow').value),
-                    signal_period: parseInt(document.getElementById('macd-signal').value)
-                }
-            });
+            const toggleMacd = document.getElementById('toggle-macd');
+            if (toggleMacd) {
+                strategies.push({
+                    name: 'MACD',
+                    enabled: toggleMacd.checked,
+                    weight: parseFloat(document.getElementById('macd-weight').value),
+                    params: {
+                        fast: parseInt(document.getElementById('macd-fast').value),
+                        slow: parseInt(document.getElementById('macd-slow').value),
+                        signal_period: parseInt(document.getElementById('macd-signal').value)
+                    }
+                });
+            }
+            
+            // CustomBear
+            const toggleCustomBear = document.getElementById('toggle-custombear');
+            if (toggleCustomBear) {
+                strategies.push({
+                    name: 'CustomBear',
+                    enabled: toggleCustomBear.checked,
+                    weight: parseFloat(document.getElementById('custombear-weight').value),
+                    params: {
+                        lookback: parseInt(document.getElementById('custombear-lookback').value),
+                        drop_pct: parseFloat(document.getElementById('custombear-drop_pct').value) / 100,
+                        volume_ratio: parseFloat(document.getElementById('custombear-volume_ratio').value),
+                        trail_pct: parseFloat(document.getElementById('custombear-trail_pct').value) / 100,
+                        stop_loss: parseFloat(document.getElementById('custombear-stop_loss').value) / 100,
+                        time_cut: parseInt(document.getElementById('custombear-time_cut').value)
+                    }
+                });
+            }
             
             // Risk Settings 파싱
             const riskType = document.getElementById('risk-type-select').value;
@@ -4814,10 +4945,16 @@ def load_dynamic_factory_defaults():
                 for regime in ["BULL", "BEAR", "RANGE"]:
                     reg_data = results[market].get(regime)
                     if reg_data:
+                        if regime == "BEAR":
+                            selected = active_ticker_configs.get(ticker, {}).get("selected_bear_strategy", "custom_bear")
+                            if selected == "custom_bear" and "custom_bear_strategy" in reg_data:
+                                reg_data = reg_data["custom_bear_strategy"]
+                            elif selected == "mixed" and "mixed_strategy" in reg_data:
+                                reg_data = reg_data["mixed_strategy"]
+                        
                         strats_src = reg_data.get("strategies", {})
                         strats_dest = {}
-                        for s_name in ["RSI", "Bollinger", "MACD"]:
-                            s_src = strats_src.get(s_name, {})
+                        for s_name, s_src in strats_src.items():
                             if s_name == "RSI":
                                 strats_dest["RSI"] = {
                                     "enabled": s_src.get("enabled", False),
@@ -4841,6 +4978,17 @@ def load_dynamic_factory_defaults():
                                     "slow": s_src.get("slow", 26),
                                     "signal_period": s_src.get("signal_period", 9)
                                 }
+                            elif s_name == "CustomBear":
+                                strats_dest["CustomBear"] = {
+                                    "enabled": s_src.get("enabled", False),
+                                    "weight": s_src.get("weight", 1.0),
+                                    "lookback": s_src.get("lookback", 8),
+                                    "drop_pct": s_src.get("drop_pct", 0.05),
+                                    "volume_ratio": s_src.get("volume_ratio", 2.0),
+                                    "trail_pct": s_src.get("trail_pct", 0.015),
+                                    "stop_loss": s_src.get("stop_loss", 0.015),
+                                    "time_cut": s_src.get("time_cut", 24)
+                                }
                         ticker_data[regime] = {
                             "logic": reg_data.get("logic", "OR"),
                             "threshold": reg_data.get("threshold", 0.5),
@@ -4850,6 +4998,7 @@ def load_dynamic_factory_defaults():
                     else:
                         ticker_data[regime] = fallback_defaults[regime]
                 defaults[ticker] = ticker_data
+    return defaults
     return defaults
 
 @app.get("/")
