@@ -711,7 +711,7 @@ class UITickerWorker(TickerWorker):
         self.config = config
         self.trading_active = config.get("active", True)
         self.long_term_ma_period = config.get("long_term_ma_period", 250)
-        self.order_amount = 6000.0  # 회당 기본 매매 주문금액 (빗썸 최소 5,000원 이상 + 여유분 반영)
+        self.order_amount = 5100.0  # 회당 기본 매매 주문금액 (빗썸 최소 5,000원 이상 + 여유분 반영)
         
         # 1. 백엔드 CandleManager 장착 및 웜업 구동
         self.candle_manager = CandleManager(ticker, timeframes=["1m", "5m", "1h", "D"], max_candles=4500)
@@ -744,7 +744,7 @@ class UITickerWorker(TickerWorker):
     def check_portfolio_allocation_limit(self, buy_amount: float) -> bool:
         """
         신규 매수(buy_amount) 실행 시, 
-        해당 종목의 총 가치가 전체 자산(가용원화 + 총 포지션 평가금)의 50%를 초과하는지 여부를 검증합니다.
+        해당 종목의 총 가치가 전체 자산(가용원화 + 총 포지션 평가금)의 35%를 초과하는지 여부를 검증합니다.
         True: 한도 내 (허용) / False: 한도 초과 (차단)
         """
         global engine_instance
@@ -771,8 +771,8 @@ class UITickerWorker(TickerWorker):
             return True
             
         ratio = expected_position_value / total_asset_value
-        if ratio > 0.50:
-            print(f"[Portfolio Guard] {self.ticker} 매수 차단: 예상 비중 {ratio*100:.1f}%가 포트폴리오 한도(50.0%)를 초과합니다.")
+        if ratio > 0.35:
+            print(f"[Portfolio Guard] {self.ticker} 매수 차단: 예상 비중 {ratio*100:.1f}%가 포트폴리오 한도(35.0%)를 초과합니다.")
             
             # UI 로그 큐에 차단 이벤트 발송
             ui_event = {
@@ -781,7 +781,7 @@ class UITickerWorker(TickerWorker):
                     "ticker": self.ticker,
                     "signal": "HOLD",
                     "price": self.position.current_price,
-                    "risk_reason": f"PORTFOLIO_LIMIT_EXCEEDED ({ratio*100:.1f}% > 50%)",
+                    "risk_reason": f"PORTFOLIO_LIMIT_EXCEEDED ({ratio*100:.1f}% > 35%)",
                     "timestamp": int(time.time() * 1000)
                 }
             }
@@ -4586,7 +4586,7 @@ HTML_CONTENT = """
                             riskDesc = '💧💧 [리스크 관리자 물타기 집행] 평단 낮추기 추가 매수!';
                             logType = 'BUY';
                         } else if (riskReason.startsWith('PORTFOLIO_LIMIT_EXCEEDED')) {
-                            riskDesc = `🛡️🛡️ [자산 배분 차단] 한 종목당 최대 투자 한도(50%) 초과로 주문 차단! (${riskReason.split('(')[1] ? riskReason.split('(')[1].replace(')', '') : ''})`;
+                            riskDesc = `🛡️🛡️ [자산 배분 차단] 한 종목당 최대 투자 한도(35%) 초과로 주문 차단! (${riskReason.split('(')[1] ? riskReason.split('(')[1].replace(')', '') : ''})`;
                             logType = 'SYSTEM';
                         }
                         addLog(

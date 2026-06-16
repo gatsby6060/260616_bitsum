@@ -1,8 +1,8 @@
 {
     "BTC": {
-        "active": false,
+        "active": true,
         "current_regime": "BEAR",
-        "regime_override": "AUTO",
+        "regime_override": "BEAR",
         "selected_bear_strategy": "custom_bear",
         "long_term_ma_period": 4000,
         "tactics": {
@@ -120,10 +120,10 @@
         },
         "bull_duration_limit_days": 100,
         "bear_duration_limit_days": 350,
-        "regime_override_expires_at": null
+        "regime_override_expires_at": "2026-09-14T16:08:25.176880+09:00"
     },
     "ETH": {
-        "active": false,
+        "active": true,
         "current_regime": "BEAR",
         "regime_override": "AUTO",
         "selected_bear_strategy": "mixed",
@@ -266,7 +266,7 @@
     "XRP": {
         "active": true,
         "current_regime": "BEAR",
-        "regime_override": "AUTO",
+        "regime_override": "BEAR",
         "selected_bear_strategy": "custom_bear",
         "long_term_ma_period": 250,
         "tactics": {
@@ -382,7 +382,7 @@
                 }
             }
         },
-        "regime_override_expires_at": null
+        "regime_override_expires_at": "2026-09-14T16:25:07.325842+09:00"
     },
-    "initial_balance": 10000000
+    "initial_balance": 16000
 }
