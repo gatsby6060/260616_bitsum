@@ -298,7 +298,7 @@ def update_configs_with_optimized_params():
                         "lookback": s_data.get("lookback", 8),
                         "drop_pct": s_data.get("drop_pct", 0.05),
                         "volume_ratio": s_data.get("volume_ratio", 2.0),
-                        "take_profit": s_data.get("take_profit", 0.02),
+                        "trail_pct": s_data.get("trail_pct", 0.015),
                         "stop_loss": s_data.get("stop_loss", 0.015),
                         "time_cut": s_data.get("time_cut", 24)
                     }
@@ -460,7 +460,7 @@ class BithumbBollingerStrategy(BaseStrategy):
 
 class BithumbCustomBearStrategy(BaseStrategy):
     NAME = "CustomBear"
-    PARAMS = {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 24}
+    PARAMS = {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "trail_pct": 0.015, "stop_loss": 0.015, "time_cut": 24}
 
     def __init__(self, candle_manager, timeframe="30m", params=None):
         super().__init__(params)
@@ -468,6 +468,7 @@ class BithumbCustomBearStrategy(BaseStrategy):
         self.timeframe = timeframe
         self.entry_price = 0.0
         self.entry_time = None
+        self.peak_price = 0.0
 
     def generate_signal(self, data: dict) -> str:
         # candle_manager로부터 30분봉 캔들 조회
@@ -478,10 +479,12 @@ class BithumbCustomBearStrategy(BaseStrategy):
         closes = [c["close"] for c in candles]
         opens = [c["open"] for c in candles]
         volumes = [c["volume"] for c in candles]
+        highs = [c.get("high", c["close"]) for c in candles]
         
         qty = data.get("position_qty", 0.0)
         
         if qty == 0.0:
+            self.peak_price = 0.0
             # 매수 조건
             lookback = self.params["lookback"]
             window_closes = closes[-lookback-1:-1]
@@ -500,15 +503,25 @@ class BithumbCustomBearStrategy(BaseStrategy):
             if buy:
                 self.entry_price = curr_price
                 self.entry_time = datetime.now()
+                self.peak_price = curr_price
                 return "BUY"
         else:
-            # 매도 조건 (익절, 손절, 시간청산)
+            # 매도 조건 (트레일링 스톱, 손절, 시간청산)
             curr_price = closes[-1]
             if self.entry_price == 0.0:
                 self.entry_price = data.get("avg_price", curr_price)
                 
+            if self.peak_price == 0.0:
+                self.peak_price = max(self.entry_price, curr_price)
+                
+            # 실시간 최고가 업데이트
+            curr_high = highs[-1]
+            self.peak_price = max(self.peak_price, curr_high)
+                
             pnl = (curr_price - self.entry_price) / self.entry_price
-            exit_tp = pnl >= self.params["take_profit"]
+            drawdown = (self.peak_price - curr_price) / self.peak_price
+            
+            exit_ts = drawdown >= self.params["trail_pct"]
             exit_sl = pnl <= -self.params["stop_loss"]
             
             exit_tc = False
@@ -517,9 +530,10 @@ class BithumbCustomBearStrategy(BaseStrategy):
                 if elapsed_sec >= self.params["time_cut"] * 1800: # 30분봉 N개
                     exit_tc = True
             
-            if exit_tp or exit_sl or exit_tc:
+            if exit_ts or exit_sl or exit_tc:
                 self.entry_price = 0.0
                 self.entry_time = None
+                self.peak_price = 0.0
                 return "SELL"
                 
         return "HOLD"

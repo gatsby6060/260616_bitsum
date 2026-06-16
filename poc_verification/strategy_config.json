@@ -50,45 +50,27 @@
                 }
             },
             "BEAR": {
-                "logic": "OR",
+                "logic": "CUSTOM_BEAR",
                 "threshold": 0.5,
                 "strategies": [
                     {
-                        "name": "RSI",
+                        "name": "CustomBear",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "5m",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 14,
-                            "oversold": 35,
-                            "overbought": 75
-                        }
-                    },
-                    {
-                        "name": "Bollinger",
-                        "enabled": false,
-                        "weight": 1.0,
-                        "timeframe": "D",
-                        "params": {
-                            "period": 20,
-                            "std_dev": 2.0
-                        }
-                    },
-                    {
-                        "name": "MACD",
-                        "enabled": false,
-                        "weight": 1.0,
-                        "timeframe": "1h",
-                        "params": {
-                            "fast": 12,
-                            "slow": 26,
-                            "signal_period": 9
+                            "lookback": 8,
+                            "drop_pct": 0.08,
+                            "volume_ratio": 3.0,
+                            "trail_pct": 0.015,
+                            "stop_loss": 0.01,
+                            "time_cut": 24
                         }
                     }
                 ],
                 "risk": {
                     "type": "StopLoss",
-                    "stop_loss_pct": 0.02,
+                    "stop_loss_pct": 0.01,
                     "take_profit_pct": 0.03
                 }
             },
@@ -103,8 +85,8 @@
                         "timeframe": "5m",
                         "params": {
                             "period": 14,
-                            "oversold": 35,
-                            "overbought": 75
+                            "oversold": 20,
+                            "overbought": 65
                         }
                     },
                     {
@@ -157,9 +139,9 @@
                         "weight": 1.0,
                         "timeframe": "5m",
                         "params": {
-                            "period": 14,
-                            "oversold": 30,
-                            "overbought": 75
+                            "period": 10,
+                            "oversold": 25,
+                            "overbought": 65
                         }
                     },
                     {
@@ -191,46 +173,28 @@
                 }
             },
             "BEAR": {
-                "logic": "OR",
+                "logic": "CUSTOM_BEAR",
                 "threshold": 0.5,
                 "strategies": [
                     {
-                        "name": "RSI",
-                        "enabled": false,
-                        "weight": 1.0,
-                        "timeframe": "5m",
-                        "params": {
-                            "period": 14,
-                            "oversold": 30,
-                            "overbought": 70
-                        }
-                    },
-                    {
-                        "name": "Bollinger",
+                        "name": "CustomBear",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "D",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 10,
-                            "std_dev": 2.5
-                        }
-                    },
-                    {
-                        "name": "MACD",
-                        "enabled": true,
-                        "weight": 1.0,
-                        "timeframe": "1h",
-                        "params": {
-                            "fast": 12,
-                            "slow": 15,
-                            "signal_period": 9
+                            "lookback": 8,
+                            "drop_pct": 0.08,
+                            "volume_ratio": 3.0,
+                            "trail_pct": 0.015,
+                            "stop_loss": 0.01,
+                            "time_cut": 12
                         }
                     }
                 ],
                 "risk": {
                     "type": "StopLoss",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
+                    "stop_loss_pct": 0.01,
+                    "take_profit_pct": 0.015
                 }
             },
             "RANGE": {
@@ -243,8 +207,8 @@
                         "weight": 1.0,
                         "timeframe": "5m",
                         "params": {
-                            "period": 14,
-                            "oversold": 35,
+                            "period": 10,
+                            "oversold": 25,
                             "overbought": 75
                         }
                     },
@@ -298,8 +262,8 @@
                         "weight": 1.0,
                         "timeframe": "5m",
                         "params": {
-                            "period": 5,
-                            "oversold": 38,
+                            "period": 14,
+                            "oversold": 20,
                             "overbought": 65
                         }
                     },
@@ -309,8 +273,8 @@
                         "weight": 1.0,
                         "timeframe": "D",
                         "params": {
-                            "period": 5,
-                            "std_dev": 1.5
+                            "period": 20,
+                            "std_dev": 2.0
                         }
                     },
                     {
@@ -319,14 +283,16 @@
                         "weight": 1.0,
                         "timeframe": "1h",
                         "params": {
-                            "fast": 5,
-                            "slow": 10,
-                            "signal_period": 3
+                            "fast": 8,
+                            "slow": 15,
+                            "signal_period": 9
                         }
                     }
                 ],
                 "risk": {
-                    "type": "None"
+                    "type": "None",
+                    "stop_loss_pct": 0.02,
+                    "take_profit_pct": 0.03
                 }
             },
             "BEAR": {
@@ -339,19 +305,19 @@
                         "weight": 1.0,
                         "timeframe": "30m",
                         "params": {
-                            "lookback": 8,
-                            "drop_pct": 0.05,
-                            "volume_ratio": 2.0,
-                            "take_profit": 0.02,
-                            "stop_loss": 0.015,
-                            "time_cut": 24
+                            "lookback": 6,
+                            "drop_pct": 0.08,
+                            "volume_ratio": 3.0,
+                            "trail_pct": 0.015,
+                            "stop_loss": 0.02,
+                            "time_cut": 12
                         }
                     }
                 ],
                 "risk": {
                     "type": "StopLoss",
-                    "stop_loss_pct": 0.015,
-                    "take_profit_pct": 0.02
+                    "stop_loss_pct": 0.02,
+                    "take_profit_pct": 0.015
                 }
             },
             "RANGE": {
@@ -360,23 +326,23 @@
                 "strategies": [
                     {
                         "name": "RSI",
-                        "enabled": false,
+                        "enabled": true,
                         "weight": 1.0,
                         "timeframe": "5m",
                         "params": {
-                            "period": 5,
-                            "oversold": 35,
-                            "overbought": 65
+                            "period": 14,
+                            "oversold": 30,
+                            "overbought": 75
                         }
                     },
                     {
                         "name": "Bollinger",
-                        "enabled": true,
+                        "enabled": false,
                         "weight": 1.0,
                         "timeframe": "D",
                         "params": {
-                            "period": 5,
-                            "std_dev": 1.5
+                            "period": 20,
+                            "std_dev": 2.0
                         }
                     },
                     {
@@ -385,15 +351,15 @@
                         "weight": 1.0,
                         "timeframe": "1h",
                         "params": {
-                            "fast": 5,
-                            "slow": 10,
-                            "signal_period": 3
+                            "fast": 12,
+                            "slow": 26,
+                            "signal_period": 9
                         }
                     }
                 ],
                 "risk": {
                     "type": "StopLoss",
-                    "stop_loss_pct": 0.025,
+                    "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
                 }
             }

@@ -481,7 +481,7 @@ class StrategySimulator:
           "bb": bool, "bb_period": int, "bb_std": float,
           "macd": bool, "macd_fast": int, "macd_slow": int, "macd_signal": int,
           "custom_bear": bool, "lookback": int, "drop_pct": float, "volume_ratio": float,
-          "take_profit": float, "stop_loss": float, "time_cut": int,
+          "trail_pct": float, "stop_loss": float, "time_cut": int,
           "target_regime": "BULL"|"BEAR"|"RANGE"
         }
         """
@@ -491,15 +491,17 @@ class StrategySimulator:
         if len(regime_data) < 30:
             return {"sharpe": -999, "mdd": 1.0, "total_return": 0, "win_rate": 0, "trades": 0}
 
-        # 1. CustomBear 전용 분기 (하락장 롱테일 극복)
+        # 1. CustomBear 전용 분기 (하락장 롱테일 극복 + 트레일링 스톱 결합)
         if params.get("custom_bear", False):
             opens = [d["open"] for d in regime_data]
             closes = [d["close"] for d in regime_data]
+            highs = [d.get("high", d["close"]) for d in regime_data]
             volumes = [d["volume"] for d in regime_data]
 
             capital = 1_000_000.0
             position = 0.0
             entry_price = 0.0
+            peak_price = 0.0
             entry_idx = 0
             equity_curve = [capital]
             wins = 0
@@ -508,7 +510,7 @@ class StrategySimulator:
             lookback = params["lookback"]
             drop_pct = params["drop_pct"]
             volume_ratio = params["volume_ratio"]
-            take_profit = params["take_profit"]
+            trail_pct = params["trail_pct"]
             stop_loss = params["stop_loss"]
             time_cut = params["time_cut"]
 
@@ -537,23 +539,30 @@ class StrategySimulator:
                         cost = capital * FEE_RATE
                         position = (capital - cost) / price
                         entry_price = price
+                        peak_price = price
                         entry_idx = i
                         capital = 0.0
                         total_trades += 1
                 else:
-                    # 청산 조건 (익절, 손절, 시간청산)
+                    # peak_price 실시간 최고가 업데이트
+                    peak_price = max(peak_price, highs[i])
+                    
+                    # 청산 조건 (트레일링 스톱, 손절, 시간청산)
                     pnl = (price - entry_price) / entry_price
-                    exit_tp = pnl >= take_profit
+                    drawdown = (peak_price - price) / peak_price
+                    
+                    exit_ts = drawdown >= trail_pct
                     exit_sl = pnl <= -stop_loss
                     exit_tc = (i - entry_idx) >= time_cut
 
-                    if exit_tp or exit_sl or exit_tc:
+                    if exit_ts or exit_sl or exit_tc:
                         gross = position * price
                         fee = gross * FEE_RATE
                         capital = gross - fee
                         if price > entry_price:
                             wins += 1
                         position = 0.0
+                        peak_price = 0.0
                         equity_curve.append(capital)
 
             if position > 0:
@@ -768,14 +777,14 @@ class GridSearchOptimizer:
         lookbacks     = [6, 8, 12]
         drop_pcts     = [0.03, 0.05, 0.08]
         volume_ratios = [1.5, 2.0, 3.0]
-        take_profits  = [0.015, 0.02, 0.03]
+        trail_pcts    = [0.01, 0.015, 0.02]  # 트레일링 스톱 비율 (익절용)
         stop_losses   = [0.01, 0.015, 0.02]
         time_cuts     = [12, 24]
         
         for lb in lookbacks:
             for dp in drop_pcts:
                 for vr in volume_ratios:
-                    for tp in take_profits:
+                    for trail in trail_pcts:
                         for sl in stop_losses:
                             for tc in time_cuts:
                                 yield {
@@ -784,7 +793,7 @@ class GridSearchOptimizer:
                                     "lookback": lb,
                                     "drop_pct": dp,
                                     "volume_ratio": vr,
-                                    "take_profit": tp,
+                                    "trail_pct": trail,
                                     "stop_loss": sl,
                                     "time_cut": tc
                                 }
@@ -1031,7 +1040,7 @@ def _build_custom_bear_output(params: dict, result: dict, expected_profits: dict
                 "lookback":     params["lookback"],
                 "drop_pct":     params["drop_pct"],
                 "volume_ratio": params["volume_ratio"],
-                "take_profit":  params["take_profit"],
+                "trail_pct":    params["trail_pct"],
                 "stop_loss":    params["stop_loss"],
                 "time_cut":     params["time_cut"]
             }
@@ -1041,7 +1050,7 @@ def _build_custom_bear_output(params: dict, result: dict, expected_profits: dict
         "risk": {
             "type": "StopLoss",
             "stop_loss_pct": params["stop_loss"],
-            "take_profit_pct": params["take_profit"]
+            "take_profit_pct": 9.9
         },
         "backtest": {
             "total_return_pct": result["total_return"],
@@ -1077,7 +1086,7 @@ def _default_custom_bear_params(regime: str) -> dict:
                 "lookback": 8,
                 "drop_pct": 0.05,
                 "volume_ratio": 2.0,
-                "take_profit": 0.02,
+                "trail_pct": 0.015,
                 "stop_loss": 0.015,
                 "time_cut": 24
             }
@@ -1087,7 +1096,7 @@ def _default_custom_bear_params(regime: str) -> dict:
         "risk": {
             "type": "StopLoss",
             "stop_loss_pct": 0.015,
-            "take_profit_pct": 0.02
+            "take_profit_pct": 9.9
         },
         "backtest": {
             "total_return_pct": 0,
