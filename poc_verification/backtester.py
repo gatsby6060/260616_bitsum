@@ -423,44 +423,81 @@ class Indicators:
 # 4. 장세 라벨링 (RegimeDetector 동일 알고리즘)
 # ─────────────────────────────────────────────────────────────────────────────
 class RegimeLabeler:
-    FAIR_WINDOW = 4000   # 일봉 기준 약 4000일 이동평균 (8-포인트/일 기준: 4000 × 8 = 32000)
-    TREND_WINDOW = 30    # 30일 추세 (8-포인트/일 기준: 240)
-    BEAR_THRESHOLD = -0.15   # 공정가 대비 -15% 이하 → BEAR
-    BULL_THRESHOLD = 0.10    # 공정가 대비 +10% 이상 → BULL
-
     def label(self, data: list) -> list:
         """
         각 데이터 포인트에 regime (BULL/BEAR/RANGE) 태그 추가.
-        data: [{"ts":..., "close":...}, ...]
-        반환: 동일 리스트에 "regime" 키 추가
+        실시간 엔진의 MarketRegimeDetector와 100% 동일하게 일봉 기준 다중 선형 회귀 및 기울기 분석 동기화.
         """
         if not data:
             return data
 
-        closes = [d["close"] for d in data]
-        n = len(closes)
-        fw = min(self.FAIR_WINDOW * 8, n)   # 8포인트/일 환산
-        tw = min(self.TREND_WINDOW * 8, n)
+        # 1. 일별 종가 추출 (KST 일자 기준 마지막 캔들)
+        daily_map = {}
+        for row in data:
+            ts_str = row["ts"]
+            # ts_str 예시: "2017-09-01T01:00:00+09:00" -> "2017-09-01"
+            date_str = ts_str.split("T")[0]
+            daily_map[date_str] = row["close"]
 
+        sorted_dates = sorted(daily_map.keys())
+        daily_prices = [daily_map[d] for d in sorted_dates]
+        
+        # 2. 각 일자별로 MarketRegimeDetector와 동일한 로직 적용
+        daily_regimes = {}
+        n_daily = len(daily_prices)
+        long_term_period = 1500
+        
+        for idx, date_str in enumerate(sorted_dates):
+            avail = idx + 1
+            actual_period = min(long_term_period, avail)
+            
+            if actual_period < 300:
+                daily_regimes[date_str] = "RANGE"
+                continue
+                
+            p_long = daily_prices[idx - actual_period + 1 : idx + 1]
+            x_long = np.arange(actual_period)
+            slope_long, intercept_long = np.polyfit(x_long, p_long, 1)
+            
+            fair_value = slope_long * (actual_period - 1) + intercept_long
+            price_now = float(daily_prices[idx])
+            dev_pct = (price_now - fair_value) / fair_value * 100
+            
+            # 최근 90일, 30일 선형 회귀 기울기 계산 (% / 일)
+            p_90 = daily_prices[max(0, idx - 90 + 1) : idx + 1]
+            slope_90, _ = np.polyfit(np.arange(len(p_90)), p_90, 1) if len(p_90) >= 2 else (0.0, 0.0)
+            slope_rate_90 = (slope_90 / price_now) * 100
+            
+            p_30 = daily_prices[max(0, idx - 30 + 1) : idx + 1]
+            slope_30, _ = np.polyfit(np.arange(len(p_30)), p_30, 1) if len(p_30) >= 2 else (0.0, 0.0)
+            slope_rate_30 = (slope_30 / price_now) * 100
+            
+            is_bottoming = (slope_rate_90 >= -0.05) or (slope_rate_30 >= 0.0)
+            
+            # 종합 조건 판정 (MarketRegimeDetector와 100% 동일)
+            if dev_pct <= -25.0:
+                if slope_rate_30 >= 0.1:
+                    reg = "BULL"
+                elif is_bottoming:
+                    reg = "RANGE"
+                else:
+                    reg = "BEAR"
+            elif dev_pct >= -10.0 and slope_rate_90 > 0 and slope_rate_30 > 0:
+                reg = "BULL"
+            elif dev_pct < -10.0 and (slope_rate_90 < -0.05 or slope_rate_30 < -0.1):
+                reg = "BEAR"
+            else:
+                reg = "RANGE"
+                
+            daily_regimes[date_str] = reg
+
+        # 3. 30분봉 데이터에 일자별 장세 역매핑
         labeled = []
-        for i, row in enumerate(data):
-            fair = sum(closes[max(0, i - fw): i + 1]) / min(i + 1, fw)
-            dev = (closes[i] - fair) / fair if fair > 0 else 0
-
-            if i >= tw:
-                slope = (closes[i] - closes[i - tw]) / closes[i - tw] if closes[i - tw] > 0 else 0
-            else:
-                slope = 0
-
-            if dev <= self.BEAR_THRESHOLD or slope < -0.005:
-                regime = "BEAR"
-            elif dev >= self.BULL_THRESHOLD and slope > 0.002:
-                regime = "BULL"
-            else:
-                regime = "RANGE"
-
-            labeled.append({**row, "regime": regime})
-
+        for row in data:
+            date_str = row["ts"].split("T")[0]
+            reg = daily_regimes.get(date_str, "RANGE")
+            labeled.append({**row, "regime": reg})
+            
         return labeled
 
 
