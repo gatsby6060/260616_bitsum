@@ -38,11 +38,12 @@ class MarketRegimeDetector:
         if n < actual_period:
             actual_period = n
             
-        # 데이터가 최소 300일 미만이면 분석 대기
-        if actual_period < 300:
+        # 데이터가 최소 분석 기간 미만이면 분석 대기
+        min_required = min(300, self.long_term_ma_period)
+        if actual_period < min_required:
             return {
                 "regime": "RANGE",
-                "reason": f"일봉 데이터 부족 ({n}/300). 분석 대기 중.",
+                "reason": f"일봉 데이터 부족 ({n}/{min_required}). 분석 대기 중.",
                 "metrics": {
                     "days_since_peak": 0,
                     "deviation_pct": 0.0,

@@ -445,13 +445,14 @@ class RegimeLabeler:
         # 2. 각 일자별로 MarketRegimeDetector와 동일한 로직 적용
         daily_regimes = {}
         n_daily = len(daily_prices)
-        long_term_period = 1500
+        long_term_period = 210
         
         for idx, date_str in enumerate(sorted_dates):
             avail = idx + 1
             actual_period = min(long_term_period, avail)
             
-            if actual_period < 300:
+            min_required = min(300, long_term_period)
+            if actual_period < min_required:
                 daily_regimes[date_str] = "RANGE"
                 continue
                 

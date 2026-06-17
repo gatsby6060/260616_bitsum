@@ -111,7 +111,7 @@ active_ticker_configs = {
         "current_regime": "BEAR",
         "regime_override": "AUTO",
         "selected_bear_strategy": "custom_bear",
-        "long_term_ma_period": 250,
+        "long_term_ma_period": 210,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -148,7 +148,7 @@ active_ticker_configs = {
         "current_regime": "BEAR",
         "regime_override": "AUTO",
         "selected_bear_strategy": "custom_bear",
-        "long_term_ma_period": 250,
+        "long_term_ma_period": 210,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -185,7 +185,7 @@ active_ticker_configs = {
         "current_regime": "BEAR",
         "regime_override": "AUTO",
         "selected_bear_strategy": "custom_bear",
-        "long_term_ma_period": 250,
+        "long_term_ma_period": 210,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -1448,7 +1448,7 @@ class MultiTickerUIEngine(TradingEngine):
                 "active": True,
                 "current_regime": "BEAR",
                 "regime_override": "AUTO",
-                "long_term_ma_period": 250,
+                "long_term_ma_period": 210,
                 "tactics": {
                     "BULL": {
                         "logic": "OR",
