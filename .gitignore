@@ -140,3 +140,8 @@ cython_debug/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Project-specific caches and scratch
+poc_verification/historical_data_cache.json
+poc_verification/historical_data_cache.json.bak
+scratch/

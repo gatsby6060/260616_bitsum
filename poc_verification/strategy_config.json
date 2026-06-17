@@ -18,7 +18,7 @@
                         "params": {
                             "period": 14,
                             "oversold": 20,
-                            "overbought": 70
+                            "overbought": 60
                         }
                     },
                     {
@@ -61,7 +61,7 @@
                         "params": {
                             "lookback": 6,
                             "drop_pct": 0.08,
-                            "volume_ratio": 3.0,
+                            "volume_ratio": 1.5,
                             "trail_pct": 0.02,
                             "stop_loss": 0.01,
                             "time_cut": 12
@@ -86,7 +86,7 @@
                         "params": {
                             "period": 14,
                             "oversold": 20,
-                            "overbought": 65
+                            "overbought": 70
                         }
                     },
                     {
@@ -139,18 +139,18 @@
                         "weight": 1.0,
                         "timeframe": "5m",
                         "params": {
-                            "period": 10,
-                            "oversold": 25,
+                            "period": 5,
+                            "oversold": 20,
                             "overbought": 65
                         }
                     },
                     {
                         "name": "Bollinger",
-                        "enabled": false,
+                        "enabled": true,
                         "weight": 1.0,
                         "timeframe": "D",
                         "params": {
-                            "period": 20,
+                            "period": 10,
                             "std_dev": 2.0
                         }
                     },
@@ -178,23 +178,23 @@
                 "strategies": [
                     {
                         "name": "RSI",
-                        "enabled": true,
+                        "enabled": false,
                         "weight": 1.0,
                         "timeframe": "5m",
                         "params": {
                             "period": 14,
-                            "oversold": 25,
-                            "overbought": 75
+                            "oversold": 30,
+                            "overbought": 70
                         }
                     },
                     {
                         "name": "Bollinger",
-                        "enabled": false,
+                        "enabled": true,
                         "weight": 1.0,
                         "timeframe": "D",
                         "params": {
-                            "period": 20,
-                            "std_dev": 2.0
+                            "period": 10,
+                            "std_dev": 1.5
                         }
                     },
                     {
@@ -221,13 +221,13 @@
                 "strategies": [
                     {
                         "name": "RSI",
-                        "enabled": true,
+                        "enabled": false,
                         "weight": 1.0,
                         "timeframe": "5m",
                         "params": {
-                            "period": 10,
-                            "oversold": 25,
-                            "overbought": 75
+                            "period": 14,
+                            "oversold": 30,
+                            "overbought": 70
                         }
                     },
                     {
@@ -242,7 +242,7 @@
                     },
                     {
                         "name": "MACD",
-                        "enabled": false,
+                        "enabled": true,
                         "weight": 1.0,
                         "timeframe": "1h",
                         "params": {
@@ -282,7 +282,7 @@
                         "params": {
                             "period": 14,
                             "oversold": 20,
-                            "overbought": 65
+                            "overbought": 60
                         }
                     },
                     {
@@ -297,12 +297,12 @@
                     },
                     {
                         "name": "MACD",
-                        "enabled": true,
+                        "enabled": false,
                         "weight": 1.0,
                         "timeframe": "1h",
                         "params": {
-                            "fast": 8,
-                            "slow": 15,
+                            "fast": 12,
+                            "slow": 26,
                             "signal_period": 9
                         }
                     }
@@ -323,18 +323,18 @@
                         "weight": 1.0,
                         "timeframe": "30m",
                         "params": {
-                            "lookback": 6,
+                            "lookback": 4,
                             "drop_pct": 0.08,
-                            "volume_ratio": 3.0,
-                            "trail_pct": 0.01,
-                            "stop_loss": 0.01,
-                            "time_cut": 12
+                            "volume_ratio": 1.5,
+                            "trail_pct": 0.04,
+                            "stop_loss": 0.04,
+                            "time_cut": 36
                         }
                     }
                 ],
                 "risk": {
                     "type": "StopLoss",
-                    "stop_loss_pct": 0.01,
+                    "stop_loss_pct": 0.04,
                     "take_profit_pct": 9.9
                 }
             },
@@ -349,8 +349,8 @@
                         "timeframe": "5m",
                         "params": {
                             "period": 14,
-                            "oversold": 30,
-                            "overbought": 75
+                            "oversold": 20,
+                            "overbought": 65
                         }
                     },
                     {

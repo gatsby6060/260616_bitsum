@@ -1,6 +1,6 @@
 {
-  "last_updated": "2026-06-16T15:17:51.434271+09:00",
-  "source": "빗썸 30분봉 (8포인트/일, KST ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00'])",
+  "last_updated": "2026-06-17T02:00:04.703156+09:00",
+  "source": "빗썸 30분봉 (12포인트/일, KST ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', '12:00', '14:00', '16:00', '18:00', '20:00', '22:00'])",
   "fee_assumption": "편도 0.09% (수수료 0.04% + 슬리피지 0.05%)",
   "optimization_criteria": "Sharpe Ratio 최대 + MDD <= 50%",
   "KRW-BTC": {
@@ -11,7 +11,7 @@
           "weight": 1.0,
           "period": 14,
           "oversold": 20,
-          "overbought": 70
+          "overbought": 60
         },
         "Bollinger": {
           "enabled": false,
@@ -35,17 +35,17 @@
         "take_profit_pct": 0.03
       },
       "backtest": {
-        "total_return_pct": 179.35,
-        "sharpe_ratio": 0.5415,
-        "mdd_pct": 17.23,
-        "win_rate_pct": 78.95,
-        "trade_count": 19
+        "total_return_pct": 22.5,
+        "sharpe_ratio": 0.1512,
+        "mdd_pct": 47.15,
+        "win_rate_pct": 77.27,
+        "trade_count": 22
       },
       "period_expected_profits": {
-        "1w": 0.22,
-        "1m": 0.96,
-        "3m": 2.92,
-        "6m": 5.93
+        "1w": 0.05,
+        "1m": 0.21,
+        "3m": 0.62,
+        "6m": 1.25
       }
     },
     "BEAR": {
@@ -55,8 +55,8 @@
             "enabled": true,
             "weight": 1.0,
             "period": 14,
-            "oversold": 20,
-            "overbought": 65
+            "oversold": 30,
+            "overbought": 75
           },
           "Bollinger": {
             "enabled": false,
@@ -80,17 +80,17 @@
           "take_profit_pct": 0.03
         },
         "backtest": {
-          "total_return_pct": 33.07,
-          "sharpe_ratio": 0.1389,
-          "mdd_pct": 34.69,
-          "win_rate_pct": 66.67,
-          "trade_count": 30
+          "total_return_pct": 142.29,
+          "sharpe_ratio": 0.191,
+          "mdd_pct": 48.09,
+          "win_rate_pct": 50.0,
+          "trade_count": 20
         },
         "period_expected_profits": {
-          "1w": 0.06,
-          "1m": 0.26,
-          "3m": 0.79,
-          "6m": 1.59
+          "1w": 0.21,
+          "1m": 0.91,
+          "3m": 2.76,
+          "6m": 5.6
         }
       },
       "custom_bear_strategy": {
@@ -99,7 +99,7 @@
             "enabled": true,
             "lookback": 6,
             "drop_pct": 0.08,
-            "volume_ratio": 3.0,
+            "volume_ratio": 1.5,
             "trail_pct": 0.02,
             "stop_loss": 0.01,
             "time_cut": 12
@@ -113,485 +113,19 @@
           "take_profit_pct": 9.9
         },
         "backtest": {
-          "total_return_pct": 9.07,
-          "sharpe_ratio": 0.1995,
-          "mdd_pct": 7.12,
-          "win_rate_pct": 33.33,
-          "trade_count": 9
-        },
-        "period_expected_profits": {
-          "1w": 0.02,
-          "1m": 0.08,
-          "3m": 0.24,
-          "6m": 0.48
-        }
-      },
-      "strategies": {
-        "RSI": {
-          "enabled": true,
-          "weight": 1.0,
-          "period": 14,
-          "oversold": 20,
-          "overbought": 65
-        },
-        "Bollinger": {
-          "enabled": false,
-          "weight": 1.0,
-          "period": 20,
-          "std_dev": 2.0
-        },
-        "MACD": {
-          "enabled": false,
-          "weight": 1.0,
-          "fast": 12,
-          "slow": 26,
-          "signal_period": 9
-        }
-      },
-      "logic": "OR",
-      "threshold": 0.5,
-      "risk": {
-        "type": "StopLoss",
-        "stop_loss_pct": 0.02,
-        "take_profit_pct": 0.03
-      },
-      "backtest": {
-        "total_return_pct": 33.07,
-        "sharpe_ratio": 0.1389,
-        "mdd_pct": 34.69,
-        "win_rate_pct": 66.67,
-        "trade_count": 30
-      },
-      "period_expected_profits": {
-        "1w": 0.06,
-        "1m": 0.26,
-        "3m": 0.79,
-        "6m": 1.59
-      }
-    },
-    "RANGE": {
-      "strategies": {
-        "RSI": {
-          "enabled": true,
-          "weight": 1.0,
-          "period": 14,
-          "oversold": 20,
-          "overbought": 65
-        },
-        "Bollinger": {
-          "enabled": false,
-          "weight": 1.0,
-          "period": 20,
-          "std_dev": 2.0
-        },
-        "MACD": {
-          "enabled": false,
-          "weight": 1.0,
-          "fast": 12,
-          "slow": 26,
-          "signal_period": 9
-        }
-      },
-      "logic": "OR",
-      "threshold": 0.5,
-      "risk": {
-        "type": "StopLoss",
-        "stop_loss_pct": 0.02,
-        "take_profit_pct": 0.03
-      },
-      "backtest": {
-        "total_return_pct": 53.9,
-        "sharpe_ratio": 1.9282,
-        "mdd_pct": 0.0,
-        "win_rate_pct": 80.0,
-        "trade_count": 5
-      },
-      "period_expected_profits": {
-        "1w": 0.09,
-        "1m": 0.4,
-        "3m": 1.2,
-        "6m": 2.41
-      }
-    }
-  },
-  "KRW-ETH": {
-    "BULL": {
-      "strategies": {
-        "RSI": {
-          "enabled": true,
-          "weight": 1.0,
-          "period": 10,
-          "oversold": 25,
-          "overbought": 65
-        },
-        "Bollinger": {
-          "enabled": false,
-          "weight": 1.0,
-          "period": 20,
-          "std_dev": 2.0
-        },
-        "MACD": {
-          "enabled": false,
-          "weight": 1.0,
-          "fast": 12,
-          "slow": 26,
-          "signal_period": 9
-        }
-      },
-      "logic": "OR",
-      "threshold": 0.5,
-      "risk": {
-        "type": "None",
-        "stop_loss_pct": 0.02,
-        "take_profit_pct": 0.03
-      },
-      "backtest": {
-        "total_return_pct": 214.76,
-        "sharpe_ratio": 0.2153,
-        "mdd_pct": 45.04,
-        "win_rate_pct": 75.38,
-        "trade_count": 65
-      },
-      "period_expected_profits": {
-        "1w": 0.25,
-        "1m": 1.08,
-        "3m": 3.28,
-        "6m": 6.66
-      }
-    },
-    "BEAR": {
-      "mixed_strategy": {
-        "strategies": {
-          "RSI": {
-            "enabled": true,
-            "weight": 1.0,
-            "period": 14,
-            "oversold": 25,
-            "overbought": 75
-          },
-          "Bollinger": {
-            "enabled": false,
-            "weight": 1.0,
-            "period": 20,
-            "std_dev": 2.0
-          },
-          "MACD": {
-            "enabled": false,
-            "weight": 1.0,
-            "fast": 12,
-            "slow": 26,
-            "signal_period": 9
-          }
-        },
-        "logic": "OR",
-        "threshold": 0.5,
-        "risk": {
-          "type": "StopLoss",
-          "stop_loss_pct": 0.02,
-          "take_profit_pct": 0.03
-        },
-        "backtest": {
-          "total_return_pct": -61.82,
-          "sharpe_ratio": 0.098,
-          "mdd_pct": 94.3,
-          "win_rate_pct": 54.76,
-          "trade_count": 42
-        },
-        "period_expected_profits": {
-          "1w": -0.21,
-          "1m": -0.88,
-          "3m": -2.61,
-          "6m": -5.15
-        }
-      },
-      "custom_bear_strategy": {
-        "strategies": {
-          "CustomBear": {
-            "enabled": true,
-            "lookback": 8,
-            "drop_pct": 0.08,
-            "volume_ratio": 3.0,
-            "trail_pct": 0.01,
-            "stop_loss": 0.01,
-            "time_cut": 12
-          }
-        },
-        "logic": "CUSTOM_BEAR",
-        "threshold": 0.5,
-        "risk": {
-          "type": "StopLoss",
-          "stop_loss_pct": 0.01,
-          "take_profit_pct": 9.9
-        },
-        "backtest": {
-          "total_return_pct": 17.81,
-          "sharpe_ratio": 0.147,
-          "mdd_pct": 13.0,
-          "win_rate_pct": 44.0,
-          "trade_count": 25
+          "total_return_pct": 20.57,
+          "sharpe_ratio": 0.4218,
+          "mdd_pct": 3.86,
+          "win_rate_pct": 50.0,
+          "trade_count": 8
         },
         "period_expected_profits": {
           "1w": 0.04,
-          "1m": 0.15,
-          "3m": 0.45,
-          "6m": 0.9
+          "1m": 0.19,
+          "3m": 0.58,
+          "6m": 1.16
         }
       },
-      "strategies": {
-        "RSI": {
-          "enabled": true,
-          "weight": 1.0,
-          "period": 14,
-          "oversold": 25,
-          "overbought": 75
-        },
-        "Bollinger": {
-          "enabled": false,
-          "weight": 1.0,
-          "period": 20,
-          "std_dev": 2.0
-        },
-        "MACD": {
-          "enabled": false,
-          "weight": 1.0,
-          "fast": 12,
-          "slow": 26,
-          "signal_period": 9
-        }
-      },
-      "logic": "OR",
-      "threshold": 0.5,
-      "risk": {
-        "type": "StopLoss",
-        "stop_loss_pct": 0.02,
-        "take_profit_pct": 0.03
-      },
-      "backtest": {
-        "total_return_pct": -61.82,
-        "sharpe_ratio": 0.098,
-        "mdd_pct": 94.3,
-        "win_rate_pct": 54.76,
-        "trade_count": 42
-      },
-      "period_expected_profits": {
-        "1w": -0.21,
-        "1m": -0.88,
-        "3m": -2.61,
-        "6m": -5.15
-      }
-    },
-    "RANGE": {
-      "strategies": {
-        "RSI": {
-          "enabled": true,
-          "weight": 1.0,
-          "period": 10,
-          "oversold": 25,
-          "overbought": 75
-        },
-        "Bollinger": {
-          "enabled": false,
-          "weight": 1.0,
-          "period": 20,
-          "std_dev": 2.0
-        },
-        "MACD": {
-          "enabled": false,
-          "weight": 1.0,
-          "fast": 12,
-          "slow": 26,
-          "signal_period": 9
-        }
-      },
-      "logic": "OR",
-      "threshold": 0.5,
-      "risk": {
-        "type": "StopLoss",
-        "stop_loss_pct": 0.02,
-        "take_profit_pct": 0.03
-      },
-      "backtest": {
-        "total_return_pct": 1107.94,
-        "sharpe_ratio": 1.049,
-        "mdd_pct": 3.14,
-        "win_rate_pct": 66.67,
-        "trade_count": 6
-      },
-      "period_expected_profits": {
-        "1w": 0.54,
-        "1m": 2.34,
-        "3m": 7.2,
-        "6m": 14.92
-      }
-    }
-  },
-  "KRW-XRP": {
-    "BULL": {
-      "strategies": {
-        "RSI": {
-          "enabled": true,
-          "weight": 1.0,
-          "period": 14,
-          "oversold": 20,
-          "overbought": 65
-        },
-        "Bollinger": {
-          "enabled": false,
-          "weight": 1.0,
-          "period": 20,
-          "std_dev": 2.0
-        },
-        "MACD": {
-          "enabled": true,
-          "weight": 1.0,
-          "fast": 8,
-          "slow": 15,
-          "signal_period": 9
-        }
-      },
-      "logic": "OR",
-      "threshold": 0.5,
-      "risk": {
-        "type": "None",
-        "stop_loss_pct": 0.02,
-        "take_profit_pct": 0.03
-      },
-      "backtest": {
-        "total_return_pct": 1206.53,
-        "sharpe_ratio": 0.1551,
-        "mdd_pct": 40.87,
-        "win_rate_pct": 43.04,
-        "trade_count": 309
-      },
-      "period_expected_profits": {
-        "1w": 0.57,
-        "1m": 2.45,
-        "3m": 7.52,
-        "6m": 15.62
-      }
-    },
-    "BEAR": {
-      "mixed_strategy": {
-        "strategies": {
-          "RSI": {
-            "enabled": true,
-            "weight": 1.0,
-            "period": 14,
-            "oversold": 25,
-            "overbought": 75
-          },
-          "Bollinger": {
-            "enabled": false,
-            "weight": 1.0,
-            "period": 20,
-            "std_dev": 2.0
-          },
-          "MACD": {
-            "enabled": false,
-            "weight": 1.0,
-            "fast": 12,
-            "slow": 26,
-            "signal_period": 9
-          }
-        },
-        "logic": "OR",
-        "threshold": 0.5,
-        "risk": {
-          "type": "StopLoss",
-          "stop_loss_pct": 0.02,
-          "take_profit_pct": 0.03
-        },
-        "backtest": {
-          "total_return_pct": 301.73,
-          "sharpe_ratio": 0.1749,
-          "mdd_pct": 88.38,
-          "win_rate_pct": 53.19,
-          "trade_count": 47
-        },
-        "period_expected_profits": {
-          "1w": 0.3,
-          "1m": 1.28,
-          "3m": 3.9,
-          "6m": 7.94
-        }
-      },
-      "custom_bear_strategy": {
-        "strategies": {
-          "CustomBear": {
-            "enabled": true,
-            "lookback": 6,
-            "drop_pct": 0.08,
-            "volume_ratio": 3.0,
-            "trail_pct": 0.01,
-            "stop_loss": 0.01,
-            "time_cut": 12
-          }
-        },
-        "logic": "CUSTOM_BEAR",
-        "threshold": 0.5,
-        "risk": {
-          "type": "StopLoss",
-          "stop_loss_pct": 0.01,
-          "take_profit_pct": 9.9
-        },
-        "backtest": {
-          "total_return_pct": 10.97,
-          "sharpe_ratio": 0.3441,
-          "mdd_pct": 3.8,
-          "win_rate_pct": 56.25,
-          "trade_count": 16
-        },
-        "period_expected_profits": {
-          "1w": 0.02,
-          "1m": 0.1,
-          "3m": 0.29,
-          "6m": 0.57
-        }
-      },
-      "strategies": {
-        "RSI": {
-          "enabled": true,
-          "weight": 1.0,
-          "period": 14,
-          "oversold": 25,
-          "overbought": 75
-        },
-        "Bollinger": {
-          "enabled": false,
-          "weight": 1.0,
-          "period": 20,
-          "std_dev": 2.0
-        },
-        "MACD": {
-          "enabled": false,
-          "weight": 1.0,
-          "fast": 12,
-          "slow": 26,
-          "signal_period": 9
-        }
-      },
-      "logic": "OR",
-      "threshold": 0.5,
-      "risk": {
-        "type": "StopLoss",
-        "stop_loss_pct": 0.02,
-        "take_profit_pct": 0.03
-      },
-      "backtest": {
-        "total_return_pct": 301.73,
-        "sharpe_ratio": 0.1749,
-        "mdd_pct": 88.38,
-        "win_rate_pct": 53.19,
-        "trade_count": 47
-      },
-      "period_expected_profits": {
-        "1w": 0.3,
-        "1m": 1.28,
-        "3m": 3.9,
-        "6m": 7.94
-      }
-    },
-    "RANGE": {
       "strategies": {
         "RSI": {
           "enabled": true,
@@ -622,17 +156,483 @@
         "take_profit_pct": 0.03
       },
       "backtest": {
-        "total_return_pct": 1168.3,
-        "sharpe_ratio": 0.5276,
-        "mdd_pct": 30.49,
-        "win_rate_pct": 57.14,
-        "trade_count": 7
+        "total_return_pct": 142.29,
+        "sharpe_ratio": 0.191,
+        "mdd_pct": 48.09,
+        "win_rate_pct": 50.0,
+        "trade_count": 20
       },
       "period_expected_profits": {
-        "1w": 0.55,
-        "1m": 2.37,
-        "3m": 7.28,
-        "6m": 15.08
+        "1w": 0.21,
+        "1m": 0.91,
+        "3m": 2.76,
+        "6m": 5.6
+      }
+    },
+    "RANGE": {
+      "strategies": {
+        "RSI": {
+          "enabled": true,
+          "weight": 1.0,
+          "period": 14,
+          "oversold": 20,
+          "overbought": 70
+        },
+        "Bollinger": {
+          "enabled": false,
+          "weight": 1.0,
+          "period": 20,
+          "std_dev": 2.0
+        },
+        "MACD": {
+          "enabled": false,
+          "weight": 1.0,
+          "fast": 12,
+          "slow": 26,
+          "signal_period": 9
+        }
+      },
+      "logic": "OR",
+      "threshold": 0.5,
+      "risk": {
+        "type": "StopLoss",
+        "stop_loss_pct": 0.02,
+        "take_profit_pct": 0.03
+      },
+      "backtest": {
+        "total_return_pct": 151.56,
+        "sharpe_ratio": 0.2715,
+        "mdd_pct": 33.09,
+        "win_rate_pct": 70.45,
+        "trade_count": 44
+      },
+      "period_expected_profits": {
+        "1w": 0.2,
+        "1m": 0.85,
+        "3m": 2.56,
+        "6m": 5.18
+      }
+    }
+  },
+  "KRW-ETH": {
+    "BULL": {
+      "strategies": {
+        "RSI": {
+          "enabled": true,
+          "weight": 1.0,
+          "period": 5,
+          "oversold": 20,
+          "overbought": 65
+        },
+        "Bollinger": {
+          "enabled": true,
+          "weight": 1.0,
+          "period": 10,
+          "std_dev": 2.0
+        },
+        "MACD": {
+          "enabled": false,
+          "weight": 1.0,
+          "fast": 12,
+          "slow": 26,
+          "signal_period": 9
+        }
+      },
+      "logic": "OR",
+      "threshold": 0.5,
+      "risk": {
+        "type": "None",
+        "stop_loss_pct": 0.02,
+        "take_profit_pct": 0.03
+      },
+      "backtest": {
+        "total_return_pct": 41.9,
+        "sharpe_ratio": 0.0536,
+        "mdd_pct": 43.39,
+        "win_rate_pct": 68.01,
+        "trade_count": 272
+      },
+      "period_expected_profits": {
+        "1w": 0.08,
+        "1m": 0.36,
+        "3m": 1.08,
+        "6m": 2.17
+      }
+    },
+    "BEAR": {
+      "mixed_strategy": {
+        "strategies": {
+          "RSI": {
+            "enabled": false,
+            "weight": 1.0,
+            "period": 14,
+            "oversold": 30,
+            "overbought": 70
+          },
+          "Bollinger": {
+            "enabled": true,
+            "weight": 1.0,
+            "period": 10,
+            "std_dev": 1.5
+          },
+          "MACD": {
+            "enabled": false,
+            "weight": 1.0,
+            "fast": 12,
+            "slow": 26,
+            "signal_period": 9
+          }
+        },
+        "logic": "OR",
+        "threshold": 0.5,
+        "risk": {
+          "type": "StopLoss",
+          "stop_loss_pct": 0.02,
+          "take_profit_pct": 0.03
+        },
+        "backtest": {
+          "total_return_pct": 174.24,
+          "sharpe_ratio": 0.0703,
+          "mdd_pct": 85.66,
+          "win_rate_pct": 62.72,
+          "trade_count": 169
+        },
+        "period_expected_profits": {
+          "1w": 0.24,
+          "1m": 1.02,
+          "3m": 3.09,
+          "6m": 6.27
+        }
+      },
+      "custom_bear_strategy": {
+        "strategies": {
+          "CustomBear": {
+            "enabled": true,
+            "lookback": 4,
+            "drop_pct": 0.01,
+            "volume_ratio": 3.0,
+            "trail_pct": 0.05,
+            "stop_loss": 0.05,
+            "time_cut": 36
+          }
+        },
+        "logic": "CUSTOM_BEAR",
+        "threshold": 0.5,
+        "risk": {
+          "type": "StopLoss",
+          "stop_loss_pct": 0.05,
+          "take_profit_pct": 9.9
+        },
+        "backtest": {
+          "total_return_pct": 1003.38,
+          "sharpe_ratio": 0.2018,
+          "mdd_pct": 35.93,
+          "win_rate_pct": 30.43,
+          "trade_count": 23
+        },
+        "period_expected_profits": {
+          "1w": 0.56,
+          "1m": 2.44,
+          "3m": 7.5,
+          "6m": 15.57
+        }
+      },
+      "strategies": {
+        "RSI": {
+          "enabled": false,
+          "weight": 1.0,
+          "period": 14,
+          "oversold": 30,
+          "overbought": 70
+        },
+        "Bollinger": {
+          "enabled": true,
+          "weight": 1.0,
+          "period": 10,
+          "std_dev": 1.5
+        },
+        "MACD": {
+          "enabled": false,
+          "weight": 1.0,
+          "fast": 12,
+          "slow": 26,
+          "signal_period": 9
+        }
+      },
+      "logic": "OR",
+      "threshold": 0.5,
+      "risk": {
+        "type": "StopLoss",
+        "stop_loss_pct": 0.02,
+        "take_profit_pct": 0.03
+      },
+      "backtest": {
+        "total_return_pct": 174.24,
+        "sharpe_ratio": 0.0703,
+        "mdd_pct": 85.66,
+        "win_rate_pct": 62.72,
+        "trade_count": 169
+      },
+      "period_expected_profits": {
+        "1w": 0.24,
+        "1m": 1.02,
+        "3m": 3.09,
+        "6m": 6.27
+      }
+    },
+    "RANGE": {
+      "strategies": {
+        "RSI": {
+          "enabled": false,
+          "weight": 1.0,
+          "period": 14,
+          "oversold": 30,
+          "overbought": 70
+        },
+        "Bollinger": {
+          "enabled": false,
+          "weight": 1.0,
+          "period": 20,
+          "std_dev": 2.0
+        },
+        "MACD": {
+          "enabled": true,
+          "weight": 1.0,
+          "fast": 12,
+          "slow": 26,
+          "signal_period": 9
+        }
+      },
+      "logic": "OR",
+      "threshold": 0.5,
+      "risk": {
+        "type": "StopLoss",
+        "stop_loss_pct": 0.02,
+        "take_profit_pct": 0.03
+      },
+      "backtest": {
+        "total_return_pct": 343.21,
+        "sharpe_ratio": 0.0604,
+        "mdd_pct": 62.33,
+        "win_rate_pct": 37.04,
+        "trade_count": 710
+      },
+      "period_expected_profits": {
+        "1w": 0.32,
+        "1m": 1.37,
+        "3m": 4.18,
+        "6m": 8.53
+      }
+    }
+  },
+  "KRW-XRP": {
+    "BULL": {
+      "strategies": {
+        "RSI": {
+          "enabled": true,
+          "weight": 1.0,
+          "period": 14,
+          "oversold": 20,
+          "overbought": 60
+        },
+        "Bollinger": {
+          "enabled": false,
+          "weight": 1.0,
+          "period": 20,
+          "std_dev": 2.0
+        },
+        "MACD": {
+          "enabled": false,
+          "weight": 1.0,
+          "fast": 12,
+          "slow": 26,
+          "signal_period": 9
+        }
+      },
+      "logic": "OR",
+      "threshold": 0.5,
+      "risk": {
+        "type": "None",
+        "stop_loss_pct": 0.02,
+        "take_profit_pct": 0.03
+      },
+      "backtest": {
+        "total_return_pct": 551.08,
+        "sharpe_ratio": 0.6745,
+        "mdd_pct": 7.59,
+        "win_rate_pct": 78.26,
+        "trade_count": 23
+      },
+      "period_expected_profits": {
+        "1w": 0.45,
+        "1m": 1.93,
+        "3m": 5.91,
+        "6m": 12.16
+      }
+    },
+    "BEAR": {
+      "mixed_strategy": {
+        "strategies": {
+          "RSI": {
+            "enabled": true,
+            "weight": 1.0,
+            "period": 14,
+            "oversold": 20,
+            "overbought": 75
+          },
+          "Bollinger": {
+            "enabled": false,
+            "weight": 1.0,
+            "period": 20,
+            "std_dev": 2.0
+          },
+          "MACD": {
+            "enabled": false,
+            "weight": 1.0,
+            "fast": 12,
+            "slow": 26,
+            "signal_period": 9
+          }
+        },
+        "logic": "OR",
+        "threshold": 0.5,
+        "risk": {
+          "type": "StopLoss",
+          "stop_loss_pct": 0.02,
+          "take_profit_pct": 0.03
+        },
+        "backtest": {
+          "total_return_pct": 232.52,
+          "sharpe_ratio": 0.2498,
+          "mdd_pct": 24.67,
+          "win_rate_pct": 60.0,
+          "trade_count": 15
+        },
+        "period_expected_profits": {
+          "1w": 0.28,
+          "1m": 1.21,
+          "3m": 3.69,
+          "6m": 7.51
+        }
+      },
+      "custom_bear_strategy": {
+        "strategies": {
+          "CustomBear": {
+            "enabled": true,
+            "lookback": 4,
+            "drop_pct": 0.08,
+            "volume_ratio": 1.5,
+            "trail_pct": 0.04,
+            "stop_loss": 0.04,
+            "time_cut": 36
+          }
+        },
+        "logic": "CUSTOM_BEAR",
+        "threshold": 0.5,
+        "risk": {
+          "type": "StopLoss",
+          "stop_loss_pct": 0.04,
+          "take_profit_pct": 9.9
+        },
+        "backtest": {
+          "total_return_pct": 320.61,
+          "sharpe_ratio": 0.424,
+          "mdd_pct": 5.99,
+          "win_rate_pct": 66.67,
+          "trade_count": 6
+        },
+        "period_expected_profits": {
+          "1w": 0.34,
+          "1m": 1.45,
+          "3m": 4.42,
+          "6m": 9.05
+        }
+      },
+      "strategies": {
+        "RSI": {
+          "enabled": true,
+          "weight": 1.0,
+          "period": 14,
+          "oversold": 20,
+          "overbought": 75
+        },
+        "Bollinger": {
+          "enabled": false,
+          "weight": 1.0,
+          "period": 20,
+          "std_dev": 2.0
+        },
+        "MACD": {
+          "enabled": false,
+          "weight": 1.0,
+          "fast": 12,
+          "slow": 26,
+          "signal_period": 9
+        }
+      },
+      "logic": "OR",
+      "threshold": 0.5,
+      "risk": {
+        "type": "StopLoss",
+        "stop_loss_pct": 0.02,
+        "take_profit_pct": 0.03
+      },
+      "backtest": {
+        "total_return_pct": 232.52,
+        "sharpe_ratio": 0.2498,
+        "mdd_pct": 24.67,
+        "win_rate_pct": 60.0,
+        "trade_count": 15
+      },
+      "period_expected_profits": {
+        "1w": 0.28,
+        "1m": 1.21,
+        "3m": 3.69,
+        "6m": 7.51
+      }
+    },
+    "RANGE": {
+      "strategies": {
+        "RSI": {
+          "enabled": true,
+          "weight": 1.0,
+          "period": 14,
+          "oversold": 20,
+          "overbought": 65
+        },
+        "Bollinger": {
+          "enabled": false,
+          "weight": 1.0,
+          "period": 20,
+          "std_dev": 2.0
+        },
+        "MACD": {
+          "enabled": false,
+          "weight": 1.0,
+          "fast": 12,
+          "slow": 26,
+          "signal_period": 9
+        }
+      },
+      "logic": "OR",
+      "threshold": 0.5,
+      "risk": {
+        "type": "StopLoss",
+        "stop_loss_pct": 0.02,
+        "take_profit_pct": 0.03
+      },
+      "backtest": {
+        "total_return_pct": 43.45,
+        "sharpe_ratio": 0.1138,
+        "mdd_pct": 68.76,
+        "win_rate_pct": 64.71,
+        "trade_count": 51
+      },
+      "period_expected_profits": {
+        "1w": 0.08,
+        "1m": 0.33,
+        "3m": 1.0,
+        "6m": 2.01
       }
     }
   }
