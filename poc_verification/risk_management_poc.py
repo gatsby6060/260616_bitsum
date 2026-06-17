@@ -67,6 +67,19 @@ print(f"[System] Bithumb Access Key 존재 여부: {bool(BITHUMB_ACCESS_KEY)}")
 print(f"[System] Bithumb Secret Key 존재 여부: {bool(BITHUMB_SECRET_KEY)}")
 print(f"[System] Bithumb Order Mode: {BITHUMB_ORDER_MODE.upper()}")
 
+# 빗썸 실거래 수수료 (체결 내역 기준 편도 약 0.25%)
+BITHUMB_FEE_RATE_ONE_WAY = 0.0025
+
+
+def calc_net_pnl_pct(avg_price: float, current_price: float) -> float:
+    """매수·매도 수수료를 반영한 순수익률 (왕복 약 0.50%)."""
+    if avg_price <= 0 or current_price <= 0:
+        return 0.0
+    entry_cost = avg_price * (1 + BITHUMB_FEE_RATE_ONE_WAY)
+    exit_value = current_price * (1 - BITHUMB_FEE_RATE_ONE_WAY)
+    return (exit_value - entry_cost) / entry_cost
+
+
 # 빗썸 JWT 서명 및 헤더 생성 로직
 def create_bithumb_headers(params: dict = None) -> dict:
     if not BITHUMB_ACCESS_KEY or not BITHUMB_SECRET_KEY:
@@ -110,7 +123,7 @@ active_ticker_configs = {
         "active": True,
         "current_regime": "BEAR",
         "regime_override": "AUTO",
-        "selected_bear_strategy": "custom_bear",
+        "selected_bear_strategy": "auto",
         "long_term_ma_period": 210,
         "tactics": {
             "BULL": {
@@ -147,7 +160,7 @@ active_ticker_configs = {
         "active": True,
         "current_regime": "BEAR",
         "regime_override": "AUTO",
-        "selected_bear_strategy": "custom_bear",
+        "selected_bear_strategy": "auto",
         "long_term_ma_period": 210,
         "tactics": {
             "BULL": {
@@ -184,7 +197,7 @@ active_ticker_configs = {
         "active": True,
         "current_regime": "BEAR",
         "regime_override": "AUTO",
-        "selected_bear_strategy": "custom_bear",
+        "selected_bear_strategy": "auto",
         "long_term_ma_period": 210,
         "tactics": {
             "BULL": {
@@ -225,6 +238,96 @@ CONFIG_FILE_PATH = os.path.abspath(os.path.join(
     "strategy_config.json"
 ))
 
+DEFAULT_REGIME_OVERRIDE = "AUTO"
+DEFAULT_BEAR_STRATEGY = "auto"  # 하락장 기본: 백테스트 우수 전략 자동 선택 (UI에서 custom_bear/mixed 고정 가능)
+SUPPORTED_TICKERS = ["BTC", "ETH", "XRP"]
+
+def _compute_bear_auto_pick(bear_opt_reg: dict) -> str:
+    """BEAR 구간: 6개월 예상 수익률 우선, 동점 시 Sharpe·MDD로 mix vs CustomBear 자동 선택."""
+    custom = bear_opt_reg.get("custom_bear_strategy", {})
+    mixed = bear_opt_reg.get("mixed_strategy", {})
+    c_prof = custom.get("period_expected_profits", {}).get("6m", 0)
+    m_prof = mixed.get("period_expected_profits", {}).get("6m", 0)
+    if m_prof > c_prof:
+        return "mixed"
+    if m_prof < c_prof:
+        return "custom_bear"
+    custom_bt = custom.get("backtest", {})
+    mixed_bt = mixed.get("backtest", {})
+    c_sharpe = custom_bt.get("sharpe_ratio", -999)
+    m_sharpe = mixed_bt.get("sharpe_ratio", -999)
+    if m_sharpe > c_sharpe:
+        return "mixed"
+    if m_sharpe < c_sharpe:
+        return "custom_bear"
+    c_mdd = custom_bt.get("mdd_pct", 999)
+    m_mdd = mixed_bt.get("mdd_pct", 999)
+    return "mixed" if m_mdd < c_mdd else "custom_bear"
+
+def _resolve_bear_strategy(ticker: str) -> str:
+    """selected_bear_strategy(auto/custom_bear/mixed)를 실제 적용 키로 해석."""
+    if ticker not in active_ticker_configs:
+        return DEFAULT_BEAR_STRATEGY
+    selected = active_ticker_configs[ticker].get("selected_bear_strategy", DEFAULT_BEAR_STRATEGY)
+    if selected in ("custom_bear", "mixed"):
+        return selected
+    return active_ticker_configs[ticker].get("bear_auto_pick", "custom_bear")
+
+def _build_tactics_from_opt_reg(opt_reg: dict) -> dict:
+    """백테스트 최적화 결과 한 벌을 tactics 블록으로 변환."""
+    opt_strats = opt_reg.get("strategies", {})
+    new_strategies = []
+    for s_name, s_data in opt_strats.items():
+        if s_name == "RSI":
+            tf = "5m"
+            params = {"period": s_data.get("period", 14), "oversold": s_data.get("oversold", 30), "overbought": s_data.get("overbought", 70)}
+        elif s_name == "Bollinger":
+            tf = "D"
+            params = {"period": s_data.get("period", 20), "std_dev": s_data.get("std_dev", 2.0)}
+        elif s_name == "MACD":
+            tf = "1h"
+            params = {"fast": s_data.get("fast", 12), "slow": s_data.get("slow", 26), "signal_period": s_data.get("signal_period", 9)}
+        elif s_name == "CustomBear":
+            tf = "30m"
+            params = {
+                "lookback": s_data.get("lookback", 8),
+                "drop_pct": s_data.get("drop_pct", 0.05),
+                "volume_ratio": s_data.get("volume_ratio", 2.0),
+                "trail_pct": s_data.get("trail_pct", 0.015),
+                "stop_loss": s_data.get("stop_loss", 0.015),
+                "time_cut": s_data.get("time_cut", 24)
+            }
+        else:
+            continue
+
+        new_strategies.append({
+            "name": s_name,
+            "enabled": s_data.get("enabled", False),
+            "weight": s_data.get("weight", 1.0),
+            "timeframe": tf,
+            "params": params
+        })
+
+    return {
+        "logic": opt_reg.get("logic", "OR"),
+        "threshold": opt_reg.get("threshold", 0.5),
+        "strategies": new_strategies,
+        "risk": opt_reg.get("risk", {"type": "None"})
+    }
+
+def _apply_bear_strategy_selection(ticker: str) -> bool:
+    """selected_bear_strategy에 맞춰 BEAR tactics 활성화 (캐시 우선)."""
+    if ticker not in active_ticker_configs:
+        return False
+
+    resolved = _resolve_bear_strategy(ticker)
+    active_ticker_configs[ticker]["resolved_bear_strategy"] = resolved
+    cache = active_ticker_configs[ticker].get("bear_tactics_cache", {})
+    if resolved in cache:
+        active_ticker_configs[ticker]["tactics"]["BEAR"] = cache[resolved]
+        return True
+    return False
+
 def load_persisted_configs():
     global active_ticker_configs
     if os.path.exists(CONFIG_FILE_PATH):
@@ -247,6 +350,13 @@ def load_persisted_configs():
     else:
         save_persisted_configs()
 
+    for ticker in SUPPORTED_TICKERS:
+        cfg = active_ticker_configs.get(ticker)
+        if not isinstance(cfg, dict):
+            continue
+        cfg.setdefault("regime_override", DEFAULT_REGIME_OVERRIDE)
+        cfg.setdefault("selected_bear_strategy", DEFAULT_BEAR_STRATEGY)
+
 def save_persisted_configs():
     try:
         with open(CONFIG_FILE_PATH, "w", encoding="utf-8") as f:
@@ -260,76 +370,38 @@ def update_configs_with_optimized_params():
     results = get_latest_results()
     if not results:
         return
-        
+
     updated = False
-    for market in ["KRW-BTC", "KRW-ETH", "KRW-XRP"]:
+    for market in [f"KRW-{t}" for t in SUPPORTED_TICKERS]:
         ticker = market.replace("KRW-", "")
         if market not in results or ticker not in active_ticker_configs:
             continue
-            
+
         for regime in ["BULL", "BEAR", "RANGE"]:
             opt_reg = results[market].get(regime)
             if not opt_reg:
                 continue
-                
-            # BEAR 장세인 경우 selected_bear_strategy 에 맞춰 추출
+
             if regime == "BEAR":
-                selected = active_ticker_configs[ticker].get("selected_bear_strategy", "custom_bear")
-                if selected == "custom_bear" and "custom_bear_strategy" in opt_reg:
-                    opt_reg = opt_reg["custom_bear_strategy"]
-                elif selected == "mixed" and "mixed_strategy" in opt_reg:
-                    opt_reg = opt_reg["mixed_strategy"]
-                    
-            opt_strats = opt_reg.get("strategies", {})
-            new_strategies = []
-            for s_name, s_data in opt_strats.items():
-                if s_name == "RSI":
-                    tf = "5m"
-                    params = {"period": s_data.get("period", 14), "oversold": s_data.get("oversold", 30), "overbought": s_data.get("overbought", 70)}
-                elif s_name == "Bollinger":
-                    tf = "D"
-                    params = {"period": s_data.get("period", 20), "std_dev": s_data.get("std_dev", 2.0)}
-                elif s_name == "MACD":
-                    tf = "1h"
-                    params = {"fast": s_data.get("fast", 12), "slow": s_data.get("slow", 26), "signal_period": s_data.get("signal_period", 9)}
-                elif s_name == "CustomBear":
-                    tf = "30m"
-                    params = {
-                        "lookback": s_data.get("lookback", 8),
-                        "drop_pct": s_data.get("drop_pct", 0.05),
-                        "volume_ratio": s_data.get("volume_ratio", 2.0),
-                        "trail_pct": s_data.get("trail_pct", 0.015),
-                        "stop_loss": s_data.get("stop_loss", 0.015),
-                        "time_cut": s_data.get("time_cut", 24)
-                    }
-                else:
-                    continue
-                    
-                new_strategies.append({
-                    "name": s_name,
-                    "enabled": s_data.get("enabled", False),
-                    "weight": s_data.get("weight", 1.0),
-                    "timeframe": tf,
-                    "params": params
-                })
-            
-            risk_info = opt_reg.get("risk", {"type": "None"})
-            
-            active_ticker_configs[ticker]["tactics"][regime] = {
-                "logic": opt_reg.get("logic", "OR"),
-                "threshold": opt_reg.get("threshold", 0.5),
-                "strategies": new_strategies,
-                "risk": risk_info
-            }
+                bear_cache = {}
+                if "custom_bear_strategy" in opt_reg:
+                    bear_cache["custom_bear"] = _build_tactics_from_opt_reg(opt_reg["custom_bear_strategy"])
+                if "mixed_strategy" in opt_reg:
+                    bear_cache["mixed"] = _build_tactics_from_opt_reg(opt_reg["mixed_strategy"])
+                if bear_cache:
+                    if "custom_bear_strategy" in opt_reg and "mixed_strategy" in opt_reg:
+                        active_ticker_configs[ticker]["bear_auto_pick"] = _compute_bear_auto_pick(opt_reg)
+                    active_ticker_configs[ticker]["bear_tactics_cache"] = bear_cache
+                    _apply_bear_strategy_selection(ticker)
+                    updated = True
+                continue
+
+            active_ticker_configs[ticker]["tactics"][regime] = _build_tactics_from_opt_reg(opt_reg)
             updated = True
-            
+
     if updated:
         save_persisted_configs()
-        print("[Storage] 최적화 파라미터가 최신 결과에 맞춰 강제 갱신/병합되었습니다.")
-                
-    if updated:
-        save_persisted_configs()
-        print("[Storage] 최적화 파라미터가 기존 설정에 자동 병합 및 반영되었습니다.")
+        print("[Storage] 종목별 최적화 파라미터(BULL/RANGE/mix·CustomBear)가 반영되었습니다.")
 
 def update_configs_and_apply_to_engine():
     update_configs_with_optimized_params()
@@ -562,10 +634,10 @@ class VerboseCompositeStrategy(CompositeStrategy):
 
         if self.logic == "AND":
             if all(s == "BUY" for s in sig_list): final_signal = "BUY"
-            elif any(s == "SELL" for s in sig_list): final_signal = "SELL"
+            elif all(s == "SELL" for s in sig_list): final_signal = "SELL"
         elif self.logic == "OR":
             if any(s == "BUY" for s in sig_list): final_signal = "BUY"
-            elif all(s == "SELL" for s in sig_list): final_signal = "SELL"
+            elif any(s == "SELL" for s in sig_list): final_signal = "SELL"
         elif self.logic == "VOTE":
             majority = len(sig_list) // 2 + 1
             if sig_list.count("BUY") >= majority: final_signal = "BUY"
@@ -853,6 +925,10 @@ class UITickerWorker(TickerWorker):
         else:
             self.risk_manager = AllowAllRiskManager()
 
+        self.config["current_regime"] = regime
+        if self.ticker in active_ticker_configs:
+            active_ticker_configs[self.ticker]["current_regime"] = regime
+
         # UI 상에 감지된 변경사항 로깅
         if log_to_ui:
             ui_event = {
@@ -943,9 +1019,9 @@ class UITickerWorker(TickerWorker):
             "logic": "UNKNOWN", "sub_signals": {}, "indicators": {}, "final": final_signal
         })
 
-        # 평가 금액 및 수익률 계산
+        # 평가 금액 및 수익률 계산 (수수료 반영 순수익률)
         krw_value = self.position.quantity * self.position.current_price
-        pnl_pct = self.position.pnl_pct
+        pnl_pct = calc_net_pnl_pct(self.position.avg_price, self.position.current_price)
 
         # 4. 실시간 UI 이벤트 데이터 전송 (국면 정보 및 상세 사유 탑재)
         ui_event = {
@@ -1039,6 +1115,22 @@ class UITickerWorker(TickerWorker):
             # ★ 포지션 없으면 매도 불필요
             if self.position.quantity <= 0:
                 return
+
+            # ★ 지표 매도: 수수료 포함 순이익이 있을 때만 허용 (손절은 리스크 엔진·손절선에서 선처리)
+            if pnl_pct <= 0:
+                gross_pnl = self.position.pnl_pct
+                tactic = self.config.get("tactics", {}).get(self.current_regime, {})
+                risk_cfg = tactic.get("risk", {})
+                sl_thresh = None
+                if risk_cfg.get("type") == "StopLoss":
+                    sl_thresh = risk_cfg.get("stop_loss_pct", 0.03)
+                elif tactic.get("logic") == "CUSTOM_BEAR":
+                    for s in tactic.get("strategies", []):
+                        if s.get("name") == "CustomBear":
+                            sl_thresh = s.get("params", {}).get("stop_loss", 0.015)
+                            break
+                if sl_thresh is None or gross_pnl > -sl_thresh:
+                    return
             
             # ★ 매도 쿨다운: 30초 이내 연속 매도 방지
             now_ts = time.time()
@@ -1447,7 +1539,8 @@ class MultiTickerUIEngine(TradingEngine):
             active_ticker_configs[ticker] = {
                 "active": True,
                 "current_regime": "BEAR",
-                "regime_override": "AUTO",
+                "regime_override": DEFAULT_REGIME_OVERRIDE,
+                "selected_bear_strategy": DEFAULT_BEAR_STRATEGY,
                 "long_term_ma_period": 210,
                 "tactics": {
                     "BULL": {
@@ -1461,14 +1554,12 @@ class MultiTickerUIEngine(TradingEngine):
                         "risk": {"type": "None"}
                     },
                     "BEAR": {
-                        "logic": "OR",
+                        "logic": "CUSTOM_BEAR",
                         "threshold": 0.5,
                         "strategies": [
-                            {"name": "RSI", "enabled": True, "weight": 1.0, "timeframe": "5m", "params": {"period": 5, "oversold": 25, "overbought": 60}},
-                            {"name": "Bollinger", "enabled": True, "weight": 1.0, "timeframe": "15m", "params": {"period": 10, "std_dev": 2.0}},
-                            {"name": "MACD", "enabled": False, "weight": 1.0, "timeframe": "1h", "params": {"fast": 5, "slow": 10, "signal_period": 3}}
+                            {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "30m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "trail_pct": 0.015, "stop_loss": 0.015, "time_cut": 24}}
                         ],
-                        "risk": {"type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03}
+                        "risk": {"type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.02}
                     },
                     "RANGE": {
                         "logic": "OR",
@@ -1719,20 +1810,29 @@ def get_configs():
 @app.post("/api/config/select-bear-strategy")
 def select_bear_strategy(payload: dict):
     ticker = payload.get("ticker")
-    strategy = payload.get("strategy") # "custom_bear" or "mixed"
+    strategy = payload.get("strategy")  # "auto", "custom_bear", or "mixed"
     if not ticker or not strategy:
         return {"success": False, "error": "Ticker or strategy missing"}
         
     if ticker not in active_ticker_configs:
         return {"success": False, "error": "Ticker not found"}
         
-    if strategy not in ["custom_bear", "mixed"]:
+    if strategy not in ["auto", "custom_bear", "mixed"]:
         return {"success": False, "error": "Invalid strategy type"}
         
     active_ticker_configs[ticker]["selected_bear_strategy"] = strategy
+    if not _apply_bear_strategy_selection(ticker):
+        update_configs_with_optimized_params()
+        _apply_bear_strategy_selection(ticker)
     save_persisted_configs()
     update_configs_and_apply_to_engine()
-    return {"success": True, "message": f"{ticker}의 하락장 전략이 {strategy}로 변경 및 적용되었습니다."}
+    labels = {
+        "auto": "AI 자동(백테스트 우수 전략)",
+        "custom_bear": "CustomBear(나만의기법)",
+        "mixed": "Mixed(믹스기법)",
+    }
+    return {"success": True, "message": f"{ticker}의 하락장 전략이 {labels[strategy]}로 변경 및 적용되었습니다.",
+            "resolved_bear_strategy": active_ticker_configs[ticker].get("resolved_bear_strategy")}
 
 @app.post("/api/config/update")
 def update_config(payload: dict):
@@ -2935,12 +3035,12 @@ HTML_CONTENT = """
                         <div class="control-group">
                             <label class="control-label-large">의사결정 조합 Logic</label>
                             <select id="logic-select" class="logic-dropdown" onchange="toggleThresholdDisplay(this.value)">
-                                <option value="AND">AND (모든 전략 합의)</option>
-                                <option value="OR">OR (최소 한 전략 진입)</option>
+                                <option value="AND">AND (모든 전략이 같은 신호)</option>
+                                <option value="OR">OR (하나라도 신호)</option>
                                 <option value="VOTE">VOTE (단순 다수결)</option>
                                 <option value="WEIGHTED_VOTE">WEIGHTED VOTE (가중치 투표)</option>
                             </select>
-                            <div class="logic-desc" id="logic-desc-text">활성화된 모든 개별 전략이 일치할 때 매수/매수 주문을 넣습니다.</div>
+                            <div class="logic-desc" id="logic-desc-text">활성화된 모든 전략이 BUY이면 매수, 모두 SELL이면 매도합니다 (AND).</div>
                         </div>
                         
                         <div class="control-group" id="threshold-control-group" style="display:none; margin-top:10px;">
@@ -3048,6 +3148,18 @@ HTML_CONTENT = """
             </h2>
             
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
+                <!-- 카드 0: AI 자동 선택 (기본) -->
+                <div class="bear-strategy-card" id="bear-card-auto" onclick="selectBearStrategy('auto')" style="background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.35); border-radius:10px; padding:15px; cursor:pointer; grid-column: 1 / -1;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <span style="font-size:14px; font-weight:700; color:#fff;">🤖 AI 자동 선택 (기본)</span>
+                        <span class="active-badge" id="badge-auto" style="display:none; background:var(--accent-blue); color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; font-weight:bold;">적용 중</span>
+                    </div>
+                    <p style="font-size:11px; color:var(--text-secondary); margin:0; line-height:1.5;">
+                        하락장(BEAR) 판정 시에만 적용됩니다. 종목별 백테스트 <strong>6개월 예상 수익률</strong>이 더 높은 전략을 매일 자동 선택합니다.
+                        현재 AI 선택: <strong id="bear-resolved-label" style="color:var(--accent-green);">-</strong>
+                    </p>
+                </div>
+
                 <!-- 카드 1: 기존 3대 지표 믹스 전략 -->
                 <div class="bear-strategy-card" id="bear-card-mixed" onclick="selectBearStrategy('mixed')" style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:15px; cursor:pointer;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
@@ -3750,8 +3862,8 @@ HTML_CONTENT = """
                 desc.innerText = '각 지표 신호별 가중치를 부여해 합의 비율(임계치) 이상일 때 거래 주문을 생성합니다.';
             } else {
                 group.style.display = 'none';
-                if (logic === 'AND') desc.innerText = '활성화된 모든 개별 전략이 BUY/SELL 일치할 때 매수/매수 주문을 넣습니다.';
-                else if (logic === 'OR') desc.innerText = '활성화된 개별 전략 중 단 하나라도 BUY/SELL 신호를 주면 진입합니다.';
+                if (logic === 'AND') desc.innerText = 'AND: 모든 활성 전략이 BUY이면 매수, 모두 SELL이면 매도합니다.';
+                else if (logic === 'OR') desc.innerText = 'OR: 활성 전략 중 하나라도 BUY이면 매수, 하나라도 SELL이면 매도합니다.';
                 else if (logic === 'VOTE') desc.innerText = '활성화된 전략들의 다수결(과반수 이상 합의)을 기준으로 판단합니다.';
             }
         }
@@ -3926,11 +4038,14 @@ HTML_CONTENT = """
             const config = tickerConfigs[ticker];
             if (!config) return;
             
-            const currentRegime = config.current_regime || 'BEAR';
+            const currentRegime = getTickerLiveRegime(ticker);
+            config.current_regime = currentRegime;
             const tactic = config.tactics ? config.tactics[currentRegime] : null;
             if (!tactic) return;
+
+            updateTickerStrategyBadge(ticker, tactic.logic);
             
-            document.getElementById('logic-select').value = tactic.logic;
+            document.getElementById('logic-select').value = (tactic.logic === 'CUSTOM_BEAR') ? 'OR' : tactic.logic;
             toggleThresholdDisplay(tactic.logic);
             
             // 수동 장세 고정 드롭다운 값 맞춤
@@ -4089,82 +4204,94 @@ HTML_CONTENT = """
         };
         /* DYNAMIC_FACTORY_DEFAULTS_END */
 
+        function tacticToStrategyMap(tactic) {
+            const map = {};
+            (tactic?.strategies || []).forEach(s => {
+                map[s.name] = { enabled: !!s.enabled, weight: s.weight ?? 1.0, ...(s.params || {}) };
+            });
+            return map;
+        }
+
+        function savedTacticMatchesDefaults(tactic, defaults) {
+            if (!tactic || !defaults) return true;
+
+            const savedLogic = tactic.logic || 'OR';
+            const defaultLogic = defaults.logic || 'OR';
+            if (savedLogic !== defaultLogic) return false;
+
+            const savedThreshold = tactic.threshold ?? 0.5;
+            const defaultThreshold = defaults.threshold ?? 0.5;
+            if (Math.abs(savedThreshold - defaultThreshold) > 0.001) return false;
+
+            const defStrats = defaults.strategies || {};
+            const savedStrats = tacticToStrategyMap(tactic);
+            const isCustomBearMode = defaultLogic === 'CUSTOM_BEAR' || !!defStrats.CustomBear;
+
+            if (isCustomBearMode && defStrats.CustomBear) {
+                const defCB = defStrats.CustomBear;
+                const savedCB = savedStrats.CustomBear;
+                if (!savedCB) return false;
+                if (savedCB.enabled !== defCB.enabled) return false;
+                if (Math.abs((savedCB.weight ?? 1) - (defCB.weight ?? 1)) > 0.001) return false;
+                const cbKeys = ['lookback', 'drop_pct', 'volume_ratio', 'trail_pct', 'stop_loss', 'time_cut'];
+                for (const key of cbKeys) {
+                    if (Math.abs(Number(savedCB[key]) - Number(defCB[key])) > 0.001) return false;
+                }
+            } else {
+                for (const [sName, defS] of Object.entries(defStrats)) {
+                    const savedS = savedStrats[sName];
+                    if (!savedS) return false;
+                    if (savedS.enabled !== defS.enabled) return false;
+                    if (Math.abs((savedS.weight ?? 1) - (defS.weight ?? 1)) > 0.001) return false;
+                    if (sName === 'RSI') {
+                        if (savedS.period !== defS.period) return false;
+                        if (savedS.oversold !== defS.oversold) return false;
+                        if (savedS.overbought !== defS.overbought) return false;
+                    } else if (sName === 'Bollinger') {
+                        if (savedS.period !== defS.period) return false;
+                        if (Math.abs(Number(savedS.std_dev) - Number(defS.std_dev)) > 0.001) return false;
+                    } else if (sName === 'MACD') {
+                        if (savedS.fast !== defS.fast) return false;
+                        if (savedS.slow !== defS.slow) return false;
+                        if (savedS.signal_period !== defS.signal_period) return false;
+                    }
+                }
+            }
+
+            const savedRisk = tactic.risk || { type: 'None' };
+            const defRisk = defaults.risk || { type: 'None' };
+            if (savedRisk.type !== defRisk.type) return false;
+
+            if (savedRisk.type === 'StopLoss') {
+                if (Math.abs((savedRisk.stop_loss_pct ?? 0) - (defRisk.stop_loss_pct ?? 0)) > 0.001) return false;
+                if (!isCustomBearMode) {
+                    if (Math.abs((savedRisk.take_profit_pct ?? 0) - (defRisk.take_profit_pct ?? 0)) > 0.001) return false;
+                }
+            } else if (savedRisk.type === 'TrailingStop') {
+                if (Math.abs((savedRisk.trail_pct ?? 0) - (defRisk.trail_pct ?? 0)) > 0.001) return false;
+            } else if (savedRisk.type === 'AveragingDown') {
+                if (Math.abs((savedRisk.drop_trigger_pct ?? 0) - (defRisk.drop_trigger_pct ?? 0)) > 0.001) return false;
+                if ((savedRisk.max_add_count ?? 0) !== (defRisk.max_add_count ?? 0)) return false;
+            }
+
+            return true;
+        }
+
         function checkIfConfigIsDefault() {
             if (!activeTicker || !tickerConfigs[activeTicker]) return true;
-            const currentRegime = tickerConfigs[activeTicker].current_regime || 'BEAR';
+            const config = tickerConfigs[activeTicker];
+
+            // 장세/하락장 전략을 수동 고정한 경우 → 사용자 설정
+            if ((config.regime_override || 'AUTO') !== 'AUTO') return false;
+            if ((config.selected_bear_strategy || 'auto') !== 'auto') return false;
+
+            const currentRegime = getTickerLiveRegime(activeTicker);
             const tickerDefaults = FACTORY_DEFAULTS[activeTicker] || FACTORY_DEFAULTS["BTC"];
             const defaults = tickerDefaults ? tickerDefaults[currentRegime] : null;
             if (!defaults) return true;
 
-            // 1. Logic comparison
-            const uiLogic = document.getElementById('logic-select').value;
-            if (uiLogic !== defaults.logic) return false;
-
-            // 2. Threshold comparison
-            const uiThreshold = parseFloat(document.getElementById('weighted-threshold').value);
-            if (Math.abs(uiThreshold - defaults.threshold) > 0.001) return false;
-
-            // 3. Strategies comparison
-            // RSI
-            const rsiEnabled = document.getElementById('toggle-rsi').checked;
-            const rsiWeight = parseFloat(document.getElementById('rsi-weight').value);
-            const rsiPeriod = parseInt(document.getElementById('rsi-period').value);
-            const rsiOverbought = parseInt(document.getElementById('rsi-overbought').value);
-            const rsiOversold = parseInt(document.getElementById('rsi-oversold').value);
-            
-            const defRsi = defaults.strategies.RSI;
-            if (rsiEnabled !== defRsi.enabled) return false;
-            if (Math.abs(rsiWeight - defRsi.weight) > 0.001) return false;
-            if (rsiPeriod !== defRsi.period) return false;
-            if (rsiOverbought !== defRsi.overbought) return false;
-            if (rsiOversold !== defRsi.oversold) return false;
-
-            // Bollinger
-            const bbEnabled = document.getElementById('toggle-bb').checked;
-            const bbWeight = parseFloat(document.getElementById('bb-weight').value);
-            const bbPeriod = parseInt(document.getElementById('bb-period').value);
-            const bbStddev = parseFloat(document.getElementById('bb-stddev').value);
-
-            const defBb = defaults.strategies.Bollinger;
-            if (bbEnabled !== defBb.enabled) return false;
-            if (Math.abs(bbWeight - defBb.weight) > 0.001) return false;
-            if (bbPeriod !== defBb.period) return false;
-            if (Math.abs(bbStddev - defBb.std_dev) > 0.001) return false;
-
-            // MACD
-            const macdEnabled = document.getElementById('toggle-macd').checked;
-            const macdWeight = parseFloat(document.getElementById('macd-weight').value);
-            const macdFast = parseInt(document.getElementById('macd-fast').value);
-            const macdSlow = parseInt(document.getElementById('macd-slow').value);
-            const macdSignal = parseInt(document.getElementById('macd-signal').value);
-
-            const defMacd = defaults.strategies.MACD;
-            if (macdEnabled !== defMacd.enabled) return false;
-            if (Math.abs(macdWeight - defMacd.weight) > 0.001) return false;
-            if (macdFast !== defMacd.fast) return false;
-            if (macdSlow !== defMacd.slow) return false;
-            if (macdSignal !== defMacd.signal_period) return false;
-
-            // 4. Risk comparison
-            const uiRiskType = document.getElementById('risk-type-select').value;
-            if (uiRiskType !== defaults.risk.type) return false;
-
-            if (uiRiskType === 'StopLoss') {
-                const uiStopLoss = parseFloat(document.getElementById('risk-stoploss-pct').value) / 100;
-                const uiTakeProfit = parseFloat(document.getElementById('risk-takeprofit-pct').value) / 100;
-                if (Math.abs(uiStopLoss - defaults.risk.stop_loss_pct) > 0.001) return false;
-                if (Math.abs(uiTakeProfit - defaults.risk.take_profit_pct) > 0.001) return false;
-            } else if (uiRiskType === 'TrailingStop') {
-                const uiTrail = parseFloat(document.getElementById('risk-trail-pct').value) / 100;
-                if (Math.abs(uiTrail - defaults.risk.trail_pct) > 0.001) return false;
-            } else if (uiRiskType === 'AveragingDown') {
-                const uiDrop = parseFloat(document.getElementById('risk-drop-trigger-pct').value) / 100;
-                const uiMaxAdd = parseInt(document.getElementById('risk-max-add-count').value);
-                if (Math.abs(uiDrop - defaults.risk.drop_trigger_pct) > 0.001) return false;
-                if (uiMaxAdd !== defaults.risk.max_add_count) return false;
-            }
-
-            return true;
+            const tactic = config.tactics?.[currentRegime];
+            return savedTacticMatchesDefaults(tactic, defaults);
         }
 
         function updateConfigStatusBadge() {
@@ -4173,7 +4300,7 @@ HTML_CONTENT = """
             const isDefault = checkIfConfigIsDefault();
             if (isDefault) {
                 badge.className = 'status-badge-inline default';
-                badge.innerHTML = '🟢 [검증된 기본 설정]';
+                badge.innerHTML = '🤖 [AI 자동 최적 설정]';
             } else {
                 badge.className = 'status-badge-inline custom';
                 badge.innerHTML = '🟠 [사용자임의 설정]';
@@ -4188,7 +4315,7 @@ HTML_CONTENT = """
             if (!defaults) return;
 
             // UI 값을 디폴트로 업데이트
-            document.getElementById('logic-select').value = defaults.logic;
+            document.getElementById('logic-select').value = (defaults.logic === 'CUSTOM_BEAR') ? 'OR' : defaults.logic;
             toggleThresholdDisplay(defaults.logic);
             
             document.getElementById('weighted-threshold').value = defaults.threshold;
@@ -4235,10 +4362,10 @@ HTML_CONTENT = """
                     document.getElementById('rsi-oversold').value = sCfg.oversold;
                     document.getElementById('rsi-oversold-val').innerText = sCfg.oversold;
                 } else if (sName === 'Bollinger') {
-                    document.getElementById('bb-period').value = sCfg.period;
-                    document.getElementById('bb-period-val').innerText = sCfg.period;
-                    document.getElementById('bb-stddev').value = sCfg.std_dev;
-                    document.getElementById('bb-stddev-val').innerText = sCfg.std_dev;
+                    document.getElementById('bollinger-period').value = sCfg.period;
+                    document.getElementById('bollinger-period-val').innerText = sCfg.period;
+                    document.getElementById('bollinger-stddev').value = sCfg.std_dev;
+                    document.getElementById('bollinger-stddev-val').innerText = sCfg.std_dev;
                 } else if (sName === 'MACD') {
                     document.getElementById('macd-fast').value = sCfg.fast;
                     document.getElementById('macd-fast-val').innerText = sCfg.fast;
@@ -4391,7 +4518,7 @@ HTML_CONTENT = """
                         risk: risk
                     };
                     const badgeEl = document.getElementById(`badge-text-${activeTicker}`);
-                    if (badgeEl) badgeEl.innerText = `${logic} 결합`;
+                    if (badgeEl) badgeEl.innerText = formatStrategyBadge(logic);
                     addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `복합 전략 설정이 런타임 엔진에 실시간 적용되었습니다. (${logic})`);
                     updateStrategyDetailsTable(activeTicker, tickerConfigs[activeTicker]);
                     updateConfigStatusBadge();
@@ -4497,9 +4624,15 @@ HTML_CONTENT = """
                 if (msg.type === 'regime_change') {
                     // 장세 국면 변경 알림 처리
                     const regime = msg.data.regime;
+                    const logic = msg.data.logic;
                     const rType = msg.data.risk_type;
-                    const logMsg = `시장 국면 변경 감지 -> ${regime} 작전으로 스위칭 완료! (전략 logic: ${msg.data.logic}, 리스크: ${rType})`;
+                    const logMsg = `시장 국면 변경 감지 -> ${regime} 작전으로 스위칭 완료! (전략 logic: ${logic}, 리스크: ${rType})`;
                     addLog(timeStr, ticker, 'SYSTEM', logMsg);
+
+                    if (tickerConfigs[ticker]) {
+                        tickerConfigs[ticker].current_regime = regime;
+                    }
+                    updateTickerStrategyBadge(ticker, logic);
                     
                     const regimeEl = document.getElementById(`regime-${ticker}`);
                     if (regimeEl) {
@@ -4509,6 +4642,11 @@ HTML_CONTENT = """
                         else if (regime === 'BEAR') { emoji = '📉'; color = 'var(--accent-red)'; }
                         regimeEl.innerText = `${emoji} ${regime}`;
                         regimeEl.style.color = color;
+                    }
+
+                    if (ticker === activeTicker) {
+                        loadConfigForTicker(ticker);
+                        loadBacktestCompareData(ticker);
                     }
                     return;
                 }
@@ -4520,6 +4658,18 @@ HTML_CONTENT = """
                     const regime = msg.data.regime;
                     const regimeReason = msg.data.regime_reason;
                     const override = msg.data.regime_override;
+                    const compLogic = msg.data.composite?.logic;
+
+                    if (tickerConfigs[ticker] && regime) {
+                        const prevRegime = tickerConfigs[ticker].current_regime;
+                        tickerConfigs[ticker].current_regime = regime;
+                        if (ticker === activeTicker && prevRegime !== regime) {
+                            loadConfigForTicker(ticker);
+                        }
+                    }
+                    if (compLogic) {
+                        updateTickerStrategyBadge(ticker, compLogic);
+                    }
                     
                     // 장세 국면 표시 실시간 업데이트
                     const regimeEl = document.getElementById(`regime-${ticker}`);
@@ -4870,13 +5020,40 @@ HTML_CONTENT = """
         // ══════════════════════════════════════════════════════════════
         // 하락장 전용 최적화 전략 제어 및 시각화 연동
         // ══════════════════════════════════════════════════════════════
+        function formatStrategyBadge(logic) {
+            if (logic === 'CUSTOM_BEAR') return 'CustomBear';
+            return `${logic} 결합`;
+        }
+
+        function getTickerLiveRegime(ticker) {
+            const config = tickerConfigs[ticker];
+            if (config && config.current_regime) return config.current_regime;
+            const regimeEl = document.getElementById(`regime-${ticker}`);
+            if (!regimeEl) return 'RANGE';
+            const text = regimeEl.innerText || '';
+            if (text.includes('BULL')) return 'BULL';
+            if (text.includes('BEAR')) return 'BEAR';
+            return 'RANGE';
+        }
+
+        function updateTickerStrategyBadge(ticker, logic) {
+            const badgeEl = document.getElementById(`badge-text-${ticker}`);
+            if (badgeEl && logic) badgeEl.innerText = formatStrategyBadge(logic);
+        }
+
         async function loadBacktestCompareData(ticker) {
             try {
-                const response = await fetch('/api/backtest/results');
-                const resData = await response.json();
-                
                 const comparePanel = document.getElementById('bear-compare-panel');
                 if (!comparePanel) return;
+
+                const liveRegime = getTickerLiveRegime(ticker);
+                if (liveRegime !== 'BEAR') {
+                    comparePanel.style.display = 'none';
+                    return;
+                }
+
+                const response = await fetch('/api/backtest/results');
+                const resData = await response.json();
                 
                 if (resData.status === 'ok' && resData.data) {
                     const market = `KRW-${ticker}`;
@@ -4951,23 +5128,34 @@ HTML_CONTENT = """
             const config = tickerConfigs[ticker];
             if (!config) return;
             
-            const selected = config.selected_bear_strategy || 'custom_bear';
+            const selected = config.selected_bear_strategy || 'auto';
+            const resolved = config.resolved_bear_strategy || 'custom_bear';
             
+            const cardAuto = document.getElementById('bear-card-auto');
             const cardMixed = document.getElementById('bear-card-mixed');
             const cardCustom = document.getElementById('bear-card-custom');
+            const badgeAuto = document.getElementById('badge-auto');
             const badgeMixed = document.getElementById('badge-mixed');
             const badgeCustom = document.getElementById('badge-custom');
-            
-            if (selected === 'mixed') {
-                if (cardMixed) cardMixed.className = 'bear-strategy-card selected';
-                if (cardCustom) cardCustom.className = 'bear-strategy-card';
-                if (badgeMixed) badgeMixed.style.display = 'inline-block';
-                if (badgeCustom) badgeCustom.style.display = 'none';
+            const resolvedLabel = document.getElementById('bear-resolved-label');
+
+            const resolvedName = resolved === 'mixed' ? '3대 지표 결합 (Mixed)' : 'CustomBear';
+            if (resolvedLabel) resolvedLabel.innerText = resolvedName;
+
+            if (cardAuto) cardAuto.className = selected === 'auto' ? 'bear-strategy-card selected' : 'bear-strategy-card';
+            if (cardMixed) cardMixed.className = (selected === 'mixed' || (selected === 'auto' && resolved === 'mixed')) ? 'bear-strategy-card selected' : 'bear-strategy-card';
+            if (cardCustom) cardCustom.className = (selected === 'custom_bear' || (selected === 'auto' && resolved === 'custom_bear')) ? 'bear-strategy-card selected' : 'bear-strategy-card';
+
+            if (badgeAuto) badgeAuto.style.display = selected === 'auto' ? 'inline-block' : 'none';
+            if (badgeMixed) badgeMixed.style.display = (selected === 'mixed' || (selected === 'auto' && resolved === 'mixed')) ? 'inline-block' : 'none';
+            if (badgeCustom) badgeCustom.style.display = (selected === 'custom_bear' || (selected === 'auto' && resolved === 'custom_bear')) ? 'inline-block' : 'none';
+
+            if (selected === 'auto') {
+                if (badgeMixed && resolved === 'mixed') badgeMixed.innerText = 'AI 선택';
+                if (badgeCustom && resolved === 'custom_bear') badgeCustom.innerText = 'AI 선택';
             } else {
-                if (cardMixed) cardMixed.className = 'bear-strategy-card';
-                if (cardCustom) cardCustom.className = 'bear-strategy-card selected';
-                if (badgeMixed) badgeMixed.style.display = 'none';
-                if (badgeCustom) badgeCustom.style.display = 'inline-block';
+                if (badgeMixed) badgeMixed.innerText = '적용 중';
+                if (badgeCustom) badgeCustom.innerText = '적용 중';
             }
         }
 
@@ -4983,11 +5171,14 @@ HTML_CONTENT = """
                 if (data.success) {
                     if (tickerConfigs[activeTicker]) {
                         tickerConfigs[activeTicker].selected_bear_strategy = strategy;
+                        if (data.resolved_bear_strategy) {
+                            tickerConfigs[activeTicker].resolved_bear_strategy = data.resolved_bear_strategy;
+                        }
                     }
                     syncBearStrategyUI(activeTicker);
-                    // 핫스왑된 세부 UI 로드
                     loadConfigForTicker(activeTicker);
-                    addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `${activeTicker} 하락장 전략을 ${strategy === 'custom_bear' ? 'CustomBear(나만의기법)' : 'Mixed(믹스기법)'}으로 변경 적용했습니다.`);
+                    const labels = { auto: 'AI 자동', custom_bear: 'CustomBear', mixed: 'Mixed(3대지표)' };
+                    addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `${activeTicker} 하락장 전략을 ${labels[strategy] || strategy}으로 변경 적용했습니다.`);
                 } else {
                     alert("전략 변경 실패: " + data.error);
                 }
@@ -5050,8 +5241,17 @@ def load_dynamic_factory_defaults():
                     reg_data = results[market].get(regime)
                     if reg_data:
                         if regime == "BEAR":
-                            selected = active_ticker_configs.get(ticker, {}).get("selected_bear_strategy", "custom_bear")
-                            if selected == "custom_bear" and "custom_bear_strategy" in reg_data:
+                            selected = active_ticker_configs.get(ticker, {}).get("selected_bear_strategy", DEFAULT_BEAR_STRATEGY)
+                            if selected == "auto":
+                                pick = active_ticker_configs.get(ticker, {}).get("bear_auto_pick")
+                                if not pick and "custom_bear_strategy" in reg_data and "mixed_strategy" in reg_data:
+                                    pick = _compute_bear_auto_pick(reg_data)
+                                pick = pick or "custom_bear"
+                                if pick == "custom_bear" and "custom_bear_strategy" in reg_data:
+                                    reg_data = reg_data["custom_bear_strategy"]
+                                elif pick == "mixed" and "mixed_strategy" in reg_data:
+                                    reg_data = reg_data["mixed_strategy"]
+                            elif selected == "custom_bear" and "custom_bear_strategy" in reg_data:
                                 reg_data = reg_data["custom_bear_strategy"]
                             elif selected == "mixed" and "mixed_strategy" in reg_data:
                                 reg_data = reg_data["mixed_strategy"]
@@ -5102,7 +5302,6 @@ def load_dynamic_factory_defaults():
                     else:
                         ticker_data[regime] = fallback_defaults[regime]
                 defaults[ticker] = ticker_data
-    return defaults
     return defaults
 
 @app.get("/")

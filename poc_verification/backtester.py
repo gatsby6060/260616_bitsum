@@ -3,9 +3,9 @@ backtester.py — 9년 실 데이터 기반 자동 파라미터 최적화 모듈
 =====================================================================
 ■ 데이터:    빗썸 30분봉 캔들, 하루 12개 포인트 (00:00, 02:00, 04:00, 06:00, 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00, 22:00 KST)
 ■ 최초 수집: 9년치 전체 (약 39,420개 × 3종목), 이후 매일 12개만 추가(증분)
-■ 최적화:   BULL/BEAR/RANGE 장세별 독립 그리드 서치
+■ 최적화:   BULL/BEAR/RANGE 장세별 독립 그리드 서치 (지표 7조합 × OR/AND/VOTE/WEIGHTED_VOTE)
 ■ 기준:     Sharpe Ratio 최대 + MDD ≤ 50% 필터
-■ 수수료:   빗썸 0.04% + 슬리피지 0.05% -> 왕복 총 0.18%
+■ 수수료:   빗썸 실측 편도 0.25% (왕복 0.50%)
 """
 
 import os
@@ -45,9 +45,9 @@ BITHUMB_BASE = "https://api.bithumb.com"
 # 하루 중 수집할 KST 시각 (시, 분) - 2시간 간격 (하루 12개)
 TARGET_TIMES_KST = [(0, 0), (2, 0), (4, 0), (6, 0), (8, 0), (10, 0), (12, 0), (14, 0), (16, 0), (18, 0), (20, 0), (22, 0)]
 
-# 수수료: maker 0.04% + taker 0.04% + 슬리피지 0.05% = 편도 0.09%, 왕복 0.18%
-FEE_RATE = 0.0009          # 편도 1회 수수료+슬리피지
-ROUND_TRIP_FEE = FEE_RATE * 2  # 왕복 0.0018
+# 수수료: 빗썸 실거래 체결 기준 편도 약 0.25% (왕복 0.50%)
+FEE_RATE = 0.0025          # 편도 1회 수수료
+ROUND_TRIP_FEE = FEE_RATE * 2  # 왕복 0.005
 
 # 캐시 파일 경로 (backtester.py 와 같은 폴더)
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -80,7 +80,44 @@ STRATEGY_COMBOS = [
     {"rsi": True,  "bb": True,  "macd": True},
 ]
 
+# 지표 2개 이상일 때 검색할 합의 Logic (1개만 켠 조합은 OR과 동일하므로 OR만 사용)
+LOGIC_TYPES = ["OR", "AND", "VOTE", "WEIGHTED_VOTE"]
+DEFAULT_WEIGHTED_THRESHOLD = 0.5
+
 MDD_LIMIT = 0.50  # MDD 허용 한계 50%
+
+
+def _active_indicator_count(combo: dict) -> int:
+    return sum(1 for k in ("rsi", "bb", "macd") if combo.get(k))
+
+
+def _logics_for_combo(combo: dict) -> list:
+    """활성 지표가 1개면 OR만, 2개 이상이면 OR/AND/VOTE/WEIGHTED_VOTE 전부 검색."""
+    if _active_indicator_count(combo) <= 1:
+        return ["OR"]
+    return LOGIC_TYPES
+
+
+def _resolve_composite_signals(
+    buy_signals: list, sell_signals: list, logic: str, threshold: float = DEFAULT_WEIGHTED_THRESHOLD
+) -> tuple:
+    """실거래 VerboseCompositeStrategy와 동일한 AND/OR/VOTE/WEIGHTED_VOTE 규칙."""
+    n = len(buy_signals)
+    if n == 0:
+        return False, False
+
+    if logic == "AND":
+        return all(buy_signals), all(sell_signals)
+    if logic == "OR":
+        return any(buy_signals), any(sell_signals)
+    if logic == "VOTE":
+        majority = n // 2 + 1
+        return sum(buy_signals) >= majority, sum(sell_signals) >= majority
+    if logic == "WEIGHTED_VOTE":
+        buy_ratio = sum(1 for x in buy_signals if x) / n
+        sell_ratio = sum(1 for x in sell_signals if x) / n
+        return buy_ratio >= threshold, sell_ratio >= threshold
+    return any(buy_signals), any(sell_signals)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -680,9 +717,11 @@ class StrategySimulator:
                 buy_signals.append(prev_diff < 0 and curr_diff >= 0)   # 골든크로스
                 sell_signals.append(prev_diff > 0 and curr_diff <= 0)  # 데드크로스
 
-            # OR 로직: 하나라도 신호
-            buy  = any(buy_signals)  if buy_signals  else False
-            sell = any(sell_signals) if sell_signals else False
+            buy, sell = _resolve_composite_signals(
+                buy_signals, sell_signals,
+                params.get("logic", "OR"),
+                params.get("threshold", DEFAULT_WEIGHTED_THRESHOLD),
+            )
 
             if position == 0 and buy:
                 # 매수
@@ -781,34 +820,37 @@ class GridSearchOptimizer:
         self.sim = StrategySimulator()
 
     def _iter_params(self):
-        """모든 파라미터 조합 생성기."""
+        """모든 파라미터 조합 생성기 (지표 7조합 × Logic 최대 4종 × 파라미터 그리드)."""
         for combo in STRATEGY_COMBOS:
-            rsi_periods   = GRID["rsi_period"]   if combo["rsi"]  else [14]
-            rsi_oversolds = GRID["rsi_oversold"]  if combo["rsi"]  else [30]
-            rsi_overs     = GRID["rsi_overbought"] if combo["rsi"] else [70]
-            bb_periods    = GRID["bb_period"]     if combo["bb"]   else [20]
-            bb_stds       = GRID["bb_std"]        if combo["bb"]   else [2.0]
-            macd_fasts    = GRID["macd_fast"]     if combo["macd"] else [12]
-            macd_slows    = GRID["macd_slow"]     if combo["macd"] else [26]
-            macd_sigs     = GRID["macd_signal"]   if combo["macd"] else [9]
+            for logic in _logics_for_combo(combo):
+                rsi_periods   = GRID["rsi_period"]   if combo["rsi"]  else [14]
+                rsi_oversolds = GRID["rsi_oversold"]  if combo["rsi"]  else [30]
+                rsi_overs     = GRID["rsi_overbought"] if combo["rsi"] else [70]
+                bb_periods    = GRID["bb_period"]     if combo["bb"]   else [20]
+                bb_stds       = GRID["bb_std"]        if combo["bb"]   else [2.0]
+                macd_fasts    = GRID["macd_fast"]     if combo["macd"] else [12]
+                macd_slows    = GRID["macd_slow"]     if combo["macd"] else [26]
+                macd_sigs     = GRID["macd_signal"]   if combo["macd"] else [9]
 
-            for rp in rsi_periods:
-              for ro in rsi_oversolds:
-                for rob in rsi_overs:
-                  for bp in bb_periods:
-                    for bs in bb_stds:
-                      for mf in macd_fasts:
-                        for ms in macd_slows:
-                          if mf >= ms:
-                              continue  # fast < slow 강제
-                          for msig in macd_sigs:
-                            yield {
-                                "custom_bear": False,
-                                **combo,
-                                "rsi_period": rp, "rsi_oversold": ro, "rsi_overbought": rob,
-                                "bb_period": bp, "bb_std": bs,
-                                "macd_fast": mf, "macd_slow": ms, "macd_signal": msig,
-                            }
+                for rp in rsi_periods:
+                  for ro in rsi_oversolds:
+                    for rob in rsi_overs:
+                      for bp in bb_periods:
+                        for bs in bb_stds:
+                          for mf in macd_fasts:
+                            for ms in macd_slows:
+                              if mf >= ms:
+                                  continue  # fast < slow 강제
+                              for msig in macd_sigs:
+                                yield {
+                                    "custom_bear": False,
+                                    **combo,
+                                    "logic": logic,
+                                    "threshold": DEFAULT_WEIGHTED_THRESHOLD,
+                                    "rsi_period": rp, "rsi_oversold": ro, "rsi_overbought": rob,
+                                    "bb_period": bp, "bb_std": bs,
+                                    "macd_fast": mf, "macd_slow": ms, "macd_signal": msig,
+                                }
 
     def _iter_custom_bear_params(self):
         """CustomBear 전략용 파라미터 조합 생성기."""
@@ -1050,8 +1092,8 @@ def _build_output(params: dict, result: dict, expected_profits: dict = None) -> 
                 "signal_period": params["macd_signal"]
             }
         },
-        "logic":       "OR",
-        "threshold":   0.5,
+        "logic":       params.get("logic", "OR"),
+        "threshold":   params.get("threshold", DEFAULT_WEIGHTED_THRESHOLD),
         "risk": {
             "type":           "StopLoss" if params["target_regime"] != "BULL" else "None",
             "stop_loss_pct":  0.02,
@@ -1171,8 +1213,11 @@ def run_optimization(markets: list = None) -> dict:
         "last_updated": datetime.now(KST).isoformat(),
         "source": f"빗썸 30분봉 ({len(TARGET_TIMES_KST)}포인트/일, "
                   f"KST {[f'{h:02d}:{m:02d}' for h,m in TARGET_TIMES_KST]})",
-        "fee_assumption": "편도 0.09% (수수료 0.04% + 슬리피지 0.05%)",
-        "optimization_criteria": f"Sharpe Ratio 최대 + MDD <= {int(MDD_LIMIT * 100)}%"
+        "fee_assumption": "편도 0.25% (빗썸 실거래 체결 기준, 왕복 0.50%)",
+        "optimization_criteria": (
+            f"Sharpe Ratio 최대 + MDD <= {int(MDD_LIMIT * 100)}% "
+            "(지표 7조합 × OR/AND/VOTE/WEIGHTED_VOTE)"
+        ),
     }
 
     num_markets = len(markets)

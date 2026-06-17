@@ -61,8 +61,8 @@ class CompositeStrategy(BaseStrategy):
     여러 전략의 신호를 하나로 통합한다.
 
     logic 옵션:
-      'AND'  — 모든 전략이 BUY여야 BUY (보수적)
-      'OR'   — 하나라도 BUY면 BUY (공격적)
+      'AND'  — 모든 전략이 BUY여야 BUY, 모두 SELL이어야 SELL
+      'OR'   — 하나라도 BUY면 BUY, 하나라도 SELL이면 SELL
       'VOTE' — 과반수 득표 전략 채택
     """
 
@@ -79,13 +79,13 @@ class CompositeStrategy(BaseStrategy):
         if self.logic == "AND":
             if all(s == "BUY" for s in signals):
                 return "BUY"
-            if any(s == "SELL" for s in signals):
+            if all(s == "SELL" for s in signals):
                 return "SELL"
 
         elif self.logic == "OR":
             if any(s == "BUY" for s in signals):
                 return "BUY"
-            if all(s == "SELL" for s in signals):
+            if any(s == "SELL" for s in signals):
                 return "SELL"
 
         elif self.logic == "VOTE":

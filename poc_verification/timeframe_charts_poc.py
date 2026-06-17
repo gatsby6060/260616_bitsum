@@ -217,10 +217,10 @@ class VerboseCompositeStrategy(CompositeStrategy):
 
         if self.logic == "AND":
             if all(s == "BUY" for s in sig_list): final_signal = "BUY"
-            elif any(s == "SELL" for s in sig_list): final_signal = "SELL"
+            elif all(s == "SELL" for s in sig_list): final_signal = "SELL"
         elif self.logic == "OR":
             if any(s == "BUY" for s in sig_list): final_signal = "BUY"
-            elif all(s == "SELL" for s in sig_list): final_signal = "SELL"
+            elif any(s == "SELL" for s in sig_list): final_signal = "SELL"
         elif self.logic == "VOTE":
             majority = len(sig_list) // 2 + 1
             if sig_list.count("BUY") >= majority: final_signal = "BUY"
