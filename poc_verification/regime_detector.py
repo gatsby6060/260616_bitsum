@@ -27,7 +27,18 @@ TICKER_CYCLE_PROFILE = {
         "bear_drawdown_pct": 30.0,
         "bottoming_anchor_band_pct": 15.0,
     },
+    # KRW-USDT: 원화 환율 연동 스테이블코인 (1 USDT ≒ 1 USD) — 400일 회귀·사이클
+    "USDT": {
+        "regression_days": 400,
+        "cycle_anchor_days": 400,
+        "recovery_days": 90,
+        "peak_lookback_days": 400,
+        "bear_drawdown_pct": 3.0,
+        "bottoming_anchor_band_pct": 2.0,
+    },
 }
+
+STABLECOIN_TICKERS = frozenset({"USDT"})
 
 
 def _slope_rate_pct(prices: list, window: int, price_now: float) -> float:
@@ -257,11 +268,87 @@ class MarketRegimeDetector:
             return daily_flat and weekly_flat
         return daily_flat and slope_rate_30 >= -0.05
 
+    def _detect_stablecoin_regime(self, prices: list, n: int) -> dict:
+        """USDT 등 스테이블코인: 페그(원화 환율) 대비 미세 괴리로 장세 판정."""
+        min_required = min(30, self.regression_days)
+        if n < min_required:
+            return {
+                "regime": "RANGE",
+                "reason": f"스테이블코인 데이터 부족 ({n}/{min_required}). 페그 주변 횡보(RANGE) 대기.",
+                "cycle_match": None,
+                "metrics": self._empty_metrics(),
+            }
+
+        actual_period = min(self.regression_days, n)
+        price_now = float(prices[-1])
+        fair_value, _ = _linear_fair_value(prices, actual_period)
+        dev_pct = (price_now - fair_value) / fair_value * 100 if fair_value > 0 else 0.0
+
+        peak_lb = min(n, self.peak_lookback_days)
+        peak_price = max(prices[-peak_lb:])
+        drawdown_pct = (price_now - peak_price) / peak_price * 100 if peak_price > 0 else 0.0
+
+        if dev_pct <= -self.bear_drawdown_pct or drawdown_pct <= -self.bear_drawdown_pct:
+            regime = "BEAR"
+            reason = (
+                f"스테이블코인 페그 이탈(회귀 {dev_pct:+.2f}%, 고점대비 {drawdown_pct:.2f}%) — "
+                f"할인 구간, 단기 반등 스캘핑(BEAR)."
+            )
+        elif dev_pct >= self.bottoming_anchor_band_pct:
+            regime = "BULL"
+            reason = (
+                f"스테이블코인 프리미엄(회귀 {dev_pct:+.2f}%) — "
+                f"환율 상단, 보유·미세 익절(BULL)."
+            )
+        else:
+            regime = "RANGE"
+            reason = (
+                f"스테이블코인 페그 안정(회귀 {dev_pct:+.2f}%, 고점대비 {drawdown_pct:.2f}%) — "
+                f"1 USDT ≈ 1 USD 대피·횡보(RANGE)."
+            )
+
+        metrics = self._empty_metrics()
+        metrics.update({
+            "deviation_pct": float(dev_pct),
+            "drawdown_from_peak_pct": float(drawdown_pct),
+            "fair_value": float(fair_value),
+            "regression_days": int(self.regression_days),
+            "cycle_anchor_days": int(self.cycle_anchor_days),
+        })
+
+        lookback = min(400, n)
+        current_angle_monthly = _current_cycle_angle_pct_per_month(prices, lookback)
+        bull_cycles = _detect_historical_bull_cycles(prices)
+        cycle_match = _match_current_to_historical_cycles(bull_cycles, current_angle_monthly)
+        if cycle_match:
+            reason = f"{reason} | {cycle_match['summary']}"
+        metrics["current_angle_pct_per_month"] = float(current_angle_monthly)
+        if cycle_match:
+            metrics["cycle_match"] = cycle_match
+            metrics["historical_cycles"] = cycle_match.get("historical_cycles", [])
+
+        print(
+            f"[RegimeDetector] {self.ticker} | 가격: {price_now:,.2f} | "
+            f"페그회귀{self.regression_days}d: {fair_value:,.2f} ({dev_pct:+.2f}%) | "
+            f"400d각도: {current_angle_monthly:+.2f}%/월 | "
+            f"판정: {regime} - {reason}"
+        )
+
+        return {
+            "regime": regime,
+            "reason": reason,
+            "cycle_match": cycle_match,
+            "metrics": metrics,
+        }
+
     def detect_regime_detailed(self) -> dict:
         prices = self.candle_manager.get_prices("D")
         w_prices = self.candle_manager.get_prices("W")
         m_prices = self.candle_manager.get_prices("M")
         n = len(prices)
+
+        if self.ticker in STABLECOIN_TICKERS:
+            return self._detect_stablecoin_regime(prices, n)
 
         min_required = min(180, self.regression_days)
         if n < min_required:

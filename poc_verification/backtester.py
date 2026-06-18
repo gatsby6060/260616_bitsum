@@ -1,10 +1,10 @@
 """
 backtester.py — 9년 실 데이터 기반 자동 파라미터 최적화 모듈
 =====================================================================
-■ 데이터:    빗썸 30분봉 캔들, 하루 48개 포인트 (매시 0·30분 KST)
-■ 최초 수집: 9년치 전체 (약 157,680개 × 3종목), 이후 매일 48개만 추가(증분)
+■ 데이터:    빗썸 15분봉 캔들, 하루 96개 포인트 (매시 0·15·30·45분 KST)
+■ 최초 수집: 9년치 전체, 이후 매일 96개만 추가(증분)
 ■ 최적화:   BULL/BEAR/RANGE × 지표 7조합 × Logic 4종 × 리스크 기법/비율 그리드
-■ 기준:     Sharpe Ratio 최대 + MDD ≤ 50% 필터
+■ 기준:     총수익·보유기간 우선 profit_score + MDD ≤ 50% 필터
 ■ 수수료:   빗썸 실측 편도 0.25% (왕복 0.50%)
 """
 
@@ -36,6 +36,30 @@ try:
 except ImportError:
     HAS_NUMPY = False
 
+try:
+    from usdt_fx_historical import (
+        enrich_bars_with_historical_fx,
+        ensure_daily_fx_for_bars,
+        usdt_fx_buy_allowed,
+        usdt_fx_net_pnl_pct,
+    )
+    HAS_USDT_FX_HIST = True
+except ImportError:
+    HAS_USDT_FX_HIST = False
+
+USDT_FX_GRID = {
+    "min_consider_gap_krw": [15, 20, 30, 40, 50],
+    "min_target_profit_pct": [0.2, 0.3, 0.5, 0.8, 1.0, 1.5],
+}
+
+# 지표 매도 최소 순수익 (왕복 수수료 이후) — 조기 소액 익절 억제
+SELL_MIN_PROFIT_GRID = [0, 0.005, 0.008, 0.012, 0.018, 0.025]
+
+USDT_FUSION_BB_GRID = {
+    "bb_period": [10, 15, 20],
+    "bb_std": [1.5, 2.0, 2.5],
+}
+
 logger = logging.getLogger("Backtester")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44,11 +68,11 @@ logger = logging.getLogger("Backtester")
 KST = timezone(timedelta(hours=9))
 BITHUMB_BASE = "https://api.bithumb.com"
 
-# 하루 중 수집할 KST 시각 — 30분봉 (매시 0·30분, 하루 48개)
-CANDLE_INTERVAL_MINUTES = 30
+# 하루 중 수집할 KST 시각 — 15분봉 (매시 0·15·30·45분, 하루 96개)
+CANDLE_INTERVAL_MINUTES = 15
 CANDLE_INTERVAL_HOURS = CANDLE_INTERVAL_MINUTES / 60.0
-CACHE_SCHEMA = "30m_v1"
-TARGET_TIMES_KST = [(h, m) for h in range(24) for m in (0, 30)]
+CACHE_SCHEMA = "15m_v1"
+TARGET_TIMES_KST = [(h, m) for h in range(24) for m in (0, 15, 30, 45)]
 
 # 수수료: 빗썸 실거래 체결 기준 편도 약 0.25% (왕복 0.50%)
 FEE_RATE = 0.0025          # 편도 1회 수수료
@@ -62,7 +86,7 @@ CACHE_FILE    = os.path.join(_DIR, "historical_data_cache.json")
 RESULT_FILE   = os.path.join(_DIR, "optimized_params.json")
 PROGRESS_FILE = os.path.join(_DIR, "backtest_progress.json")
 
-MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP"]
+MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-USDT"]
 
 # 그리드 서치 파라미터 공간
 GRID = {
@@ -94,34 +118,45 @@ DEFAULT_WEIGHTED_THRESHOLD = 0.5
 MDD_LIMIT = 0.50  # MDD 허용 한계 50%
 
 # 병렬 최적화: 물리 코어 6개 사용 (12 스레드 중 절반만 — 나머지는 OS·실시간 매매용 여유)
-OPTIMIZER_MAX_WORKERS = 6
+OPTIMIZER_MAX_WORKERS = 7
 # Windows 프로세스 spawn 비용(~5초) 때문에 소량 배치는 순차 실행
 PARALLEL_MIN_BATCH = 80
 
 _RISK_ONLY_KEYS = frozenset({
-    "risk_type", "stop_loss_pct", "take_profit_pct", "trail_pct", "target_regime",
+    "risk_type", "stop_loss_pct", "take_profit_pct", "trail_pct",
+    "trail_activate_profit_pct", "target_regime", "min_strategy_sell_profit_pct",
 })
 
-# 리스크 관리 그리드 (장세·코인별 최적화 대상)
+
+def _iter_trailing_stop_grid():
+    """트레일링: N% 수익 달성 후 고점 대비 M% 하락 시 청산 (3%+1% vs 5%+1% 등 학습)."""
+    activates = [0.0, 0.03, 0.04, 0.05, 0.06, 0.08]
+    trails = [0.008, 0.01, 0.012, 0.015, 0.02]
+    for act in activates:
+        for trail in trails:
+            cfg = {"risk_type": "TrailingStop", "trail_pct": trail}
+            if act > 0:
+                cfg["trail_activate_profit_pct"] = act
+            yield cfg
+
+
+# 리스크 관리 그리드 (장세·코인별 최적화 대상 — 익절·트레일링 확대)
 RISK_GRID_BULL = [
     {"risk_type": "None"},
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.025},
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03},
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.04},
-    {"risk_type": "TrailingStop", "trail_pct": 0.015},
-    {"risk_type": "TrailingStop", "trail_pct": 0.02},
-    {"risk_type": "TrailingStop", "trail_pct": 0.03},
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.04},
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.05},
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.06},
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.03, "take_profit_pct": 0.08},
+    *_iter_trailing_stop_grid(),
 ]
 
 RISK_GRID_BEAR_RANGE = [
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.02},
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03},
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.04},
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.03, "take_profit_pct": 0.05},
-    {"risk_type": "TrailingStop", "trail_pct": 0.015},
-    {"risk_type": "TrailingStop", "trail_pct": 0.02},
-    {"risk_type": "TrailingStop", "trail_pct": 0.025},
-    {"risk_type": "TrailingStop", "trail_pct": 0.03},
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.03},
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.04},
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.05},
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.03, "take_profit_pct": 0.06},
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.035, "take_profit_pct": 0.08},
+    *_iter_trailing_stop_grid(),
 ]
 
 
@@ -166,6 +201,41 @@ def _iter_risk_configs(target_regime: str):
         yield from RISK_GRID_BEAR_RANGE
 
 
+def _iter_risk_with_sell_min(target_regime: str):
+    """리스크 × 지표매도 최소순익 그리드 (2단계 최적화용)."""
+    for risk_cfg in _iter_risk_configs(target_regime):
+        for min_s in SELL_MIN_PROFIT_GRID:
+            yield {**risk_cfg, "min_strategy_sell_profit_pct": min_s}
+
+
+def _optimizer_profit_score(result: dict) -> float:
+    """총수익·보유기간 우선 — 소액 조기 익절·과매매 억제."""
+    trades = int(result.get("trades", 0))
+    if trades < 3:
+        return -9999.0
+    mdd = float(result.get("mdd", 1.0))
+    if mdd > MDD_LIMIT:
+        return -9999.0
+    ret = float(result.get("total_return", 0))
+    sharpe = float(result.get("sharpe", 0))
+    hold_h = float(result.get("avg_hold_hours", 0))
+    win = float(result.get("win_rate", 0))
+    hold_bonus = min(hold_h / 72.0, 1.5) * 8.0
+    trade_penalty = max(0, trades - 80) * 0.03
+    return ret * 0.55 + sharpe * 6.0 + hold_bonus + win * 0.04 - trade_penalty
+
+
+def _gate_strategy_sell(params: dict, gross_pnl_pct: float, want_sell: bool) -> bool:
+    """지표 SELL 신호에 최소 순수익(수수료 반영) 게이트."""
+    if not want_sell:
+        return False
+    if gross_pnl_pct <= 0:
+        return True
+    min_s = float(params.get("min_strategy_sell_profit_pct", 0))
+    net_pnl = gross_pnl_pct - ROUND_TRIP_FEE
+    return net_pnl >= min_s
+
+
 def _hold_stats(holding_bars: list) -> dict:
     """보유 기간(봉 수) → 시간/일 단위 통계."""
     if not holding_bars:
@@ -184,17 +254,28 @@ def _hold_stats(holding_bars: list) -> dict:
 
 def _build_risk_output(params: dict) -> dict:
     rt = params.get("risk_type", "None")
+    min_sell = params.get("min_strategy_sell_profit_pct", 0)
     if rt == "None":
-        return {"type": "None"}
-    if rt == "StopLoss":
-        return {
+        out = {"type": "None"}
+    elif rt == "StopLoss":
+        out = {
             "type": "StopLoss",
             "stop_loss_pct": params.get("stop_loss_pct", 0.02),
             "take_profit_pct": params.get("take_profit_pct", 0.03),
         }
-    if rt == "TrailingStop":
-        return {"type": "TrailingStop", "trail_pct": params.get("trail_pct", 0.02)}
-    return {"type": "None"}
+    elif rt == "TrailingStop":
+        out = {
+            "type": "TrailingStop",
+            "trail_pct": params.get("trail_pct", 0.02),
+        }
+        act = params.get("trail_activate_profit_pct", 0)
+        if act:
+            out["trail_activate_profit_pct"] = act
+    else:
+        out = {"type": "None"}
+    if min_sell:
+        out["min_strategy_sell_profit_pct"] = min_sell
+    return out
 
 
 def _should_risk_exit(params: dict, pnl_pct: float, peak_price: float, price: float, entry_price: float) -> bool:
@@ -206,10 +287,13 @@ def _should_risk_exit(params: dict, pnl_pct: float, peak_price: float, price: fl
         return pnl_pct <= -sl or pnl_pct >= tp
     if rt == "TrailingStop":
         trail = params.get("trail_pct", 0.02)
+        activate = float(params.get("trail_activate_profit_pct", 0))
         if peak_price <= 0 or entry_price <= 0:
             return False
+        if activate > 0 and pnl_pct < activate:
+            return False
         drawdown = (peak_price - price) / peak_price
-        return drawdown >= trail and price > entry_price * 0.90
+        return drawdown >= trail
     return False
 
 
@@ -236,16 +320,16 @@ def _save_progress(stage: str, pct: float, msg: str = ""):
 # ─────────────────────────────────────────────────────────────────────────────
 class HistoricalDataFetcher:
     """
-    빗썸 30분봉 캔들을 페이지네이션하여 수집, JSON 캐시에 저장.
+    빗썸 15분봉 캔들을 페이지네이션하여 수집, JSON 캐시에 저장.
     증분 업데이트: 이미 캐시된 날짜 이후 데이터만 추가.
     """
 
-    CANDLE_URL = f"{BITHUMB_BASE}/v1/candles/minutes/30"
+    CANDLE_URL = f"{BITHUMB_BASE}/v1/candles/minutes/15"
     MAX_PER_CALL = 200
     CALL_DELAY = 0.25  # Rate-limit 준수
 
     def _fetch_page(self, market: str, to_dt: datetime) -> list:
-        """지정 시각(to_dt) 이전 30분봉 최대 200개 반환."""
+        """지정 시각(to_dt) 이전 15분봉 최대 200개 반환."""
         to_str = to_dt.strftime("%Y-%m-%dT%H:%M:%S")
         url = f"{self.CANDLE_URL}?market={market}&count={self.MAX_PER_CALL}&to={to_str}"
         for attempt in range(3):
@@ -273,7 +357,7 @@ class HistoricalDataFetcher:
         cursor = datetime.now(KST)
         call_count = 0
 
-        logger.info(f"[Fetcher] {market} 전체 히스토리 수집 시작 ({years}년 / 30분봉)")
+        logger.info(f"[Fetcher] {market} 전체 히스토리 수집 시작 ({years}년 / 15분봉)")
 
         while cursor > cutoff:
             page = self._fetch_page(market, cursor)
@@ -402,7 +486,7 @@ class DataCache:
         return {}
 
     def _check_cache_invalid(self, cache: dict) -> bool:
-        """30분봉 스키마·시각·필드 검증."""
+        """15분봉 스키마·시각·필드 검증."""
         meta = cache.get("_meta", {})
         if meta.get("schema") != CACHE_SCHEMA:
             return True
@@ -664,6 +748,10 @@ class StrategySimulator:
         if len(regime_data) < 30:
             return {"sharpe": -999, "mdd": 1.0, "total_return": 0, "win_rate": 0, "trades": 0, **_hold_stats([])}
 
+        if params.get("usdt_fusion"):
+            sim_data = data if params.get("use_all_regimes") else regime_data
+            return self._simulate_usdt_fusion(sim_data, params)
+
         # 1. CustomBear 전용 분기 (하락장 롱테일 극복 + 트레일링 스톱 결합)
         if params.get("custom_bear", False):
             opens = [d["open"] for d in regime_data]
@@ -828,6 +916,16 @@ class StrategySimulator:
                 params.get("threshold", DEFAULT_WEIGHTED_THRESHOLD),
             )
 
+            if params.get("usdt_fx_filter") and buy and HAS_USDT_FX_HIST:
+                fair = regime_data[i].get("fair_krw")
+                if not fair or not usdt_fx_buy_allowed(
+                    price, fair,
+                    params.get("min_consider_gap_krw", 30),
+                    params.get("min_target_profit_pct", 0.2),
+                    FEE_RATE,
+                ):
+                    buy = False
+
             if position == 0 and buy:
                 cost = capital * FEE_RATE
                 position = (capital - cost) / price
@@ -841,8 +939,17 @@ class StrategySimulator:
                 peak_price = max(peak_price, highs[i])
                 pnl_pct = (price - entry_price) / entry_price if entry_price > 0 else 0
                 risk_exit = _should_risk_exit(params, pnl_pct, peak_price, price, entry_price)
+                sell_signal = _gate_strategy_sell(params, pnl_pct, sell)
 
-                if risk_exit or sell:
+                if params.get("usdt_fx_filter") and HAS_USDT_FX_HIST:
+                    fair = regime_data[i].get("fair_krw")
+                    if fair:
+                        net_pnl = usdt_fx_net_pnl_pct(entry_price, price, FEE_RATE)
+                        min_p = params.get("min_target_profit_pct", 0.2) / 100.0
+                        if net_pnl >= min_p or (price >= fair and net_pnl >= min_p):
+                            sell_signal = True
+
+                if risk_exit or sell_signal:
                     gross = position * price
                     fee = gross * FEE_RATE
                     capital = gross - fee
@@ -891,6 +998,120 @@ class StrategySimulator:
             "total_return": round(total_return * 100, 2),  # %
             "win_rate":     round(win_rate * 100, 2),       # %
             "trades":       total_trades,
+            **_hold_stats(holding_bars),
+        }
+
+    def _simulate_usdt_fusion(self, data: list, params: dict) -> dict:
+        """USDT 고정 융합 — fair_krw는 캔들 ts 기준 당일 USD/KRW (usdt_fx_historical)."""
+        if len(data) < 30:
+            return {"sharpe": -999, "mdd": 1.0, "total_return": 0, "win_rate": 0, "trades": 0, **_hold_stats([])}
+
+        closes = [d["close"] for d in data]
+        ind = Indicators()
+
+        min_gap = float(params.get("min_consider_gap_krw", 30))
+        min_profit_pct = float(params.get("min_target_profit_pct", 0.2))
+        fee = float(params.get("fee_one_way", FEE_RATE))
+        bb_period = int(params.get("bb_period", 20))
+        bb_std = float(params.get("bb_std", 2.0))
+        stop_loss = float(params.get("stop_loss_pct", 0.01))
+        take_profit = float(params.get("take_profit_pct", 0.025))
+
+        bb_mid, bb_upper, bb_lower = ind.bollinger(closes, bb_period, bb_std)
+
+        fair_vals = [d.get("fair_krw") for d in data]
+        if not any(fair_vals):
+            fair_ma = int(params.get("fair_ma_period", 336))
+            fair_vals = []
+            for i in range(len(closes)):
+                if i < fair_ma:
+                    fair_vals.append(None)
+                else:
+                    window = closes[i - fair_ma:i]
+                    fair_vals.append(sum(window) / len(window))
+
+        capital = 1_000_000.0
+        position = 0.0
+        entry_price = 0.0
+        entry_idx = 0
+        equity_curve = [capital]
+        wins = 0
+        total_trades = 0
+        holding_bars = []
+        warmup = bb_period + 5
+
+        for i in range(warmup, len(closes)):
+            price = closes[i]
+            fair = fair_vals[i]
+            if fair is None or bb_lower[i] is None or bb_mid[i] is None:
+                continue
+
+            at_lower = price <= bb_lower[i]
+            at_middle = price >= bb_mid[i]
+            at_upper = price >= bb_upper[i] if bb_upper[i] else False
+            fx_ok = usdt_fx_buy_allowed(price, fair, min_gap, min_profit_pct, fee) if HAS_USDT_FX_HIST else (
+                (fair - price) >= min_gap
+            )
+
+            if position == 0:
+                if fx_ok and at_lower:
+                    cost = capital * fee
+                    position = (capital - cost) / price
+                    entry_price = price
+                    entry_idx = i
+                    capital = 0.0
+                    total_trades += 1
+            else:
+                net_pnl = usdt_fx_net_pnl_pct(entry_price, price, fee) if HAS_USDT_FX_HIST else (
+                    (price - entry_price) / entry_price if entry_price > 0 else 0
+                )
+                pnl_raw = (price - entry_price) / entry_price if entry_price > 0 else 0
+                min_p = min_profit_pct / 100.0
+                sell = (
+                    net_pnl >= min_p
+                    or pnl_raw <= -stop_loss
+                    or pnl_raw >= take_profit
+                )
+                if sell:
+                    gross = position * price
+                    capital = gross * (1 - fee)
+                    if price > entry_price:
+                        wins += 1
+                    holding_bars.append(i - entry_idx)
+                    position = 0.0
+                    equity_curve.append(capital)
+
+        if position > 0:
+            capital = position * closes[-1] * (1 - fee)
+            equity_curve.append(capital)
+
+        if len(equity_curve) < 2 or total_trades == 0:
+            return {"sharpe": -999, "mdd": 1.0, "total_return": 0, "win_rate": 0, "trades": 0, **_hold_stats([])}
+
+        total_return = (equity_curve[-1] / equity_curve[0]) - 1.0
+        peak = equity_curve[0]
+        mdd = 0.0
+        for v in equity_curve:
+            if v > peak:
+                peak = v
+            dd = (peak - v) / peak
+            if dd > mdd:
+                mdd = dd
+
+        returns = [(equity_curve[j] / equity_curve[j - 1]) - 1 for j in range(1, len(equity_curve))]
+        if len(returns) > 1 and HAS_NUMPY:
+            arr = np.array(returns)
+            std = float(np.std(arr, ddof=1))
+            sharpe = float(np.mean(arr)) / std if std > 0 else 0.0
+        else:
+            sharpe = 0.0
+
+        return {
+            "sharpe": round(sharpe, 4),
+            "mdd": round(mdd, 4),
+            "total_return": round(total_return * 100, 2),
+            "win_rate": round(wins / total_trades * 100, 2) if total_trades > 0 else 0.0,
+            "trades": total_trades,
             **_hold_stats(holding_bars),
         }
 
@@ -982,6 +1203,7 @@ def _calculate_expected_profits(total_return_pct: float, regime_data: list) -> d
         "3d": round(_compound(3), 2),
         "1w": round(_compound(7), 2),
         "2w": round(_compound(14), 2),
+        "3w": round(_compound(21), 2),
         "1m": round(_compound(30), 2),
         "3m": round(_compound(90), 2),
         "6m": round(_compound(180), 2),
@@ -1025,6 +1247,30 @@ class GridSearchOptimizer:
                                     "macd_fast": mf, "macd_slow": ms, "macd_signal": msig,
                                 }
 
+    def _iter_usdt_mixed_params(self):
+        """USDT 학습믹스: 3대 지표 × 당일 환율차(검토·수수료) 그리드."""
+        for base in self._iter_strategy_params():
+            for min_gap in USDT_FX_GRID["min_consider_gap_krw"]:
+                for min_profit in USDT_FX_GRID["min_target_profit_pct"]:
+                    yield {
+                        **base,
+                        "usdt_fx_filter": True,
+                        "min_consider_gap_krw": min_gap,
+                        "min_target_profit_pct": min_profit,
+                    }
+
+    def _iter_usdt_fusion_params(self):
+        for min_gap in USDT_FX_GRID["min_consider_gap_krw"]:
+            for min_profit in USDT_FX_GRID["min_target_profit_pct"]:
+                for bb_p in USDT_FUSION_BB_GRID["bb_period"]:
+                    for bb_s in USDT_FUSION_BB_GRID["bb_std"]:
+                        p = _default_usdt_fusion_sim_params()
+                        p["min_consider_gap_krw"] = min_gap
+                        p["min_target_profit_pct"] = min_profit
+                        p["bb_period"] = bb_p
+                        p["bb_std"] = bb_s
+                        yield p
+
     def _iter_params(self, regime: str):
         """전략 × 리스크 전체 조합 (소규모 테스트·폴백용)."""
         for base in self._iter_strategy_params():
@@ -1038,7 +1284,7 @@ class GridSearchOptimizer:
         volume_ratios = [1.2, 1.5, 2.0, 2.5, 3.0]
         trail_pcts    = [0.01, 0.02, 0.03, 0.04, 0.05]
         stop_losses   = [0.01, 0.02, 0.03, 0.04, 0.05]
-        time_cuts     = [12, 24, 36, 48]
+        time_cuts     = [24, 48, 72, 96]
         
         for lb in lookbacks:
             for dp in drop_pcts:
@@ -1101,13 +1347,16 @@ class GridSearchOptimizer:
             }
 
     def _optimize_mixed(self, data: list, regime: str, market: str, base_pct: float, span_pct: float):
-        best_sharpe = -999
+        best_score = -9999.0
         best_result = None
         best_params = None
 
         default_risk = next(_iter_risk_configs(regime))
-        strategy_combos = list(self._iter_strategy_params())
-        risk_combos = list(_iter_risk_configs(regime))
+        if market == "KRW-USDT":
+            strategy_combos = list(self._iter_usdt_mixed_params())
+        else:
+            strategy_combos = list(self._iter_strategy_params())
+        risk_combos = list(_iter_risk_with_sell_min(regime))
         total_phase1 = len(strategy_combos)
         total_phase2 = min(25, total_phase1) * len(risk_combos)
         total_combos = total_phase1 + total_phase2
@@ -1135,7 +1384,7 @@ class GridSearchOptimizer:
         for params, result in _parallel_simulate(data, phase1_params, progress_fn=_on_phase1):
             base = _strip_risk_fields(params)
             if result["mdd"] <= MDD_LIMIT and result["trades"] >= 5:
-                candidates.append((result["sharpe"], base, result))
+                candidates.append((_optimizer_profit_score(result), base, result))
 
         total = len(phase1_params)
 
@@ -1166,22 +1415,23 @@ class GridSearchOptimizer:
         for params, result in _parallel_simulate(data, phase2_params, progress_every=50, progress_fn=_on_phase2):
             if result["mdd"] > MDD_LIMIT or result["trades"] < 5:
                 continue
-            if result["sharpe"] > best_sharpe:
-                best_sharpe = result["sharpe"]
+            score = _optimizer_profit_score(result)
+            if score > best_score:
+                best_score = score
                 best_result = result
                 best_params = dict(params)
 
         total += phase2_total
 
-        logger.info(f"[Optimizer] {market}/{regime} Mixed: 총 {total}조합, 최적 Sharpe={best_sharpe:.4f}")
+        logger.info(f"[Optimizer] {market}/{regime} Mixed: 총 {total}조합, 최적 profit_score={best_score:.4f}")
 
         if best_params is None:
             logger.warning(f"[Optimizer] {market}/{regime} Mixed: MDD 필터 통과 없음 → 1단계 차선책")
-            fb_best = -999
-            for sharpe, base, result in candidates:
-                if result["trades"] >= 3 and sharpe > fb_best:
-                    fb_best = sharpe
-                    best_sharpe = sharpe
+            fb_best = -9999.0
+            for score, base, result in candidates:
+                if result["trades"] >= 3 and score > fb_best:
+                    fb_best = score
+                    best_score = score
                     best_result = result
                     best_params = {**base, **default_risk, "target_regime": regime}
 
@@ -1189,7 +1439,7 @@ class GridSearchOptimizer:
         return best_params, best_result
 
     def _optimize_custom_bear(self, data: list, regime: str, market: str, base_pct: float, span_pct: float):
-        best_sharpe = -999
+        best_score = -9999.0
         best_result = None
         best_params = None
         total = 0
@@ -1227,12 +1477,13 @@ class GridSearchOptimizer:
             if result["trades"] < 3:
                 continue
             valid += 1
-            if result["sharpe"] > best_sharpe:
-                best_sharpe = result["sharpe"]
+            score = _optimizer_profit_score(result)
+            if score > best_score:
+                best_score = score
                 best_result = result
                 best_params = dict(params)
 
-        logger.info(f"[Optimizer] {market}/{regime} CustomBear: 총 {total}조합 검색, {valid}개 통과, 최적 Sharpe={best_sharpe:.4f}")
+        logger.info(f"[Optimizer] {market}/{regime} CustomBear: 총 {total}조합 검색, {valid}개 통과, 최적 profit_score={best_score:.4f}")
 
         if best_params is None:
             logger.warning(f"[Optimizer] {market}/{regime} CustomBear: 필터 통과 없음 → 차선책 선택")
@@ -1250,16 +1501,82 @@ class GridSearchOptimizer:
             for params, result in _parallel_simulate(
                 data, custom_params_list, progress_every=50, progress_fn=_on_fallback
             ):
-                if result["sharpe"] > best_sharpe and result["trades"] >= 1:
-                    best_sharpe = result["sharpe"]
+                score = _optimizer_profit_score(result)
+                if score > best_score and result["trades"] >= 1:
+                    best_score = score
                     best_result = result
                     best_params = dict(params)
 
         _save_progress("optimizing", base_pct + span_pct, f"{market} {regime} CustomBear 최적화 완료")
         return best_params, best_result
 
+    def optimize_usdt_dual(self, data: list, market: str, base_pct: float, span_pct: float) -> dict:
+        """USDT: 고정 융합(환율+BB 그리드) vs 3대 지표+당일환율 학습 비교."""
+        bear_range = [d for d in data if d.get("regime") in ("BEAR", "RANGE")]
+        sim_data = bear_range if len(bear_range) >= 30 else data
+
+        def get_profits(ret_pct):
+            return _calculate_expected_profits(ret_pct, sim_data)
+
+        fixed_span = span_pct * 0.25
+        learned_span = span_pct * 0.75
+
+        fixed_params, fixed_result = self._optimize_usdt_fusion(
+            sim_data, market, base_pct, fixed_span
+        )
+        if fixed_params is None:
+            fixed_out = _default_usdt_fusion_output()
+        else:
+            fixed_out = _build_usdt_fusion_output(
+                fixed_params, fixed_result, get_profits(fixed_result["total_return"])
+            )
+
+        mixed_params, mixed_result = self._optimize_mixed(
+            data, "RANGE", market, base_pct + fixed_span, learned_span
+        )
+        if mixed_params is None:
+            mixed_out = _default_regime_params("RANGE")
+            mixed_out["period_expected_profits"] = {h: 0 for h in ("1d", "3d", "1w", "2w", "3w", "1m", "3m", "6m")}
+        else:
+            mixed_out = _build_output(mixed_params, mixed_result, get_profits(mixed_result["total_return"]))
+
+        return {
+            "fixed_fusion_strategy": fixed_out,
+            "learned_mixed_strategy": mixed_out,
+            **mixed_out,
+        }
+
+    def _optimize_usdt_fusion(self, data: list, market: str, base_pct: float, span_pct: float):
+        best_score = -9999.0
+        best_result = None
+        best_params = None
+        param_list = list(self._iter_usdt_fusion_params())
+        total = len(param_list)
+
+        def _on_progress(done, tot):
+            pct = base_pct + (done / max(tot, 1)) * span_pct
+            _save_progress("optimizing", pct, f"{market} 고정융합+환율 그리드 ({done}/{tot})")
+
+        for params, result in _parallel_simulate(data, param_list, progress_fn=_on_progress):
+            if result["mdd"] > MDD_LIMIT or result["trades"] < 3:
+                continue
+            score = _optimizer_profit_score(result)
+            if score > best_score:
+                best_score = score
+                best_result = result
+                best_params = dict(params)
+
+        logger.info(f"[Optimizer] {market} UsdtFusion: {total}조합, 최적 profit_score={best_score:.4f}")
+        _save_progress("optimizing", base_pct + span_pct, f"{market} 고정 융합 최적화 완료")
+        return best_params, best_result
+
     def run_full_optimization(self, market: str, data: list, m_idx: int = 0, num_markets: int = 3) -> dict:
         """종목 전체 장세 최적화."""
+        if market == "KRW-USDT" and HAS_USDT_FX_HIST:
+            logger.info(f"[Optimizer] {market} 캔들에 당일 USD/KRW 환율(fair_krw) 부착")
+            rates = ensure_daily_fx_for_bars(data)
+            data = enrich_bars_with_historical_fx(data, rates)
+
         labeler = RegimeLabeler()
         labeled = labeler.label(data)
         output = {}
@@ -1269,6 +1586,11 @@ class GridSearchOptimizer:
         optimize_weight = market_weight * 0.8
         regime_weight = optimize_weight / len(regimes)
         collect_weight = market_weight * 0.2
+
+        if market == "KRW-USDT":
+            base_pct = (m_idx * market_weight) + collect_weight
+            dual = self.optimize_usdt_dual(labeled, market, base_pct, optimize_weight)
+            return {"BULL": dual, "BEAR": dual, "RANGE": dual}
         
         for r_idx, regime in enumerate(regimes):
             base_pct = (m_idx * market_weight) + collect_weight + (r_idx * regime_weight)
@@ -1330,7 +1652,65 @@ def _build_output(params: dict, result: dict, expected_profits: dict = None) -> 
     }
     if expected_profits:
         out["period_expected_profits"] = expected_profits
+    if params.get("usdt_fx_filter"):
+        out["usdt_fx_filter"] = {
+            "min_consider_gap_krw": params.get("min_consider_gap_krw", 30),
+            "min_target_profit_pct": params.get("min_target_profit_pct", 0.2),
+        }
     return out
+
+
+def _default_usdt_fusion_output() -> dict:
+    p = _default_usdt_fusion_sim_params()
+    return _build_usdt_fusion_output(p, {
+        "total_return": 0, "sharpe": -999, "mdd": 1.0, "win_rate": 0, "trades": 0,
+        "avg_hold_hours": 0, "median_hold_hours": 0, "avg_hold_days": 0,
+    }, {"1d": 0, "3d": 0, "1w": 0, "3w": 0})
+
+
+def _default_usdt_fusion_sim_params(regime: str = "RANGE") -> dict:
+    return {
+        "usdt_fusion": True,
+        "use_all_regimes": True,
+        "target_regime": regime,
+        "min_consider_gap_krw": 30,
+        "min_target_profit_pct": 0.2,
+        "fee_one_way": FEE_RATE,
+        "fair_ma_period": 672,
+        "bb_period": 20,
+        "bb_std": 2.0,
+        "stop_loss_pct": 0.01,
+        "take_profit_pct": 0.025,
+    }
+
+
+def _build_usdt_fusion_output(params: dict, result: dict, expected_profits: dict = None) -> dict:
+    return {
+        "strategies": {
+            "UsdtFxBollinger": {
+                "enabled": True,
+                "weight": 1.0,
+                "timeframe": "15m",
+                "min_consider_gap_krw": params.get("min_consider_gap_krw", 30),
+                "min_target_profit_pct": params.get("min_target_profit_pct", 0.2),
+                "bb_period": params.get("bb_period", 20),
+                "bb_std_dev": params.get("bb_std", 2.0),
+            }
+        },
+        "usdt_fx_filter": {
+            "min_consider_gap_krw": params.get("min_consider_gap_krw", 30),
+            "min_target_profit_pct": params.get("min_target_profit_pct", 0.2),
+        },
+        "logic": "OR",
+        "threshold": 0.5,
+        "risk": {
+            "type": "StopLoss",
+            "stop_loss_pct": params.get("stop_loss_pct", 0.01),
+            "take_profit_pct": params.get("take_profit_pct", 0.025),
+        },
+        "backtest": _build_backtest_block(result),
+        "period_expected_profits": expected_profits or {},
+    }
 
 
 def _build_custom_bear_output(params: dict, result: dict, expected_profits: dict) -> dict:
@@ -1436,17 +1816,17 @@ def run_optimization(markets: list = None) -> dict:
     cache = cache_mgr.load()
     cache["_meta"] = {
         "schema": CACHE_SCHEMA,
-        "interval": "30m",
+        "interval": "15m",
         "points_per_day": len(TARGET_TIMES_KST),
     }
     results = {
         "last_updated": datetime.now(KST).isoformat(),
-        "source": f"빗썸 30분봉 ({len(TARGET_TIMES_KST)}포인트/일, "
-                  f"KST 매시 0·30분)",
+        "source": f"빗썸 15분봉 ({len(TARGET_TIMES_KST)}포인트/일, "
+                  f"KST 매시 0·15·30·45분)",
         "fee_assumption": "편도 0.25% (빗썸 실거래 체결 기준, 왕복 0.50%)",
         "optimization_criteria": (
-            f"Sharpe Ratio 최대 + MDD <= {int(MDD_LIMIT * 100)}% "
-            "(지표 7조합 × OR/AND/VOTE/WEIGHTED_VOTE × 리스크 그리드)"
+            f"profit_score(총수익·보유기간 우선) + MDD <= {int(MDD_LIMIT * 100)}% "
+            "(지표 7조합 × OR/AND/VOTE/WEIGHTED_VOTE × 리스크·매도최소익 그리드)"
         ),
         "parallel_workers": OPTIMIZER_MAX_WORKERS,
     }

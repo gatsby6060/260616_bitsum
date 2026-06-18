@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import copy
 import uuid
 import asyncio
 import queue
@@ -114,9 +115,73 @@ from core_engine import TradingEngine, AccountManager, BaseStrategy, BaseRiskMan
 
 # 추가 모듈 임포트
 from candle_manager import CandleManager
-from regime_detector import MarketRegimeDetector, TICKER_CYCLE_PROFILE
+from regime_detector import MarketRegimeDetector, TICKER_CYCLE_PROFILE, STABLECOIN_TICKERS
+from usdt_fx_reference import (
+    get_usd_krw_rate,
+    calc_reverse_premium_pct,
+    calc_usdt_fee_aware_edge,
+    calc_usdt_consideration_phase,
+)
+try:
+    from usdt_fx_historical import usdt_fx_buy_allowed
+except ImportError:
+    usdt_fx_buy_allowed = None
 
 # 글로벌 설정 및 엔진 인스턴스 홀더
+USDT_DEFAULT_MIN_CONSIDER_GAP_KRW = 40
+
+def _usdt_fx_bollinger_params() -> dict:
+    return {
+        "min_consider_gap_krw": USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
+        "min_target_profit_pct": 0.2,
+        "sell_premium_pct": 0.15,
+        "reference_krw": 0,
+        "fx_refresh_minutes": 60,
+        "fee_one_way_pct": 0.25,
+        "bb_period": 20,
+        "bb_std_dev": 2.0,
+    }
+
+
+def _build_default_usdt_config() -> dict:
+    """USDT: 환율 필터(관심구역) + 볼린저 하단 타점 매수 · 밴드/환율 청산."""
+    usdt_tactic = {
+        "logic": "OR",
+        "threshold": 0.5,
+        "strategies": [
+            {"name": "UsdtFxBollinger", "enabled": True, "weight": 1.0, "timeframe": "15m",
+             "params": _usdt_fx_bollinger_params()},
+        ],
+        "risk": {"type": "StopLoss", "stop_loss_pct": 0.01, "take_profit_pct": 0.025},
+    }
+    return {
+        "active": True,
+        "current_regime": "RANGE",
+        "regime_override": "AUTO",
+        "selected_bear_strategy": "mixed",
+        "long_term_ma_period": 400,
+        "usdt_fx": {
+            "reference_krw": 0,
+            "min_consider_gap_krw": USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
+            "min_target_profit_pct": 0.2,
+            "sell_premium_pct": 0.15,
+            "fx_refresh_minutes": 60,
+            "fee_one_way_pct": 0.25,
+            "bb_period": 20,
+            "bb_std_dev": 2.0,
+        },
+        "tactics": {
+            "BULL": usdt_tactic,
+            "BEAR": usdt_tactic,
+            "RANGE": usdt_tactic,
+        },
+        "selected_usdt_strategy": "auto",
+        "usdt_auto_pick": "fixed_fusion",
+        "usdt_auto_pick_reason": "초기값 — 고정 융합 전략",
+        "resolved_usdt_strategy": "fixed_fusion",
+    }
+
+
 active_ticker_configs = {
     "BTC": {
         "active": True,
@@ -139,7 +204,7 @@ active_ticker_configs = {
                 "logic": "CUSTOM_BEAR",
                 "threshold": 0.5,
                 "strategies": [
-                    {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "30m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 24}}
+                    {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "15m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 48}}
                 ],
                 "risk": {"type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.02}
             },
@@ -176,7 +241,7 @@ active_ticker_configs = {
                 "logic": "CUSTOM_BEAR",
                 "threshold": 0.5,
                 "strategies": [
-                    {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "30m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 24}}
+                    {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "15m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 48}}
                 ],
                 "risk": {"type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.02}
             },
@@ -213,7 +278,7 @@ active_ticker_configs = {
                 "logic": "CUSTOM_BEAR",
                 "threshold": 0.5,
                 "strategies": [
-                    {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "30m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 24}}
+                    {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "15m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "take_profit": 0.02, "stop_loss": 0.015, "time_cut": 48}}
                 ],
                 "risk": {"type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.02}
             },
@@ -228,7 +293,8 @@ active_ticker_configs = {
                 "risk": {"type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.03}
             }
         }
-    }
+    },
+    "USDT": _build_default_usdt_config(),
 }
 engine_instance = None
 
@@ -239,9 +305,14 @@ CONFIG_FILE_PATH = os.path.abspath(os.path.join(
 
 DEFAULT_REGIME_OVERRIDE = "AUTO"
 DEFAULT_BEAR_STRATEGY = "auto"  # 하락장 기본: 백테스트 우수 전략 자동 선택 (UI에서 custom_bear/mixed 고정 가능)
-SUPPORTED_TICKERS = ["BTC", "ETH", "XRP"]
-# 백테스트·실매매 지표 정렬 타임프레임 (30분봉 48포인트/일)
-OPTIM_BACKTEST_TIMEFRAME = "30m"
+SUPPORTED_TICKERS = ["BTC", "ETH", "XRP", "USDT"]
+# 백테스트·실매매 지표 정렬 타임프레임 (15분봉 96포인트/일)
+OPTIM_BACKTEST_TIMEFRAME = "15m"
+STRATEGY_BAR_SECONDS = 900
+ORDER_SAME_DIR_COOLDOWN_SEC = 3  # 동일 틱 중복 주문만 방지 (분석 타이밍은 차단하지 않음)
+TIMEFRAME_BAR_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400}
+PORTFOLIO_MAX_SINGLE_BUY_OF_SHARE = 0.5  # 종목 할당분(1/N)의 절반까지 1회 매수
+MIN_BITHUMB_ORDER_KRW = 5000.0
 
 # BEAR auto: 단기→장기 순으로 예상 수익 비교 (동률 시 다음 기간)
 BEAR_COMPARE_HORIZONS = ["1d", "3d", "1w", "2w", "1m", "3m", "6m"]
@@ -249,6 +320,149 @@ BEAR_HORIZON_LABELS = {
     "1d": "1일", "3d": "3일", "1w": "1주", "2w": "2주",
     "1m": "1개월", "3m": "3개월", "6m": "6개월",
 }
+
+# USDT: 고정 융합 vs 학습 3대지표 — 단기(최대 3주) 예상 수익 비교
+USDT_COMPARE_HORIZONS = ["1d", "3d", "1w", "3w"]
+USDT_HORIZON_LABELS = {"1d": "1일", "3d": "3일", "1w": "1주", "3w": "3주"}
+DEFAULT_USDT_STRATEGY = "auto"
+
+
+def _expand_usdt_profit_horizons(strategy_reg: dict) -> dict:
+    profits = dict(strategy_reg.get("period_expected_profits") or {})
+    if all(h in profits for h in USDT_COMPARE_HORIZONS):
+        return profits
+    ret = strategy_reg.get("backtest", {}).get("total_return_pct", 0)
+    if BACKTEST_AVAILABLE and _bt_mod:
+        computed = _bt_mod._calculate_expected_profits(ret, [])
+        for h in USDT_COMPARE_HORIZONS:
+            profits.setdefault(h, computed.get(h, 0))
+    return profits
+
+
+def _compute_usdt_auto_pick(usdt_opt_reg: dict) -> tuple:
+    """USDT: 1일→3일→1주→3주 예상 수익 비교, 동률 시 Sharpe → 고정 융합 우선."""
+    fixed = usdt_opt_reg.get("fixed_fusion_strategy", {})
+    learned = usdt_opt_reg.get("learned_mixed_strategy", {})
+    f_profits = _expand_usdt_profit_horizons(fixed)
+    l_profits = _expand_usdt_profit_horizons(learned)
+
+    for horizon in USDT_COMPARE_HORIZONS:
+        fv = f_profits.get(horizon, 0)
+        lv = l_profits.get(horizon, 0)
+        label = USDT_HORIZON_LABELS[horizon]
+        if fv > lv:
+            return "fixed_fusion", f"{label} 예상 수익 우세 (고정융합 {fv:+.2f}% > 학습믹스 {lv:+.2f}%)"
+        if lv > fv:
+            return "learned_mixed", f"{label} 예상 수익 우세 (학습믹스 {lv:+.2f}% > 고정융합 {fv:+.2f}%)"
+
+    f_sh = fixed.get("backtest", {}).get("sharpe_ratio", -999)
+    l_sh = learned.get("backtest", {}).get("sharpe_ratio", -999)
+    if l_sh > f_sh:
+        return "learned_mixed", "전 기간 동률 → Sharpe 우세 (학습믹스)"
+    if f_sh > l_sh:
+        return "fixed_fusion", "전 기간 동률 → Sharpe 우세 (고정융합)"
+    return "fixed_fusion", "전 기간 동률 → 고정 융합 전략 우선 (기본값)"
+
+
+def _build_usdt_fixed_fusion_tactics() -> dict:
+    return copy.deepcopy(_build_default_usdt_config()["tactics"]["RANGE"])
+
+
+def _summarize_usdt_variant(opt_reg: dict) -> dict:
+    profits = _expand_usdt_profit_horizons(opt_reg)
+    bt = opt_reg.get("backtest", {})
+    strats = [k for k, v in opt_reg.get("strategies", {}).items() if v.get("enabled")]
+    return {
+        "strategies": strats,
+        "logic": opt_reg.get("logic"),
+        "return_pct": round(bt.get("total_return_pct", 0), 2),
+        "sharpe": round(bt.get("sharpe_ratio", 0), 4),
+        "avg_hold_days": round(bt.get("avg_hold_days", 0), 2),
+        "min_target_profit_pct": (opt_reg.get("usdt_fx_filter") or {}).get("min_target_profit_pct"),
+        "expected_profit_1d": round(profits.get("1d", 0), 2),
+        "expected_profit_3d": round(profits.get("3d", 0), 2),
+        "expected_profit_1w": round(profits.get("1w", 0), 2),
+        "expected_profit_3w": round(profits.get("3w", 0), 2),
+        "best_gap_krw": (opt_reg.get("usdt_fx_filter") or {}).get("min_consider_gap_krw"),
+    }
+
+
+def _resolve_usdt_strategy(ticker: str) -> str:
+    if ticker not in active_ticker_configs:
+        return "fixed_fusion"
+    selected = active_ticker_configs[ticker].get("selected_usdt_strategy", DEFAULT_USDT_STRATEGY)
+    if selected in ("fixed_fusion", "learned_mixed"):
+        return selected
+    return active_ticker_configs[ticker].get("usdt_auto_pick", "fixed_fusion")
+
+
+def _apply_usdt_strategy_selection(ticker: str) -> bool:
+    if ticker not in active_ticker_configs:
+        return False
+    cfg = active_ticker_configs[ticker]
+    resolved = _resolve_usdt_strategy(ticker)
+    cfg["resolved_usdt_strategy"] = resolved
+    cache = cfg.get("usdt_tactics_cache", {})
+    if resolved == "fixed_fusion":
+        tactics = cache.get("fixed_fusion") or _build_usdt_fixed_fusion_tactics()
+    else:
+        tactics = cache.get("learned_mixed")
+        if not tactics:
+            tactics = cache.get("fixed_fusion") or _build_usdt_fixed_fusion_tactics()
+            cfg["resolved_usdt_strategy"] = "fixed_fusion"
+    for reg in ("BULL", "BEAR", "RANGE"):
+        cfg["tactics"][reg] = copy.deepcopy(tactics)
+    return True
+
+
+def _apply_usdt_optimization_results(market_results: dict, ticker: str) -> bool:
+    opt_reg = (market_results or {}).get("RANGE")
+    if not opt_reg or "fixed_fusion_strategy" not in opt_reg:
+        return False
+    cfg = active_ticker_configs[ticker]
+    fixed = opt_reg["fixed_fusion_strategy"]
+    learned = opt_reg["learned_mixed_strategy"]
+    cfg["usdt_tactics_cache"] = {
+        "fixed_fusion": _build_usdt_fixed_fusion_tactics(),
+        "learned_mixed": _build_tactics_from_opt_reg(learned),
+    }
+    pick, reason = _compute_usdt_auto_pick(opt_reg)
+    cfg["usdt_auto_pick"] = pick
+    cfg["usdt_auto_pick_reason"] = reason
+    cfg["usdt_strategy_compare"] = {
+        "fixed_fusion": _summarize_usdt_variant(fixed),
+        "learned_mixed": _summarize_usdt_variant(learned),
+    }
+    winner = fixed if pick == "fixed_fusion" else learned
+    fx_filter = winner.get("usdt_fx_filter") or fixed.get("usdt_fx_filter") or {}
+    if fx_filter:
+        usdt_fx = cfg.setdefault("usdt_fx", {})
+        for k in ("min_consider_gap_krw", "min_target_profit_pct"):
+            if k in fx_filter:
+                usdt_fx[k] = fx_filter[k]
+        ufb = winner.get("strategies", {}).get("UsdtFxBollinger", {})
+        for k in ("bb_period", "bb_std_dev"):
+            if k in ufb:
+                usdt_fx["bb_period" if k == "bb_period" else "bb_std_dev"] = ufb[k]
+        _sync_usdt_strategy_params(usdt_fx)
+    return _apply_usdt_strategy_selection(ticker)
+
+
+def _usdt_live_fx_allows_buy(config: dict, price: float) -> bool:
+    """실매매 USDT 매수 전 환율차·수수료 검증 (학습믹스 포함)."""
+    if not usdt_fx_buy_allowed or price <= 0:
+        return True
+    fx_cfg = config.get("usdt_fx", {})
+    manual = float(fx_cfg.get("reference_krw") or 0)
+    ttl = int(fx_cfg.get("fx_refresh_minutes", 60)) * 60
+    fair, _ = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
+    fee = float(fx_cfg.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
+    return usdt_fx_buy_allowed(
+        price, fair,
+        float(fx_cfg.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW)),
+        float(fx_cfg.get("min_target_profit_pct", 0.2)),
+        fee,
+    )
 
 
 def _expand_profit_horizons(strategy_reg: dict) -> dict:
@@ -362,6 +576,9 @@ def _apply_bear_strategy_selection(ticker: str) -> bool:
     if ticker not in active_ticker_configs:
         return False
 
+    if ticker in STABLECOIN_TICKERS:
+        return _apply_usdt_strategy_selection(ticker)
+
     resolved = _resolve_bear_strategy(ticker)
     active_ticker_configs[ticker]["resolved_bear_strategy"] = resolved
     cache = active_ticker_configs[ticker].get("bear_tactics_cache", {})
@@ -395,9 +612,53 @@ def load_persisted_configs():
     for ticker in SUPPORTED_TICKERS:
         cfg = active_ticker_configs.get(ticker)
         if not isinstance(cfg, dict):
+            if ticker == "USDT":
+                active_ticker_configs[ticker] = _build_default_usdt_config()
             continue
+        _migrate_config_to_15m(cfg)
         cfg.setdefault("regime_override", DEFAULT_REGIME_OVERRIDE)
         cfg.setdefault("selected_bear_strategy", DEFAULT_BEAR_STRATEGY)
+
+    usdt_cfg = active_ticker_configs.get("USDT")
+    if isinstance(usdt_cfg, dict):
+        usdt_cfg.setdefault("selected_usdt_strategy", DEFAULT_USDT_STRATEGY)
+        usdt_cfg.setdefault("usdt_auto_pick", "fixed_fusion")
+        usdt_cfg.setdefault("resolved_usdt_strategy", "fixed_fusion")
+        usdt_cfg.setdefault("usdt_tactics_cache", {})
+        usdt_cfg.setdefault("usdt_fx", {})
+        usdt_fx = usdt_cfg["usdt_fx"]
+        defaults = _build_default_usdt_config()["usdt_fx"]
+        for k, v in defaults.items():
+            usdt_fx.setdefault(k, v)
+        if usdt_cfg.get("long_term_ma_period", 90) != 400:
+            usdt_cfg["long_term_ma_period"] = 400
+        if usdt_fx.get("min_consider_gap_krw", 30) < USDT_DEFAULT_MIN_CONSIDER_GAP_KRW:
+            usdt_fx["min_consider_gap_krw"] = USDT_DEFAULT_MIN_CONSIDER_GAP_KRW
+            _sync_usdt_strategy_params(usdt_fx)
+        tactics = usdt_cfg.get("tactics", {})
+        uses_legacy = all(
+            any(s.get("name") == "ReversePremium" for s in tactics.get(reg, {}).get("strategies", []))
+            and not any(s.get("name") == "UsdtFxBollinger" for s in tactics.get(reg, {}).get("strategies", []))
+            for reg in ("BULL", "BEAR", "RANGE")
+            if reg in tactics
+        )
+        if uses_legacy:
+            preserved_fx = dict(usdt_fx)
+            active_ticker_configs["USDT"] = _build_default_usdt_config()
+            active_ticker_configs["USDT"]["usdt_fx"].update(preserved_fx)
+            fx = active_ticker_configs["USDT"]["usdt_fx"]
+            sync_keys = (
+                "reference_krw", "min_consider_gap_krw", "min_target_profit_pct",
+                "sell_premium_pct", "fx_refresh_minutes", "fee_one_way_pct",
+                "bb_period", "bb_std_dev",
+            )
+            synced = {k: fx[k] for k in sync_keys if k in fx}
+            for regime in ("BULL", "BEAR", "RANGE"):
+                for s in active_ticker_configs["USDT"]["tactics"][regime]["strategies"]:
+                    if s.get("name") == "UsdtFxBollinger":
+                        s["params"].update(synced)
+            save_persisted_configs()
+            print("[Storage] USDT 전략을 환율+볼린저 융합(UsdtFxBollinger)으로 업그레이드했습니다.")
 
 def save_persisted_configs():
     try:
@@ -412,10 +673,24 @@ def _summarize_opt_reg_for_ui(opt_reg: dict, bear_variant: str = None) -> dict:
     bt = opt_reg.get("backtest", {})
     strats = [k for k, v in opt_reg.get("strategies", {}).items() if v.get("enabled")]
     risk = opt_reg.get("risk", {})
+    min_sell = risk.get("min_strategy_sell_profit_pct", 0)
+    sell_note = ""
+    if risk.get("type") == "TrailingStop":
+        act = risk.get("trail_activate_profit_pct", 0)
+        if act:
+            sell_note = f"트레일 +{round(act * 100, 1)}% 후 -{round(risk.get('trail_pct', 0) * 100, 1)}%"
+        else:
+            sell_note = f"트레일 -{round(risk.get('trail_pct', 0) * 100, 1)}%"
+    elif risk.get("type") == "StopLoss":
+        sell_note = f"TP {round(risk.get('take_profit_pct', 0) * 100, 1)}%"
+    if min_sell:
+        sell_note = (sell_note + " · " if sell_note else "") + f"지표매도≥{round(min_sell * 100, 2)}%"
     summary = {
         "logic": opt_reg.get("logic", "OR"),
         "strategies": strats,
         "risk_type": risk.get("type", "None"),
+        "sell_strategy": sell_note or risk.get("type", "None"),
+        "min_strategy_sell_profit_pct": min_sell,
         "return_pct": round(bt.get("total_return_pct", 0), 2),
         "sharpe": round(bt.get("sharpe_ratio", 0), 4),
         "avg_hold_days": round(bt.get("avg_hold_days", 0), 2),
@@ -438,6 +713,19 @@ def _build_optimized_default_snapshot(ticker: str, results: dict) -> dict:
         for regime in ["BULL", "BEAR", "RANGE"]:
             opt_reg = results[market].get(regime)
             if not opt_reg:
+                continue
+            if ticker == "USDT" and regime == "RANGE":
+                pick = cfg.get("usdt_auto_pick")
+                pick_reason = cfg.get("usdt_auto_pick_reason", "")
+                if not pick and "fixed_fusion_strategy" in opt_reg:
+                    pick, pick_reason = _compute_usdt_auto_pick(opt_reg)
+                variant = pick or "fixed_fusion"
+                key_map = {"fixed_fusion": "fixed_fusion_strategy", "learned_mixed": "learned_mixed_strategy"}
+                src = opt_reg.get(key_map.get(variant, "fixed_fusion_strategy")) or opt_reg
+                summary = _summarize_usdt_variant(src)
+                summary["usdt_variant"] = variant
+                summary["usdt_pick_reason"] = pick_reason
+                regimes_summary[regime] = summary
                 continue
             if regime == "BEAR":
                 pick = cfg.get("bear_auto_pick")
@@ -466,6 +754,9 @@ def _build_optimized_default_snapshot(ticker: str, results: dict) -> dict:
         "active_risk_type": active_tactic.get("risk", {}).get("type", "None"),
         "resolved_bear_strategy": cfg.get("resolved_bear_strategy"),
         "bear_auto_pick_reason": cfg.get("bear_auto_pick_reason"),
+        "resolved_usdt_strategy": cfg.get("resolved_usdt_strategy"),
+        "usdt_auto_pick_reason": cfg.get("usdt_auto_pick_reason"),
+        "usdt_strategy_compare": cfg.get("usdt_strategy_compare"),
         "cycle_match_cycle": cycle.get("matched_cycle_number"),
         "cycle_similarity_pct": cycle.get("similarity_pct"),
         "regimes": regimes_summary,
@@ -482,6 +773,13 @@ def update_configs_with_optimized_params():
     for market in [f"KRW-{t}" for t in SUPPORTED_TICKERS]:
         ticker = market.replace("KRW-", "")
         if market not in results or ticker not in active_ticker_configs:
+            continue
+
+        if ticker == "USDT":
+            if _apply_usdt_optimization_results(results[market], ticker):
+                updated = True
+            active_ticker_configs[ticker]["optimized_default"] = _build_optimized_default_snapshot(ticker, results)
+            updated = True
             continue
 
         cycle_match = active_ticker_configs[ticker].get("cycle_analysis")
@@ -517,10 +815,42 @@ def update_configs_with_optimized_params():
         save_persisted_configs()
         print("[Storage] 종목별 최적화 파라미터(BULL/RANGE/mix·CustomBear) 및 디폴트 스냅샷이 반영되었습니다.")
 
+def _bar_seconds_for_timeframe(timeframe: str) -> int:
+    return TIMEFRAME_BAR_SECONDS.get(timeframe, STRATEGY_BAR_SECONDS)
+
+
+def _migrate_config_to_15m(cfg: dict) -> None:
+    """저장 설정의 30m 전략 봉 → 15m (time_cut은 동일 실시간 유지 위해 2배)."""
+    if not isinstance(cfg, dict):
+        return
+    for tactic in (cfg.get("tactics") or {}).values():
+        if not isinstance(tactic, dict):
+            continue
+        for strat in tactic.get("strategies") or []:
+            if not isinstance(strat, dict):
+                continue
+            if strat.get("timeframe") == "30m":
+                strat["timeframe"] = "15m"
+            if strat.get("name") == "CustomBear":
+                params = strat.setdefault("params", {})
+                tc = params.get("time_cut")
+                if isinstance(tc, (int, float)) and tc < 96 and tc % 2 == 0:
+                    params["time_cut"] = int(tc * 2)
+    usdt_fx = cfg.get("usdt_fx")
+    if isinstance(usdt_fx, dict) and usdt_fx.get("bb_timeframe") == "30m":
+        usdt_fx["bb_timeframe"] = "15m"
+
+
+def _get_min_strategy_sell_profit_pct(tactic: dict) -> float:
+    """학습된 지표매도 최소 순수익 (0이면 기존과 동일)."""
+    risk = tactic.get("risk", {}) if tactic else {}
+    return float(risk.get("min_strategy_sell_profit_pct", 0))
+
+
 def update_configs_and_apply_to_engine():
     update_configs_with_optimized_params()
     if engine_instance:
-        for ticker in ["BTC", "ETH", "XRP"]:
+        for ticker in SUPPORTED_TICKERS:
             if ticker in engine_instance._workers:
                 worker = engine_instance._workers[ticker]
                 worker.config = active_ticker_configs[ticker]
@@ -644,11 +974,193 @@ class BithumbBollingerStrategy(BaseStrategy):
         return "HOLD"
 
 
+class BithumbUsdtReversePremiumStrategy(BaseStrategy):
+    """
+    역프리미엄(할인) 매매 — 수수료·최소목표수익 반영:
+    (기준환율 - USDT가) > 매수수수료 + 매도수수료 + 최소목표수익 일 때만 매수.
+    """
+    NAME = "ReversePremium"
+    PARAMS = {
+        "min_target_profit_pct": 0.2,
+        "sell_premium_pct": 0.15,
+        "reference_krw": 0,
+        "fx_refresh_minutes": 60,
+        "fee_one_way_pct": 0.25,
+    }
+
+    def generate_signal(self, data: dict) -> str:
+        tick = float(data.get("price") or 0)
+        if tick <= 0:
+            return "HOLD"
+
+        manual = float(self.params.get("reference_krw") or 0)
+        ttl = int(self.params.get("fx_refresh_minutes", 60)) * 60
+        fair, source = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
+        fx = calc_reverse_premium_pct(tick, fair)
+        rev = fx["reverse_premium_pct"]
+        prem = fx["premium_pct"]
+
+        fee_one_way = float(self.params.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
+        min_profit_pct = float(self.params.get("min_target_profit_pct", 0.2))
+        sell_thr = float(self.params.get("sell_premium_pct", 0.15))
+
+        edge = calc_usdt_fee_aware_edge(fair, tick, fee_one_way, min_profit_pct)
+
+        if edge["is_buy_profitable"]:
+            status = f"역프 순이익 +{edge['net_edge_krw']:.1f}원"
+        elif rev > 0:
+            status = f"역프 {rev:.2f}% (수수료·목표 미달)"
+        elif prem > 0.05:
+            status = f"프리미엄 {prem:.2f}%"
+        else:
+            status = "정상권"
+
+        data["usdt_fx_val"] = (
+            f"{status} | 기준:{fair:,.1f}원 | 현재:{tick:,.2f}원 | "
+            f"필요스프레드:{edge['required_spread_krw']:.1f}원(수수료+목표)"
+        )
+        data["usdt_fx_status"] = {
+            **fx,
+            **edge,
+            "fair_source": source,
+            "min_target_profit_pct": min_profit_pct,
+            "fee_one_way_pct": fee_one_way * 100,
+            "sell_threshold_pct": sell_thr,
+        }
+
+        qty = data.get("position_qty", 0.0)
+        if qty == 0:
+            if edge["is_buy_profitable"]:
+                return "BUY"
+        else:
+            avg = float(data.get("avg_price") or tick)
+            net_pnl = calc_net_pnl_pct(avg, tick)
+            min_profit_dec = min_profit_pct / 100.0
+            if net_pnl >= min_profit_dec:
+                return "SELL"
+            if prem >= sell_thr and net_pnl > 0:
+                return "SELL"
+        return "HOLD"
+
+
+class BithumbUsdtFxBollingerStrategy(BaseStrategy):
+    """
+    USDT 융합 전략:
+    1차 — 기준환율 대비 gap >= min_consider_gap_krw 일 때만 매수 '검토' 시작
+    2차 — 검토 구역 + 수수료·목표 충족 + 볼린저 하단 터치 시 매수
+    청산 — 순수익 목표 / 밴드 중심·상단 / 프리미엄
+    """
+    NAME = "UsdtFxBollinger"
+    PARAMS = _usdt_fx_bollinger_params()
+
+    def __init__(self, candle_manager, timeframe="15m", params=None):
+        super().__init__(params)
+        self.candle_manager = candle_manager
+        self.timeframe = timeframe
+
+    def _calc_bollinger(self, prices: list):
+        period = int(self.params.get("bb_period", 20))
+        std_dev = float(self.params.get("bb_std_dev", 2.0))
+        if len(prices) <= period:
+            return None
+        series = pd.Series(prices)
+        ma = series.rolling(window=period).mean()
+        std = series.rolling(window=period).std()
+        mid = float(ma.iloc[-1])
+        sd = float(std.iloc[-1])
+        return {
+            "upper": mid + std_dev * sd,
+            "middle": mid,
+            "lower": mid - std_dev * sd,
+        }
+
+    def generate_signal(self, data: dict) -> str:
+        tick = float(data.get("price") or 0)
+        if tick <= 0:
+            return "HOLD"
+
+        manual = float(self.params.get("reference_krw") or 0)
+        ttl = int(self.params.get("fx_refresh_minutes", 60)) * 60
+        fair, source = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
+        fx = calc_reverse_premium_pct(tick, fair)
+        rev = fx["reverse_premium_pct"]
+        prem = fx["premium_pct"]
+        gap_krw = fx["gap_krw"]
+
+        fee_one_way = float(self.params.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
+        min_profit_pct = float(self.params.get("min_target_profit_pct", 0.2))
+        sell_thr = float(self.params.get("sell_premium_pct", 0.15))
+        min_consider = float(self.params.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW))
+
+        edge = calc_usdt_fee_aware_edge(fair, tick, fee_one_way, min_profit_pct)
+        phase_info = calc_usdt_consideration_phase(gap_krw, min_consider, edge)
+
+        prices = self.candle_manager.get_prices(self.timeframe)
+        bb = self._calc_bollinger(prices) if prices else None
+        at_lower = bool(bb and tick <= bb["lower"])
+        at_middle = bool(bb and tick >= bb["middle"])
+        at_upper = bool(bb and tick >= bb["upper"])
+
+        if bb:
+            data["bb_val"] = (
+                f"U:{bb['upper']:.1f}/M:{bb['middle']:.1f}/L:{bb['lower']:.1f}"
+            )
+        else:
+            data["bb_val"] = "데이터 부족"
+
+        phase = phase_info["phase"]
+        if phase == "idle":
+            fx_status = f"관심 구역 밖 (차이 {gap_krw:.0f}원 < {min_consider:.0f}원)"
+        elif phase == "consider":
+            fx_status = f"검토 중 · 수수료·목표 미달 (차이 {gap_krw:.0f}원)"
+        elif at_lower:
+            fx_status = f"매수 타점 (역프 {gap_krw:.0f}원 + BB하단)"
+        else:
+            fx_status = f"대기 · BB하단 타점 (차이 {gap_krw:.0f}원, 하단 {bb['lower']:.1f}원)" if bb else f"대기 · BB 데이터 부족 (차이 {gap_krw:.0f}원)"
+
+        data["usdt_fx_val"] = (
+            f"{fx_status} | 기준:{fair:,.1f}원 | 현재:{tick:,.2f}원 | "
+            f"순이익여유:{edge['net_edge_krw']:+.1f}원"
+        )
+        data["usdt_fx_status"] = {
+            **fx,
+            **edge,
+            **phase_info,
+            "fair_source": source,
+            "min_target_profit_pct": min_profit_pct,
+            "fee_one_way_pct": fee_one_way * 100,
+            "sell_threshold_pct": sell_thr,
+            "bb_timeframe": self.timeframe,
+            "bb_period": int(self.params.get("bb_period", 20)),
+            "bb_std_dev": float(self.params.get("bb_std_dev", 2.0)),
+            "bb_upper": round(bb["upper"], 2) if bb else None,
+            "bb_middle": round(bb["middle"], 2) if bb else None,
+            "bb_lower": round(bb["lower"], 2) if bb else None,
+            "at_bb_lower": at_lower,
+            "at_bb_middle": at_middle,
+            "at_bb_upper": at_upper,
+        }
+
+        qty = data.get("position_qty", 0.0)
+        if qty == 0:
+            if phase_info["in_consideration"] and edge["is_buy_profitable"] and at_lower:
+                return "BUY"
+        else:
+            avg = float(data.get("avg_price") or tick)
+            net_pnl = calc_net_pnl_pct(avg, tick)
+            min_profit_dec = min_profit_pct / 100.0
+            if net_pnl >= min_profit_dec:
+                return "SELL"
+            if prem >= sell_thr and net_pnl >= min_profit_dec:
+                return "SELL"
+        return "HOLD"
+
+
 class BithumbCustomBearStrategy(BaseStrategy):
     NAME = "CustomBear"
-    PARAMS = {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "trail_pct": 0.015, "stop_loss": 0.015, "time_cut": 24}
+    PARAMS = {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "trail_pct": 0.015, "stop_loss": 0.015, "time_cut": 48}
 
-    def __init__(self, candle_manager, timeframe="30m", params=None):
+    def __init__(self, candle_manager, timeframe="15m", params=None):
         super().__init__(params)
         self.candle_manager = candle_manager
         self.timeframe = timeframe
@@ -657,7 +1169,7 @@ class BithumbCustomBearStrategy(BaseStrategy):
         self.peak_price = 0.0
 
     def generate_signal(self, data: dict) -> str:
-        # candle_manager로부터 30분봉 캔들 조회
+        # candle_manager로부터 15분봉 캔들 조회
         candles = self.candle_manager.get_candles(self.timeframe)
         if not candles or len(candles) < max(self.params.get("lookback", 8), 20):
             return "HOLD"
@@ -717,7 +1229,8 @@ class BithumbCustomBearStrategy(BaseStrategy):
             exit_tc = False
             if self.entry_time:
                 elapsed_sec = (datetime.now() - self.entry_time).total_seconds()
-                if elapsed_sec >= self.params["time_cut"] * 1800: # 30분봉 N개
+                bar_sec = _bar_seconds_for_timeframe(self.timeframe)
+                if elapsed_sec >= self.params["time_cut"] * bar_sec:
                     exit_tc = True
             
             # 실시간 지표 상태 기록
@@ -787,6 +1300,11 @@ class VerboseCompositeStrategy(CompositeStrategy):
                 indicators["Bollinger"] = data.get("bb_val", "-")
             elif s.NAME == "CustomBear":
                 indicators["CustomBear"] = data.get("custom_bear_val", "-")
+            elif s.NAME == "ReversePremium":
+                indicators["역프리미엄"] = data.get("usdt_fx_val", "-")
+            elif s.NAME == "UsdtFxBollinger":
+                indicators["역프+BB"] = data.get("usdt_fx_val", "-")
+                indicators["Bollinger"] = data.get("bb_val", "-")
 
         data["composite_details"] = {
             "logic": self.logic,
@@ -826,8 +1344,9 @@ class StopLossRiskManager(BaseRiskManager):
         return "HOLD"
 
 class TrailingStopRiskManager(BaseRiskManager):
-    def __init__(self, trail_pct: float = 0.02):
+    def __init__(self, trail_pct: float = 0.02, trail_activate_profit_pct: float = 0.0):
         self.trail_pct = trail_pct
+        self.trail_activate_profit_pct = trail_activate_profit_pct
         self.peak_price = 0.0
 
     def is_allowed(self, signal: str, position: dict) -> bool:
@@ -841,14 +1360,18 @@ class TrailingStopRiskManager(BaseRiskManager):
             
         curr_price = position.get("current_price", 0.0)
         avg_price = position.get("avg_price", 0.0)
+        pnl_pct = position.get("pnl_pct", 0.0)
         
         if self.peak_price == 0.0:
             self.peak_price = curr_price
         else:
             self.peak_price = max(self.peak_price, curr_price)
+
+        if self.trail_activate_profit_pct > 0 and pnl_pct < self.trail_activate_profit_pct:
+            return "HOLD"
             
-        drawdown_pct = (self.peak_price - curr_price) / self.peak_price
-        if drawdown_pct >= self.trail_pct and curr_price > avg_price * 0.90:
+        drawdown_pct = (self.peak_price - curr_price) / self.peak_price if self.peak_price > 0 else 0.0
+        if drawdown_pct >= self.trail_pct:
             return "FORCE_SELL_TRAILING_STOP"
         return "HOLD"
 
@@ -901,7 +1424,7 @@ class UITickerWorker(TickerWorker):
         self.order_amount = 5100.0  # 회당 기본 매매 주문금액 (빗썸 최소 5,000원 이상 + 여유분 반영)
         
         # 1. 백엔드 CandleManager 장착 및 웜업 구동
-        self.candle_manager = CandleManager(ticker, timeframes=["1m", "5m", "30m", "1h", "D", "W", "M"], max_candles=4500)
+        self.candle_manager = CandleManager(ticker, timeframes=["1m", "5m", "15m", "30m", "1h", "D", "W", "M"], max_candles=4500)
         self.candle_manager.warmup()
         
         # 2. 장세 감지기 장착 (전략 설정 파일에서 임계치 획득)
@@ -928,59 +1451,56 @@ class UITickerWorker(TickerWorker):
         kst_now = datetime.now(timezone(timedelta(hours=9)))
         self.last_regime_check_date = kst_now.strftime("%Y-%m-%d")
 
-    def check_portfolio_allocation_limit(self, buy_amount: float) -> bool:
-        """
-        신규 매수(buy_amount) 실행 시, 
-        해당 종목의 총 가치가 전체 자산(가용원화 + 총 포지션 평가금)의 35%를 초과하는지 여부를 검증합니다.
-        True: 한도 내 (허용) / False: 한도 초과 (차단)
-        """
+    def _total_portfolio_value(self) -> float:
         global engine_instance
-        if not engine_instance:
-            return True
-            
-        # 1. 전체 자산 가치 계산
         krw_balance = self.account.get_balance()
         total_crypto_value = 0.0
-        
-        for ticker, worker in engine_instance._workers.items():
-            qty = worker.position.quantity
-            curr_price = worker.position.current_price
-            if qty > 0 and curr_price > 0:
-                total_crypto_value += qty * curr_price
-                
-        total_asset_value = krw_balance + total_crypto_value
-        
-        # 2. 현재 종목의 예상 평가 금액 (현재 포지션 평가 금액 + 추가 매수 예정 금액)
-        current_position_value = self.position.quantity * self.position.current_price
-        expected_position_value = current_position_value + buy_amount
-        
-        if total_asset_value <= 0:
-            return True
-            
-        ratio = expected_position_value / total_asset_value
-        if ratio > 0.35:
-            print(f"[Portfolio Guard] {self.ticker} 매수 차단: 예상 비중 {ratio*100:.1f}%가 포트폴리오 한도(35.0%)를 초과합니다.")
-            
-            # UI 로그 큐에 차단 이벤트 발송
-            ui_event = {
-                "type": "order",
-                "data": {
-                    "ticker": self.ticker,
-                    "signal": "HOLD",
-                    "price": self.position.current_price,
-                    "risk_reason": f"PORTFOLIO_LIMIT_EXCEEDED ({ratio*100:.1f}% > 35%)",
-                    "timestamp": int(time.time() * 1000)
-                }
-            }
-            ui_event_queue.put(ui_event)
-            return False
-            
-        return True
+        if engine_instance:
+            for worker in engine_instance._workers.values():
+                qty = worker.position.quantity
+                curr_price = worker.position.current_price
+                if qty > 0 and curr_price > 0:
+                    total_crypto_value += qty * curr_price
+        return krw_balance + total_crypto_value
+
+    def _ticker_allocation_cap_krw(self) -> float:
+        """4코인 1:1:1:1 → 종목당 전체 자산의 1/N."""
+        total = self._total_portfolio_value()
+        if total <= 0:
+            return 0.0
+        return total / len(SUPPORTED_TICKERS)
+
+    def compute_strategy_buy_amount(self) -> float:
+        """
+        전략 매수 1회 금액: 종목 할당(1/N)의 절반 이내, 할당 상한까지 추가 매수 허용.
+        """
+        ticker_cap = self._ticker_allocation_cap_krw()
+        if ticker_cap <= 0:
+            return 0.0
+        current_val = self.position.quantity * self.position.current_price
+        room = max(0.0, ticker_cap - current_val)
+        single_max = ticker_cap * PORTFOLIO_MAX_SINGLE_BUY_OF_SHARE
+        balance = self.account.get_balance()
+        amount = min(single_max, room, balance)
+        if amount < MIN_BITHUMB_ORDER_KRW:
+            if room >= MIN_BITHUMB_ORDER_KRW and balance >= MIN_BITHUMB_ORDER_KRW:
+                print(f"[Portfolio] {self.ticker} 1회 매수 상한({single_max:,.0f}원) 미달 — 할당 절반 규칙 적용 중")
+            elif room < MIN_BITHUMB_ORDER_KRW and current_val > 0:
+                print(f"[Portfolio Guard] {self.ticker} 할당 한도({ticker_cap:,.0f}원) 도달 — 추가 매수 불가")
+            return 0.0
+        return amount
+
+    def check_portfolio_allocation_limit(self, buy_amount: float) -> bool:
+        """레거시 호환 — compute_strategy_buy_amount() 사용 권장."""
+        return self.compute_strategy_buy_amount() >= MIN_BITHUMB_ORDER_KRW
 
     def switch_regime(self, regime: str, log_to_ui=True):
         """
         감지된 장세(BULL, BEAR, RANGE)에 맞춰 전략 조합 및 리스크 매니저를 실시간 전환합니다.
         """
+        if self.ticker in STABLECOIN_TICKERS:
+            regime = "RANGE"
+
         tactics = self.config.get("tactics", {})
         t_cfg = tactics.get(regime)
         if not t_cfg:
@@ -1006,7 +1526,15 @@ class UITickerWorker(TickerWorker):
             elif name == "Bollinger":
                 strategies.append(BithumbBollingerStrategy(self.candle_manager, timeframe=tf, params=params))
             elif name == "CustomBear":
-                strategies.append(BithumbCustomBearStrategy(self.candle_manager, timeframe="30m", params=params))
+                strategies.append(BithumbCustomBearStrategy(self.candle_manager, timeframe=tf, params=params))
+            elif name == "ReversePremium":
+                fx_cfg = self.config.get("usdt_fx", {})
+                merged = {**params, **fx_cfg}
+                strategies.append(BithumbUsdtReversePremiumStrategy(params=merged))
+            elif name == "UsdtFxBollinger":
+                fx_cfg = self.config.get("usdt_fx", {})
+                merged = {**params, **fx_cfg}
+                strategies.append(BithumbUsdtFxBollingerStrategy(self.candle_manager, timeframe=tf, params=merged))
 
         logic = t_cfg.get("logic", "AND")
         threshold = t_cfg.get("threshold", 0.5)
@@ -1028,7 +1556,8 @@ class UITickerWorker(TickerWorker):
             )
         elif r_type == "TrailingStop":
             self.risk_manager = TrailingStopRiskManager(
-                trail_pct=risk_cfg.get("trail_pct", 0.02)
+                trail_pct=risk_cfg.get("trail_pct", 0.02),
+                trail_activate_profit_pct=risk_cfg.get("trail_activate_profit_pct", 0.0),
             )
         elif r_type == "AveragingDown":
             self.risk_manager = AveragingDownRiskManager(
@@ -1066,74 +1595,106 @@ class UITickerWorker(TickerWorker):
         self.position.current_price = data.get("price", self.position.current_price)
         timestamp = data.get("timestamp", int(time.time() * 1000))
 
-        # 2. 시장 국면 감지 및 동적 작전 스위칭 (매일 KST 01시 이후 1회만 연산하여 CPU 부하 최적화)
-        from datetime import datetime, timezone, timedelta
-        kst_now = datetime.now(timezone(timedelta(hours=9)))
-        current_date_str = kst_now.strftime("%Y-%m-%d")
+        if self.ticker not in STABLECOIN_TICKERS:
+            # 2. 시장 국면 감지 및 동적 작전 스위칭 (매일 KST 01시 이후 1회만 연산하여 CPU 부하 최적화)
+            from datetime import datetime, timezone, timedelta
+            kst_now = datetime.now(timezone(timedelta(hours=9)))
+            current_date_str = kst_now.strftime("%Y-%m-%d")
 
-        # 2-1. 장세 강제 고정 만료 여부 체크
-        expires_at_str = self.config.get("regime_override_expires_at", None)
-        if expires_at_str and self.config.get("regime_override", "AUTO") != "AUTO":
-            try:
-                expires_at = datetime.fromisoformat(expires_at_str)
-                if kst_now >= expires_at:
-                    self.config["regime_override"] = "AUTO"
-                    self.config["regime_override_expires_at"] = None
-                    active_ticker_configs[self.ticker]["regime_override"] = "AUTO"
-                    active_ticker_configs[self.ticker]["regime_override_expires_at"] = None
-                    save_persisted_configs()
-                    
-                    # UI 로그 전송
-                    ui_event = {
-                        "type": "regime_change",
-                        "data": {
-                            "ticker": self.ticker,
-                            "regime": "AUTO",
-                            "logic": "AUTO",
-                            "risk_type": "AUTO",
-                            "timestamp": int(time.time() * 1000)
+            # 2-1. 장세 강제 고정 만료 여부 체크
+            expires_at_str = self.config.get("regime_override_expires_at", None)
+            if expires_at_str and self.config.get("regime_override", "AUTO") != "AUTO":
+                try:
+                    expires_at = datetime.fromisoformat(expires_at_str)
+                    if kst_now >= expires_at:
+                        self.config["regime_override"] = "AUTO"
+                        self.config["regime_override_expires_at"] = None
+                        active_ticker_configs[self.ticker]["regime_override"] = "AUTO"
+                        active_ticker_configs[self.ticker]["regime_override_expires_at"] = None
+                        save_persisted_configs()
+                        
+                        ui_event = {
+                            "type": "regime_change",
+                            "data": {
+                                "ticker": self.ticker,
+                                "regime": "AUTO",
+                                "logic": "AUTO",
+                                "risk_type": "AUTO",
+                                "timestamp": int(time.time() * 1000)
+                            }
                         }
-                    }
-                    ui_event_queue.put(ui_event)
-                    print(f"[Worker-{self.ticker}] 장세 고정 만료 -> AUTO 모드로 자동 전환 완료!")
-            except Exception as e:
-                print(f"[Worker-{self.ticker}] 장세 고정 만료 체크 중 오류: {e}")
-        
-        # 2. 시장 국면 감지 및 동적 작전 스위칭 (수동 장세 고정 오버라이드 반영)
-        override = self.config.get("regime_override", "AUTO")
-        
-        # 10초 주기로 세부 판단 근거와 metrics를 새로고침하여 웹소켓 전송용으로 활용
-        detailed = self.regime_detector.detect_regime_detailed()
-        detected_regime = detailed["regime"]
-        regime_reason = detailed["reason"]
-        cycle_match = detailed.get("cycle_match")
-        if cycle_match and override == "AUTO":
-            self.config["cycle_analysis"] = cycle_match
-            if self.ticker in active_ticker_configs:
-                active_ticker_configs[self.ticker]["cycle_analysis"] = cycle_match
-                od = active_ticker_configs[self.ticker].get("optimized_default")
-                if od:
-                    od["cycle_match_cycle"] = cycle_match.get("matched_cycle_number")
-                    od["cycle_similarity_pct"] = cycle_match.get("similarity_pct")
-        
-        if override != "AUTO":
-            detected_regime = override
-            regime_reason = f"사용자 지정 장세 강제 고정 중 ({override})"
-
-        should_update_regime = False
-        if not hasattr(self, 'last_regime_check_date'):
-            should_update_regime = True
-        elif kst_now.hour >= 1 and self.last_regime_check_date != current_date_str:
-            should_update_regime = True
-        elif override != "AUTO" and self.current_regime != override:
-            should_update_regime = True
-        elif override == "AUTO" and self.current_regime != detected_regime:
-            should_update_regime = True
+                        ui_event_queue.put(ui_event)
+                        print(f"[Worker-{self.ticker}] 장세 고정 만료 -> AUTO 모드로 자동 전환 완료!")
+                except Exception as e:
+                    print(f"[Worker-{self.ticker}] 장세 고정 만료 체크 중 오류: {e}")
             
-        if should_update_regime:
-            self.last_regime_check_date = current_date_str
-            self.switch_regime(detected_regime, log_to_ui=(override == "AUTO"))
-            self.current_regime = detected_regime
+            # 2. 시장 국면 감지 및 동적 작전 스위칭 (수동 장세 고정 오버라이드 반영)
+            override = self.config.get("regime_override", "AUTO")
+            
+            detailed = self.regime_detector.detect_regime_detailed()
+            detected_regime = detailed["regime"]
+            regime_reason = detailed["reason"]
+            cycle_match = detailed.get("cycle_match")
+            if cycle_match and override == "AUTO":
+                self.config["cycle_analysis"] = cycle_match
+                if self.ticker in active_ticker_configs:
+                    active_ticker_configs[self.ticker]["cycle_analysis"] = cycle_match
+                    od = active_ticker_configs[self.ticker].get("optimized_default")
+                    if od:
+                        od["cycle_match_cycle"] = cycle_match.get("matched_cycle_number")
+                        od["cycle_similarity_pct"] = cycle_match.get("similarity_pct")
+            
+            if override != "AUTO":
+                detected_regime = override
+                regime_reason = f"사용자 지정 장세 강제 고정 중 ({override})"
+
+            should_update_regime = False
+            if not hasattr(self, 'last_regime_check_date'):
+                should_update_regime = True
+            elif kst_now.hour >= 1 and self.last_regime_check_date != current_date_str:
+                should_update_regime = True
+            elif override != "AUTO" and self.current_regime != override:
+                should_update_regime = True
+            elif override == "AUTO" and self.current_regime != detected_regime:
+                should_update_regime = True
+                
+            if should_update_regime:
+                self.last_regime_check_date = current_date_str
+                self.switch_regime(detected_regime, log_to_ui=(override == "AUTO"))
+                self.current_regime = detected_regime
+        else:
+            from datetime import datetime, timezone, timedelta
+            kst_now = datetime.now(timezone(timedelta(hours=9)))
+            current_date_str = kst_now.strftime("%Y-%m-%d")
+            override = self.config.get("regime_override", "AUTO")
+
+            detailed = self.regime_detector.detect_regime_detailed()
+            cycle_match = detailed.get("cycle_match")
+            peg_reason = detailed.get("reason", "")
+            if cycle_match and override == "AUTO":
+                self.config["cycle_analysis"] = cycle_match
+                if self.ticker in active_ticker_configs:
+                    active_ticker_configs[self.ticker]["cycle_analysis"] = cycle_match
+
+            should_refresh = False
+            if not hasattr(self, "last_usdt_strategy_check_date"):
+                should_refresh = True
+            elif kst_now.hour >= 1 and self.last_usdt_strategy_check_date != current_date_str:
+                should_refresh = True
+
+            if should_refresh:
+                self.last_usdt_strategy_check_date = current_date_str
+                self.switch_regime("RANGE", log_to_ui=True)
+                self.current_regime = "RANGE"
+
+            resolved = self.config.get("resolved_usdt_strategy", "fixed_fusion")
+            pick_reason = self.config.get("usdt_auto_pick_reason", "")
+            if resolved == "fixed_fusion":
+                regime_reason = f"USDT 고정 융합 (환율+BB) · {pick_reason}"
+            else:
+                regime_reason = f"USDT 학습 3대지표 · {pick_reason}"
+            if peg_reason:
+                regime_reason = f"{regime_reason} | {peg_reason}"
 
         # 3. 갱신된 전략 세팅으로 시그널 도출
         data["position_qty"] = self.position.quantity
@@ -1160,6 +1721,9 @@ class UITickerWorker(TickerWorker):
                 "regime_override": override,
                 "cycle_match": cycle_match,
                 "optimized_default": active_ticker_configs.get(self.ticker, {}).get("optimized_default"),
+                "usdt_fx_status": data.get("usdt_fx_status") if self.ticker in STABLECOIN_TICKERS else None,
+                "resolved_usdt_strategy": self.config.get("resolved_usdt_strategy") if self.ticker in STABLECOIN_TICKERS else None,
+                "usdt_auto_pick_reason": self.config.get("usdt_auto_pick_reason") if self.ticker in STABLECOIN_TICKERS else None,
                 "timestamp": timestamp,
                 "trading_active": self.trading_active,
                 "balance": self.account.get_balance(),
@@ -1200,17 +1764,17 @@ class UITickerWorker(TickerWorker):
                 })
                 return
             elif risk_signal == "FORCE_ADD_BUY_AVERAGING":
-                # 포트폴리오 비중 한도 검증
-                if not self.check_portfolio_allocation_limit(self.order_amount):
+                add_amount = self.compute_strategy_buy_amount()
+                if add_amount <= 0:
                     return
-                    
-                if self.account.reserve(self.order_amount):
-                    print(f"[Risk Engine] {self.ticker} 물타기 추가 매수 집행")
+                if self.account.reserve(add_amount):
+                    print(f"[Risk Engine] {self.ticker} 물타기 추가 매수 집행 ({add_amount:,.0f}원)")
                     self.order_queue.put({
                         "ticker": self.ticker,
                         "signal": "BUY",
                         "price": self.position.current_price,
-                        "risk_reason": risk_signal
+                        "risk_reason": risk_signal,
+                        "manual_amount": add_amount,
                     })
                 return
 
@@ -1219,28 +1783,31 @@ class UITickerWorker(TickerWorker):
             return
 
         if final_signal == "BUY":
-            # ★ 핵심 버그 수정: 이미 포지션을 보유 중이면 추가 BUY 금지 (물타기 전략은 리스크 매니저가 담당)
-            if self.position.quantity > 0:
-                return  # 이미 보유 중 - 중복 매수 방지
-            
-            # ★ 주문 쿨다운: 같은 방향 주문이 30초 이내에 연속 발생하는 것 방지
+            if self.ticker in STABLECOIN_TICKERS and not _usdt_live_fx_allows_buy(self.config, self.position.current_price):
+                return
+
+            buy_amount = self.compute_strategy_buy_amount()
+            if buy_amount <= 0:
+                return
+
             now_ts = time.time()
             last_order_ts = getattr(self, "_last_order_ts", 0)
             last_order_signal = getattr(self, "_last_order_signal", "")
-            if last_order_signal == "BUY" and (now_ts - last_order_ts) < 30:
-                return  # 30초 쿨다운 중
-            
-            # 포트폴리오 비중 한도 검증
-            if not self.check_portfolio_allocation_limit(self.order_amount):
+            if last_order_signal == "BUY" and (now_ts - last_order_ts) < ORDER_SAME_DIR_COOLDOWN_SEC:
                 return
-                
-            if not self.account.reserve(self.order_amount):
-                return  # 잔고 부족
+
+            if not self.account.reserve(buy_amount):
+                return
 
         elif final_signal == "SELL":
             # ★ 포지션 없으면 매도 불필요
             if self.position.quantity <= 0:
                 return
+
+            tactic = self.config.get("tactics", {}).get(self.current_regime, {})
+            min_sell = _get_min_strategy_sell_profit_pct(tactic)
+            if pnl_pct > 0 and min_sell > 0 and pnl_pct < min_sell:
+                return  # 학습된 최소 순익 미달 — 보유 유지 (손절은 리스크 엔진)
 
             # ★ 지표 매도: 수수료 포함 순이익이 있을 때만 허용 (손절은 리스크 엔진·손절선에서 선처리)
             if pnl_pct <= 0:
@@ -1258,29 +1825,34 @@ class UITickerWorker(TickerWorker):
                 if sl_thresh is None or gross_pnl > -sl_thresh:
                     return
             
-            # ★ 매도 쿨다운: 30초 이내 연속 매도 방지
+            # ★ 매도 쿨다운: 동일 틱 중복 매도만 방지
             now_ts = time.time()
             last_order_ts = getattr(self, "_last_order_ts", 0)
             last_order_signal = getattr(self, "_last_order_signal", "")
-            if last_order_signal == "SELL" and (now_ts - last_order_ts) < 30:
+            if last_order_signal == "SELL" and (now_ts - last_order_ts) < ORDER_SAME_DIR_COOLDOWN_SEC:
                 return  # 30초 쿨다운 중
 
         # 주문 타임스탬프 및 방향 기록 (쿨다운 기준)
         self._last_order_ts = time.time()
         self._last_order_signal = final_signal
 
-        self.order_queue.put({
+        order_payload = {
             "ticker": self.ticker,
             "signal": final_signal,
             "price": self.position.current_price,
-        })
+        }
+        if final_signal == "BUY":
+            order_payload["manual_amount"] = buy_amount
+        self.order_queue.put(order_payload)
 
 
 # ══════════════════════════════════════════════════════════════
 # 3. 다중 종목 실시간 웹소켓 리스너
 # ══════════════════════════════════════════════════════════════
 class MultiTickerWebSocketListener:
-    def __init__(self, dispatcher, markets=["KRW-BTC", "KRW-ETH", "KRW-XRP"]):
+    def __init__(self, dispatcher, markets=None):
+        if markets is None:
+            markets = [f"KRW-{t}" for t in SUPPORTED_TICKERS]
         self.dispatcher = dispatcher
         self.markets = markets
         self.url = "wss://ws-api.bithumb.com/websocket/v1"
@@ -1684,7 +2256,7 @@ class MultiTickerUIEngine(TradingEngine):
                         "logic": "CUSTOM_BEAR",
                         "threshold": 0.5,
                         "strategies": [
-                            {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "30m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "trail_pct": 0.015, "stop_loss": 0.015, "time_cut": 24}}
+                            {"name": "CustomBear", "enabled": True, "weight": 1.0, "timeframe": "15m", "params": {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "trail_pct": 0.015, "stop_loss": 0.015, "time_cut": 48}}
                         ],
                         "risk": {"type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.02}
                     },
@@ -1968,7 +2540,145 @@ def get_trade_history(limit: int = 20):
 
 @app.get("/api/config")
 def get_configs():
+    for ticker in SUPPORTED_TICKERS:
+        if ticker not in active_ticker_configs or not isinstance(active_ticker_configs.get(ticker), dict):
+            if ticker == "USDT":
+                active_ticker_configs[ticker] = _build_default_usdt_config()
+            continue
+        if ticker == "USDT":
+            fx = active_ticker_configs[ticker].setdefault("usdt_fx", {})
+            if fx.get("min_consider_gap_krw", 0) < USDT_DEFAULT_MIN_CONSIDER_GAP_KRW:
+                fx["min_consider_gap_krw"] = USDT_DEFAULT_MIN_CONSIDER_GAP_KRW
     return active_ticker_configs
+
+@app.get("/api/usdt/fx-status")
+def usdt_fx_status():
+    """USDT 역프리미엄 현황 (기준환율 vs 빗썸 체결가)."""
+    cfg = active_ticker_configs.get("USDT", {})
+    fx_cfg = cfg.get("usdt_fx", {})
+    price = 0.0
+    worker = None
+    if engine_instance and "USDT" in engine_instance._workers:
+        worker = engine_instance._workers["USDT"]
+        price = worker.position.current_price
+    manual = float(fx_cfg.get("reference_krw") or 0)
+    ttl = int(fx_cfg.get("fx_refresh_minutes", 60)) * 60
+    fair, source = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
+    fx = calc_reverse_premium_pct(price, fair) if price > 0 else calc_reverse_premium_pct(0, fair)
+    fee_one_way = float(fx_cfg.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
+    min_profit_pct = float(fx_cfg.get("min_target_profit_pct", 0.2))
+    min_consider = float(fx_cfg.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW))
+    edge = calc_usdt_fee_aware_edge(fair, price, fee_one_way, min_profit_pct) if price > 0 else calc_usdt_fee_aware_edge(fair, fair, fee_one_way, min_profit_pct)
+    phase_info = calc_usdt_consideration_phase(fx.get("gap_krw", 0), min_consider, edge)
+
+    bb_info = {}
+    if worker and price > 0:
+        tf = fx_cfg.get("bb_timeframe", "15m")
+        period = int(fx_cfg.get("bb_period", 20))
+        std_dev = float(fx_cfg.get("bb_std_dev", 2.0))
+        prices = worker.candle_manager.get_prices(tf)
+        if prices and len(prices) > period:
+            series = pd.Series(prices)
+            ma = series.rolling(window=period).mean()
+            std = series.rolling(window=period).std()
+            mid = float(ma.iloc[-1])
+            sd = float(std.iloc[-1])
+            upper = mid + std_dev * sd
+            lower = mid - std_dev * sd
+            bb_info = {
+                "bb_timeframe": tf,
+                "bb_upper": round(upper, 2),
+                "bb_middle": round(mid, 2),
+                "bb_lower": round(lower, 2),
+                "at_bb_lower": price <= lower,
+                "at_bb_middle": price >= mid,
+                "at_bb_upper": price >= upper,
+            }
+
+    return {
+        "ok": True,
+        **fx,
+        **edge,
+        **phase_info,
+        **bb_info,
+        "fair_source": source,
+        "min_target_profit_pct": min_profit_pct,
+        "min_consider_gap_krw": min_consider,
+        "sell_premium_pct": fx_cfg.get("sell_premium_pct", 0.15),
+        "fee_one_way_pct": fee_one_way * 100,
+        "reference_krw_manual": manual,
+    }
+
+def _sync_usdt_strategy_params(fx: dict) -> None:
+    """usdt_fx 설정을 USDT 전술 파라미터에 반영."""
+    param_keys = (
+        "reference_krw", "min_consider_gap_krw", "min_target_profit_pct",
+        "sell_premium_pct", "fx_refresh_minutes", "fee_one_way_pct",
+        "bb_period", "bb_std_dev",
+    )
+    synced = {k: fx[k] for k in param_keys if k in fx}
+    for regime in ("BULL", "BEAR", "RANGE"):
+        t = active_ticker_configs["USDT"]["tactics"][regime]
+        for s in t.get("strategies", []):
+            if s.get("name") in ("ReversePremium", "UsdtFxBollinger"):
+                s["params"].update(synced)
+
+
+@app.post("/api/usdt/fx-config")
+def usdt_fx_config(payload: dict):
+    """USDT 역프 매매 임계값·수동 기준환율 저장."""
+    if "USDT" not in active_ticker_configs:
+        return {"success": False, "error": "USDT not configured"}
+    fx = active_ticker_configs["USDT"].setdefault("usdt_fx", {})
+    for key in (
+        "reference_krw", "min_consider_gap_krw", "min_target_profit_pct",
+        "sell_premium_pct", "fx_refresh_minutes", "fee_one_way_pct",
+        "bb_period", "bb_std_dev",
+    ):
+        if key in payload:
+            fx[key] = payload[key]
+    _sync_usdt_strategy_params(fx)
+    save_persisted_configs()
+    if engine_instance:
+        engine_instance.update_ticker_config("USDT", active_ticker_configs["USDT"])
+    return {"success": True, "usdt_fx": fx}
+
+
+@app.post("/api/usdt/select-strategy")
+def select_usdt_strategy(payload: dict):
+    """USDT 전략 선택: auto | fixed_fusion | learned_mixed"""
+    strategy = payload.get("strategy", "auto")
+    if strategy not in ("auto", "fixed_fusion", "learned_mixed"):
+        return {"success": False, "error": "Invalid strategy type"}
+    if "USDT" not in active_ticker_configs:
+        return {"success": False, "error": "USDT not configured"}
+
+    cfg = active_ticker_configs["USDT"]
+    cfg["selected_usdt_strategy"] = strategy
+    if strategy == "auto":
+        results = get_latest_results()
+        if results and "KRW-USDT" in results:
+            opt = results["KRW-USDT"].get("RANGE", {})
+            if "fixed_fusion_strategy" in opt:
+                pick, reason = _compute_usdt_auto_pick(opt)
+                cfg["usdt_auto_pick"] = pick
+                cfg["usdt_auto_pick_reason"] = reason
+    _apply_usdt_strategy_selection("USDT")
+    save_persisted_configs()
+
+    if engine_instance and "USDT" in engine_instance._workers:
+        worker = engine_instance._workers["USDT"]
+        worker.config = cfg
+        worker.switch_regime("RANGE", log_to_ui=True)
+        worker.current_regime = "RANGE"
+
+    return {
+        "success": True,
+        "selected_usdt_strategy": strategy,
+        "resolved_usdt_strategy": cfg.get("resolved_usdt_strategy"),
+        "usdt_auto_pick_reason": cfg.get("usdt_auto_pick_reason"),
+    }
+
 
 @app.post("/api/config/select-bear-strategy")
 def select_bear_strategy(payload: dict):
@@ -2065,6 +2775,8 @@ def delete_ticker(payload: dict):
     ticker = payload.get("ticker")
     if not ticker:
         return {"success": False, "error": "Ticker is missing"}
+    if ticker in SUPPORTED_TICKERS:
+        return {"success": False, "error": f"{ticker}는 시스템 기본 종목이라 삭제할 수 없습니다."}
     
     if ticker in active_ticker_configs:
         del active_ticker_configs[ticker]
@@ -2290,6 +3002,7 @@ HTML_CONTENT = """
             display: grid;
             grid-template-columns: 320px 1fr 360px;
             gap: 20px;
+            align-items: start;
         }
 
         /* 1350px 이하 해상도 대응 반응형 레이아웃 */
@@ -2322,17 +3035,64 @@ HTML_CONTENT = """
             display: flex;
             flex-direction: column;
             gap: 16px;
+            max-height: calc(100vh - 88px);
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding-right: 6px;
+            position: sticky;
+            top: 72px;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+        }
+
+        .sidebar::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.18);
+            border-radius: 4px;
         }
 
         .ticker-card {
             background: var(--bg-sidebar);
             border: 1px solid var(--border-color);
             border-radius: 16px;
-            padding: 20px;
+            padding: 16px;
             cursor: pointer;
             transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
             position: relative;
-            overflow: hidden;
+            overflow: visible;
+            flex-shrink: 0;
+        }
+
+        .sidebar-info-block {
+            font-size: 10px;
+            line-height: 1.5;
+            padding: 6px 10px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            white-space: normal;
+        }
+
+        .sidebar-info-block--reason {
+            color: var(--text-secondary);
+            background: rgba(255, 255, 255, 0.02);
+            border-left: 2px solid var(--accent-blue);
+        }
+
+        .sidebar-info-block--cycle {
+            color: #a5b4fc;
+            background: rgba(99, 102, 241, 0.06);
+            border-left: 2px solid #6366f1;
+        }
+
+        .sidebar-info-block--opt {
+            color: #86efac;
+            background: rgba(34, 197, 94, 0.06);
+            border-left: 2px solid var(--accent-green);
         }
 
         .ticker-card::before {
@@ -2387,6 +3147,7 @@ HTML_CONTENT = """
         .badge-btc { color: #f59e0b; border-color: rgba(245, 158, 11, 0.3); }
         .badge-eth { color: #818cf8; border-color: rgba(129, 140, 248, 0.3); }
         .badge-xrp { color: #60a5fa; border-color: rgba(96, 165, 250, 0.3); }
+        .badge-usdt { color: #22c55e; border-color: rgba(34, 197, 94, 0.35); }
         .badge-other { color: #a855f7; border-color: rgba(168, 85, 247, 0.3); }
 
         .price-display {
@@ -2990,11 +3751,11 @@ HTML_CONTENT = """
                 <div class="chart-header">
                     <div class="chart-title" id="chart-title">BTC/KRW 1분봉 차트</div>
                     <div class="timeframe-bar">
-                        <button class="tf-btn active" id="tf-1m" onclick="changeTimeframe('1m')">1분</button>
+                        <button class="tf-btn" id="tf-1m" onclick="changeTimeframe('1m')">1분</button>
                         <button class="tf-btn" id="tf-3m" onclick="changeTimeframe('3m')">3분</button>
                         <button class="tf-btn" id="tf-5m" onclick="changeTimeframe('5m')">5분</button>
                         <button class="tf-btn" id="tf-10m" onclick="changeTimeframe('10m')">10분</button>
-                        <button class="tf-btn" id="tf-15m" onclick="changeTimeframe('15m')">15분</button>
+                        <button class="tf-btn active" id="tf-15m" onclick="changeTimeframe('15m')">15분</button>
                         <button class="tf-btn" id="tf-30m" onclick="changeTimeframe('30m')">30분</button>
                         <button class="tf-btn" id="tf-1h" onclick="changeTimeframe('1h')">1시간</button>
                         <button class="tf-btn" id="tf-4h" onclick="changeTimeframe('4h')">4시간</button>
@@ -3016,6 +3777,88 @@ HTML_CONTENT = """
                         <span id="config-status-badge"></span>
                     </div>
                     <span class="refresh-icon" onclick="resetStrategyUI()" style="cursor:pointer; opacity:0.7;" title="원래대로 설정 초기화">&#8635; 설정 복구</span>
+                </div>
+
+                <!-- USDT 환율+볼린저 융합 패널 (USDT 선택 시 우측 전략 패널 상단) -->
+                <div id="usdt-reverse-panel" style="display:none; margin-bottom:12px; padding:14px; background:rgba(34,197,94,0.06); border:1px solid rgba(34,197,94,0.25); border-radius:12px;">
+                    <h2 style="margin:0 0 8px 0; font-size:13px; font-weight:700; color:#86efac; display:flex; align-items:center; gap:8px;">
+                        <span style="display:inline-block; width:6px; height:6px; background:#22c55e; border-radius:50%;"></span>
+                        USDT 환율+볼린저 융합 (역프 할인 · BB 타점)
+                    </h2>
+                    <p style="font-size:10px; color:var(--text-secondary); margin:0 0 10px 0; line-height:1.5;">
+                        <strong>1차</strong> 기준환율과 차이 ≥ 검토 gap → <strong>2차</strong> 수수료·목표 + 15m BB 하단 → 매수
+                    </p>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:10px; font-size:11px;">
+                        <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
+                            <div style="color:var(--text-secondary); font-size:9px;">기준 USD/KRW</div>
+                            <div id="usdt-fair-krw" style="font-weight:700; font-size:14px;">-</div>
+                            <div id="usdt-fair-source" style="font-size:8px; color:#94a3b8;">-</div>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
+                            <div style="color:var(--text-secondary); font-size:9px;">빗썸 USDT</div>
+                            <div id="usdt-market-krw" style="font-weight:700; font-size:14px;">-</div>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
+                            <div style="color:var(--text-secondary); font-size:9px;">환율 차이</div>
+                            <div id="usdt-reverse-pct" style="font-weight:700; font-size:14px; color:#86efac;">-</div>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
+                            <div style="color:var(--text-secondary); font-size:9px;">순이익 여유</div>
+                            <div id="usdt-net-edge" style="font-weight:700; font-size:14px;">-</div>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
+                            <div style="color:var(--text-secondary); font-size:9px;">최적화 검토 gap</div>
+                            <div id="usdt-opt-gap-krw" style="font-weight:700; font-size:14px; color:#fbbf24;">-</div>
+                            <div id="usdt-opt-gap-source" style="font-size:8px; color:#94a3b8;">백테스트 후 갱신</div>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
+                            <div style="color:var(--text-secondary); font-size:9px;">볼린저 (15m)</div>
+                            <div id="usdt-bb-levels" style="font-weight:700; font-size:11px;">-</div>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
+                            <div style="color:var(--text-secondary); font-size:9px;">신호</div>
+                            <div id="usdt-signal-hint" style="font-weight:700; font-size:12px;">-</div>
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; font-size:10px;">
+                        <label>검토 시작 ≥ <input type="number" id="usdt-min-gap" step="1" min="0" max="200" style="width:44px; margin:0 4px;"> 원
+                        </label>
+                        <label>목표 수익 <input type="number" id="usdt-min-profit" step="0.05" min="0" max="3" style="width:48px; margin:0 4px;"> %
+                        </label>
+                        <label>매도 프리미엄 ≥ <input type="number" id="usdt-sell-premium" step="0.05" min="0" max="3" style="width:48px; margin:0 4px;"> %
+                        </label>
+                        <label>편도 수수료 <input type="number" id="usdt-fee-oneway" step="0.01" min="0.1" max="1" style="width:48px; margin:0 4px;"> %
+                        </label>
+                        <label>수동 환율(0=자동) <input type="number" id="usdt-ref-krw" step="1" min="0" style="width:64px; margin-left:4px;"> 원
+                        </label>
+                    </div>
+                    <div style="margin-top:10px; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px; border:1px solid rgba(255,255,255,0.06);">
+                        <div style="font-size:11px; font-weight:700; color:#fff; margin-bottom:6px;">전략 비교 · 매일 자동 선택</div>
+                        <div id="usdt-strategy-auto-card" onclick="selectUsdtStrategy('auto')" style="background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.35); border-radius:8px; padding:8px; margin-bottom:6px; cursor:pointer;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-size:11px; font-weight:700;">🤖 AI 자동 선택</span>
+                                <span id="badge-usdt-auto" style="display:none; font-size:9px; background:#3b82f6; color:#fff; padding:2px 6px; border-radius:4px;">적용 중</span>
+                            </div>
+                            <div id="usdt-auto-pick-reason" style="font-size:9px; color:#a5b4fc; margin-top:4px;">-</div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:9px;">
+                            <div id="usdt-card-fixed" onclick="selectUsdtStrategy('fixed_fusion')" style="background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.25); border-radius:8px; padding:8px; cursor:pointer;">
+                                <div style="font-weight:700; margin-bottom:3px;">고정 융합 <span id="badge-usdt-fixed" style="display:none; font-size:8px; background:#22c55e; color:#fff; padding:1px 4px; border-radius:3px;">적용</span></div>
+                                <div>1일: <span id="usdt-fixed-1d">-</span></div>
+                                <div>3일: <span id="usdt-fixed-3d">-</span></div>
+                                <div>1주: <span id="usdt-fixed-1w">-</span></div>
+                                <div>3주: <span id="usdt-fixed-3w">-</span></div>
+                            </div>
+                            <div id="usdt-card-learned" onclick="selectUsdtStrategy('learned_mixed')" style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:8px; cursor:pointer;">
+                                <div style="font-weight:700; margin-bottom:3px;">학습 3대지표 <span id="badge-usdt-learned" style="display:none; font-size:8px; background:#3b82f6; color:#fff; padding:1px 4px; border-radius:3px;">적용</span></div>
+                                <div>1일: <span id="usdt-learned-1d">-</span></div>
+                                <div>3일: <span id="usdt-learned-3d">-</span></div>
+                                <div>1주: <span id="usdt-learned-1w">-</span></div>
+                                <div>3주: <span id="usdt-learned-3w">-</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="apply-btn" onclick="saveUsdtFxConfig()" style="margin-top:10px; padding:6px 14px; font-size:11px; width:auto;">USDT 융합 설정 저장</button>
                 </div>
                 
                 <div class="strategy-tabs">
@@ -3601,11 +4444,11 @@ HTML_CONTENT = """
         const chartLoaderEl = document.getElementById('chart-loader');
         
         let activeTicker = 'BTC';
-        let activeTimeframe = '1m';
+        let activeTimeframe = '15m';
         
         // 캐싱 저장소
         const candleCache = {};
-        const lastPrices = { BTC: 0, ETH: 0 };
+        const lastPrices = { BTC: 0, ETH: 0, XRP: 0, USDT: 0 };
         let tickerConfigs = {};
 
         // 보유 코인 자산 정보 글로벌 객체 및 헤더 동적 요약 갱신 함수
@@ -3681,7 +4524,7 @@ HTML_CONTENT = """
             
             let tickerBadge = '';
             if (ticker) {
-                const isSystemTicker = ['BTC', 'ETH'].includes(ticker);
+                const isSystemTicker = ['BTC', 'ETH', 'XRP', 'USDT'].includes(ticker);
                 const badgeClass = isSystemTicker ? `ticker-log-${ticker.toLowerCase()}` : 'ticker-log-other';
                 tickerBadge = `<span class="log-ticker ${badgeClass}">${ticker}</span>`;
             }
@@ -3873,7 +4716,40 @@ HTML_CONTENT = """
         // ══════════════════════════════════════════════════════════════
         // 종목 동적 렌더링 및 UI 스위칭
         // ══════════════════════════════════════════════════════════════
-        function createTickerCardIfNotExist(ticker, logic, active) {
+        const SYSTEM_TICKERS = ['BTC', 'ETH', 'XRP', 'USDT'];
+        const USDT_DEFAULT_GAP = 40;
+
+        function upgradeUsdtSidebarBlock(ticker) {
+            if (ticker !== 'USDT') return;
+            if (document.getElementById('usdt-sidebar-fx-USDT')) return;
+            const priceEl = document.getElementById('price-USDT');
+            if (!priceEl) return;
+            const fxBlock = document.createElement('div');
+            fxBlock.id = 'usdt-sidebar-fx-USDT';
+            fxBlock.style.cssText = 'background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.2); border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:10px;';
+            fxBlock.innerHTML = `
+                <div style="font-weight:700; color:#86efac; margin-bottom:4px;">실시간 환율 (USD/KRW)</div>
+                <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-secondary);">기준</span><span id="usdt-sb-fair-USDT" style="font-family:'JetBrains Mono',monospace;">-</span></div>
+                <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-secondary);">USDT가</span><span id="usdt-sb-market-USDT" style="font-family:'JetBrains Mono',monospace;">-</span></div>
+                <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-secondary);">환율차</span><span id="usdt-sb-gap-USDT" style="font-family:'JetBrains Mono',monospace; font-weight:700;">-</span></div>
+                <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-secondary);">순이익 여유</span><span id="usdt-sb-edge-USDT" style="font-family:'JetBrains Mono',monospace;">-</span></div>
+                <div style="display:flex; justify-content:space-between; margin-top:2px;"><span style="color:var(--text-secondary);">검토 gap</span><span id="usdt-sb-optgap-USDT" style="font-family:'JetBrains Mono',monospace; color:#fbbf24;">${USDT_DEFAULT_GAP}원</span></div>
+            `;
+            priceEl.parentNode.insertBefore(fxBlock, priceEl);
+        }
+
+        function ensureSystemTickerCards() {
+            for (const ticker of SYSTEM_TICKERS) {
+                const cfg = tickerConfigs[ticker] || {};
+                const regime = cfg.current_regime || (ticker === 'USDT' ? 'RANGE' : 'BEAR');
+                const tactic = cfg.tactics ? cfg.tactics[regime] : null;
+                const logic = tactic ? tactic.logic : (ticker === 'USDT' ? 'OR' : 'AND');
+                createTickerCardIfNotExist(ticker, logic, cfg.active !== false);
+                upgradeUsdtSidebarBlock(ticker);
+            }
+        }
+
+        function createTickerCardIfNotExist(ticker, logic, active = true) {
             if (document.getElementById(`card-${ticker}`)) return;
             
             const sidebar = document.getElementById('ticker-sidebar');
@@ -3881,7 +4757,6 @@ HTML_CONTENT = """
             card.className = `ticker-card ${activeTicker === ticker ? 'active' : ''}`;
             card.id = `card-${ticker}`;
             card.onclick = (e) => {
-                // 버튼이나 삭제 ✕ 영역 클릭이 아닌 경우에만 탭 이동
                 if (e.target.tagName !== 'BUTTON' && !e.target.classList.contains('delete-btn')) {
                     selectTicker(ticker);
                 }
@@ -3891,6 +4766,23 @@ HTML_CONTENT = """
             if (ticker === 'BTC') badgeClass = 'badge-btc';
             else if (ticker === 'ETH') badgeClass = 'badge-eth';
             else if (ticker === 'XRP') badgeClass = 'badge-xrp';
+            else if (ticker === 'USDT') badgeClass = 'badge-usdt';
+            
+            const badgeLabel = ticker === 'USDT' ? '환율+BB 융합' : `${logic} 결합`;
+            const canDelete = !SYSTEM_TICKERS.includes(ticker);
+            const deleteBtnHtml = canDelete
+                ? `<span class="delete-btn" onclick="event.stopPropagation(); deleteTicker('${ticker}')" style="color:var(--accent-red); font-size:14px; font-weight:bold; cursor:pointer; margin-left:4px; padding:2px 4px;" title="종목 삭제">&#10006;</span>`
+                : '';
+            const usdtFxSidebarHtml = ticker === 'USDT' ? `
+                <div id="usdt-sidebar-fx-${ticker}" style="background:rgba(34,197,94,0.08); border:1px solid rgba(34,197,94,0.2); border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:10px;">
+                    <div style="font-weight:700; color:#86efac; margin-bottom:4px;">실시간 환율 (USD/KRW)</div>
+                    <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-secondary);">기준</span><span id="usdt-sb-fair-${ticker}" style="font-family:'JetBrains Mono',monospace;">-</span></div>
+                    <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-secondary);">USDT가</span><span id="usdt-sb-market-${ticker}" style="font-family:'JetBrains Mono',monospace;">-</span></div>
+                    <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-secondary);">환율차</span><span id="usdt-sb-gap-${ticker}" style="font-family:'JetBrains Mono',monospace; font-weight:700;">-</span></div>
+                    <div style="display:flex; justify-content:space-between;"><span style="color:var(--text-secondary);">순이익 여유</span><span id="usdt-sb-edge-${ticker}" style="font-family:'JetBrains Mono',monospace;">-</span></div>
+                    <div style="display:flex; justify-content:space-between; margin-top:2px;"><span style="color:var(--text-secondary);">최적 gap</span><span id="usdt-sb-optgap-${ticker}" style="font-family:'JetBrains Mono',monospace; color:#fbbf24;">-</span></div>
+                </div>
+            ` : '';
             
             card.innerHTML = `
                 <div class="ticker-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -3898,11 +4790,11 @@ HTML_CONTENT = """
                     <div style="display:flex; align-items:center; gap:8px;">
                         <span class="status-indicator ${active ? 'active' : ''}" id="status-ind-${ticker}"></span>
                         <button class="control-btn" id="ctrl-btn-${ticker}" onclick="toggleTickerActive('${ticker}')" style="background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.1); color:#fff; border-radius:6px; font-size:10px; padding:3px 6px; cursor:pointer;">${active ? '정지' : '시작'}</button>
-                        <span class="delete-btn" onclick="event.stopPropagation(); deleteTicker('${ticker}')" style="color:var(--accent-red); font-size:14px; font-weight:bold; cursor:pointer; margin-left:4px; padding:2px 4px;" title="종목 삭제">&#10006;</span>
+                        ${deleteBtnHtml}
                     </div>
                 </div>
                 <div class="ticker-info" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                    <span class="strategy-badge ${badgeClass}" id="badge-text-${ticker}">${logic} 결합</span>
+                    <span class="strategy-badge ${badgeClass}" id="badge-text-${ticker}">${badgeLabel}</span>
                     <div style="display:flex; align-items:center; gap:6px;">
                         <span id="regime-${ticker}" style="font-size:12px; font-weight:bold; color:var(--text-secondary);">진단 중...</span>
                         <select id="regime-select-${ticker}" onchange="changeRegimeOverride('${ticker}', this.value)" style="background:#090d16; border:1px solid rgba(255,255,255,0.1); border-radius:4px; color:#fff; font-size:10px; padding:2px; cursor:pointer; font-family:inherit; outline:none;">
@@ -3926,15 +4818,17 @@ HTML_CONTENT = """
                 </div>
                 
                 <!-- AI 장세 판정 근거 설명 박스 -->
-                <div id="regime-reason-${ticker}" style="font-size:10px; color:var(--text-secondary); background:rgba(255,255,255,0.02); padding:6px 10px; border-radius:8px; margin-bottom:8px; line-height:1.4; border-left:2px solid var(--accent-blue); word-break:keep-all;">
+                <div id="regime-reason-${ticker}" class="sidebar-info-block sidebar-info-block--reason">
                     AI 분석 대기 중...
                 </div>
-                <div id="cycle-match-${ticker}" style="font-size:10px; color:#a5b4fc; background:rgba(99,102,241,0.06); padding:5px 10px; border-radius:8px; margin-bottom:8px; line-height:1.4; border-left:2px solid #6366f1; word-break:keep-all;">
-                    사이클 회귀각 분석 대기 중...
+                <div id="cycle-match-${ticker}" class="sidebar-info-block sidebar-info-block--cycle">
+                    ${ticker === 'USDT' ? '400일 페그 회귀·사이클 각도 분석 대기 중...' : '사이클 회귀각 분석 대기 중...'}
                 </div>
-                <div id="optimized-default-${ticker}" style="font-size:10px; color:#86efac; background:rgba(34,197,94,0.06); padding:5px 10px; border-radius:8px; margin-bottom:8px; line-height:1.4; border-left:2px solid var(--accent-green); word-break:keep-all;">
+                <div id="optimized-default-${ticker}" class="sidebar-info-block sidebar-info-block--opt">
                     일일 최적화 디폴트 전략 대기 중...
                 </div>
+
+                ${usdtFxSidebarHtml}
 
                 <div class="price-display" id="price-${ticker}">- KRW</div>
                 
@@ -3991,6 +4885,204 @@ HTML_CONTENT = """
             
             // UI 설정 동기화
             loadConfigForTicker(ticker);
+            syncUsdtPanel(ticker);
+        }
+
+        function syncUsdtPanel(ticker) {
+            const usdtPanel = document.getElementById('usdt-reverse-panel');
+            const bearPanel = document.getElementById('bear-compare-panel');
+            if (!usdtPanel) return;
+            const isUsdt = ticker === 'USDT';
+            usdtPanel.style.display = isUsdt ? 'block' : 'none';
+            if (isUsdt && bearPanel) bearPanel.style.display = 'none';
+            if (isUsdt) {
+                const fx = tickerConfigs.USDT?.usdt_fx || {};
+                const gapEl = document.getElementById('usdt-min-gap');
+                const minEl = document.getElementById('usdt-min-profit');
+                const sellEl = document.getElementById('usdt-sell-premium');
+                const feeEl = document.getElementById('usdt-fee-oneway');
+                const refEl = document.getElementById('usdt-ref-krw');
+                if (gapEl) gapEl.value = fx.min_consider_gap_krw ?? USDT_DEFAULT_GAP;
+                if (minEl) minEl.value = fx.min_target_profit_pct ?? 0.2;
+                if (sellEl) sellEl.value = fx.sell_premium_pct ?? 0.15;
+                if (feeEl) feeEl.value = fx.fee_one_way_pct ?? 0.25;
+                if (refEl) refEl.value = fx.reference_krw ?? 0;
+                updateUsdtStrategyCompare();
+                refreshUsdtFxStatus();
+            }
+        }
+
+        function updateUsdtStrategyCompare() {
+            const cfg = tickerConfigs.USDT || {};
+            const cmp = cfg.usdt_strategy_compare || {};
+            const fixed = cmp.fixed_fusion || {};
+            const learned = cmp.learned_mixed || {};
+            const fmt = (v) => (v != null ? `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}%` : '-');
+            ['1d', '3d', '1w', '3w'].forEach(h => {
+                const fk = `expected_profit_${h}`;
+                const fe = document.getElementById(`usdt-fixed-${h}`);
+                const le = document.getElementById(`usdt-learned-${h}`);
+                if (fe) fe.innerText = fmt(fixed[fk]);
+                if (le) le.innerText = fmt(learned[fk]);
+            });
+            const reasonEl = document.getElementById('usdt-auto-pick-reason');
+            if (reasonEl) {
+                reasonEl.innerText = cfg.usdt_auto_pick_reason
+                    ? `선택 근거: ${cfg.usdt_auto_pick_reason}`
+                    : '최적화 실행 후 자동 비교됩니다.';
+            }
+            const selected = cfg.selected_usdt_strategy || 'auto';
+            const resolved = cfg.resolved_usdt_strategy || 'fixed_fusion';
+            const badges = {
+                auto: document.getElementById('badge-usdt-auto'),
+                fixed: document.getElementById('badge-usdt-fixed'),
+                learned: document.getElementById('badge-usdt-learned'),
+            };
+            if (badges.auto) badges.auto.style.display = selected === 'auto' ? 'inline' : 'none';
+            if (badges.fixed) badges.fixed.style.display = (selected === 'fixed_fusion' || (selected === 'auto' && resolved === 'fixed_fusion')) ? 'inline' : 'none';
+            if (badges.learned) badges.learned.style.display = (selected === 'learned_mixed' || (selected === 'auto' && resolved === 'learned_mixed')) ? 'inline' : 'none';
+            updateUsdtOptGapDisplay();
+        }
+
+        async function selectUsdtStrategy(strategy) {
+            try {
+                const res = await fetch('/api/usdt/select-strategy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ strategy })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    if (tickerConfigs.USDT) {
+                        tickerConfigs.USDT.selected_usdt_strategy = strategy;
+                        tickerConfigs.USDT.resolved_usdt_strategy = data.resolved_usdt_strategy;
+                        if (data.usdt_auto_pick_reason) tickerConfigs.USDT.usdt_auto_pick_reason = data.usdt_auto_pick_reason;
+                    }
+                    updateUsdtStrategyCompare();
+                } else alert(data.error || '전략 선택 실패');
+            } catch (e) { console.error(e); }
+        }
+
+        function updateUsdtOptGapDisplay() {
+            const cfg = tickerConfigs.USDT || {};
+            const cmp = cfg.usdt_strategy_compare || {};
+            const resolved = cfg.resolved_usdt_strategy || cfg.usdt_auto_pick || 'fixed_fusion';
+            const variant = resolved === 'learned_mixed' ? cmp.learned_mixed : cmp.fixed_fusion;
+            const optGap = variant?.best_gap_krw ?? cfg.usdt_fx?.min_consider_gap_krw ?? USDT_DEFAULT_GAP;
+            const hasBt = variant?.best_gap_krw != null;
+            const optEl = document.getElementById('usdt-opt-gap-krw');
+            const srcEl = document.getElementById('usdt-opt-gap-source');
+            const sbOpt = document.getElementById('usdt-sb-optgap-USDT');
+            const gapText = `${optGap}원`;
+            if (optEl) optEl.innerText = gapText;
+            if (srcEl) srcEl.innerText = hasBt ? '백테스트 최적화' : '설정값 (최적화 전)';
+            if (sbOpt) sbOpt.innerText = gapText;
+        }
+
+        function updateUsdtSidebarFx(d) {
+            const fairEl = document.getElementById('usdt-sb-fair-USDT');
+            const mktEl = document.getElementById('usdt-sb-market-USDT');
+            const gapEl = document.getElementById('usdt-sb-gap-USDT');
+            const edgeEl = document.getElementById('usdt-sb-edge-USDT');
+            if (fairEl) fairEl.innerText = d.fair_krw ? `${Math.round(d.fair_krw).toLocaleString()}원` : '-';
+            if (mktEl) mktEl.innerText = d.usdt_krw ? `${d.usdt_krw.toLocaleString()}원` : '-';
+            if (gapEl) {
+                const gap = d.gap_krw ?? 0;
+                const minGap = d.min_consider_gap_krw ?? USDT_DEFAULT_GAP;
+                gapEl.innerText = gap > 0 ? `${gap.toFixed(0)}원↓` : `+${Math.abs(gap).toFixed(0)}원↑`;
+                gapEl.style.color = gap >= minGap ? '#86efac' : '#94a3b8';
+            }
+            if (edgeEl) {
+                const net = d.net_edge_krw;
+                if (net != null) {
+                    edgeEl.innerText = `${net >= 0 ? '+' : ''}${net.toFixed(1)}원`;
+                    edgeEl.style.color = net > 0 ? '#86efac' : '#f87171';
+                } else edgeEl.innerText = '-';
+            }
+            updateUsdtOptGapDisplay();
+        }
+
+        function updateUsdtFxPanel(d) {
+            const fairEl = document.getElementById('usdt-fair-krw');
+            const mktEl = document.getElementById('usdt-market-krw');
+            const revEl = document.getElementById('usdt-reverse-pct');
+            const edgeEl = document.getElementById('usdt-net-edge');
+            const bbEl = document.getElementById('usdt-bb-levels');
+            const hintEl = document.getElementById('usdt-signal-hint');
+            const srcEl = document.getElementById('usdt-fair-source');
+            if (fairEl) fairEl.innerText = d.fair_krw ? `${d.fair_krw.toLocaleString()}원` : '-';
+            if (srcEl) srcEl.innerText = d.fair_source === 'manual' ? '수동 입력' : (d.fair_source === 'api' ? '실시간 API' : '기본값');
+            if (mktEl) mktEl.innerText = d.usdt_krw ? `${d.usdt_krw.toLocaleString()}원` : '-';
+            if (revEl) {
+                const gap = d.gap_krw ?? 0;
+                const minGap = d.min_consider_gap_krw ?? USDT_DEFAULT_GAP;
+                revEl.innerText = gap > 0 ? `${gap.toFixed(0)}원 (할인)` : `+${Math.abs(gap).toFixed(0)}원 (프리미엄)`;
+                revEl.style.color = gap >= minGap ? '#86efac' : '#94a3b8';
+            }
+            if (bbEl) {
+                if (d.bb_lower != null) {
+                    const tag = d.at_bb_lower ? '🟢하단' : (d.at_bb_upper ? '🔴상단' : '⚪중간');
+                    bbEl.innerText = `${tag} L:${d.bb_lower} M:${d.bb_middle} U:${d.bb_upper}`;
+                } else bbEl.innerText = '캔들 로딩 중';
+            }
+            if (edgeEl) {
+                const net = d.net_edge_krw;
+                if (net != null && d.usdt_krw) {
+                    edgeEl.innerText = `${net >= 0 ? '+' : ''}${net.toFixed(1)}원 (${(d.net_edge_pct || 0).toFixed(2)}%)`;
+                    edgeEl.style.color = net > 0 ? '#86efac' : '#f87171';
+                } else edgeEl.innerText = '-';
+            }
+            if (hintEl) {
+                const minGap = d.min_consider_gap_krw ?? USDT_DEFAULT_GAP;
+                if (d.phase === 'idle') {
+                    const need = d.gap_to_consider_krw ?? Math.max(0, minGap - (d.gap_krw || 0));
+                    hintEl.innerText = `⚫ 관심 구역 밖 (${need.toFixed(0)}원 더 필요)`;
+                } else if (d.phase === 'consider') {
+                    hintEl.innerText = '🟡 검토 중 (수수료·목표 미달)';
+                } else if (d.is_buy_profitable && d.at_bb_lower) {
+                    hintEl.innerText = '🟢 매수 타점 (환율+BB하단)';
+                } else if (d.is_buy_profitable) {
+                    hintEl.innerText = '🟡 대기 (BB 하단 터치 대기)';
+                } else {
+                    hintEl.innerText = '⚪ 대기';
+                }
+            }
+            updateUsdtSidebarFx(d);
+            updateUsdtOptGapDisplay();
+        }
+
+        async function refreshUsdtFxStatus() {
+            try {
+                const res = await fetch('/api/usdt/fx-status');
+                const d = await res.json();
+                if (!d.ok) return;
+                updateUsdtFxPanel(d);
+            } catch (e) { console.error(e); }
+        }
+
+        async function saveUsdtFxConfig() {
+            const payload = {
+                min_consider_gap_krw: parseFloat(document.getElementById('usdt-min-gap')?.value || USDT_DEFAULT_GAP),
+                min_target_profit_pct: parseFloat(document.getElementById('usdt-min-profit')?.value || 0.2),
+                sell_premium_pct: parseFloat(document.getElementById('usdt-sell-premium')?.value || 0.15),
+                fee_one_way_pct: parseFloat(document.getElementById('usdt-fee-oneway')?.value || 0.25),
+                reference_krw: parseFloat(document.getElementById('usdt-ref-krw')?.value || 0),
+            };
+            try {
+                const res = await fetch('/api/usdt/fx-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    if (tickerConfigs.USDT) tickerConfigs.USDT.usdt_fx = data.usdt_fx;
+                    alert('USDT 융합 설정이 저장·적용되었습니다.');
+                    refreshUsdtFxStatus();
+                } else alert('저장 실패: ' + (data.error || ''));
+            } catch (e) {
+                alert('저장 중 오류가 발생했습니다.');
+            }
         }
 
         function recreateSeries() {
@@ -4103,7 +5195,7 @@ HTML_CONTENT = """
 
                 const cbStrat = (tactic.strategies || []).find(s => s.name === 'CustomBear');
                 const p = cbStrat ? cbStrat.params : {};
-                const tf = cbStrat ? (cbStrat.timeframe || '30m') : '30m';
+                const tf = cbStrat ? (cbStrat.timeframe || '15m') : '15m';
                 const trailPct = ((p.trail_pct ?? 0.02) * 100).toFixed(1);
                 const stopPct = ((p.stop_loss ?? 0.015) * 100).toFixed(1);
                 const timeCut = p.time_cut ?? 24;
@@ -4261,13 +5353,15 @@ HTML_CONTENT = """
             const el = document.getElementById(`cycle-match-${ticker}`);
             if (!el) return;
             if (!cycleMatch || !cycleMatch.summary) {
-                el.innerText = '사이클 회귀각 분석 대기 중...';
+                el.innerText = ticker === 'USDT'
+                    ? '400일 페그 회귀·사이클 각도 분석 대기 중...'
+                    : '사이클 회귀각 분석 대기 중...';
                 return;
             }
             const hist = (cycleMatch.historical_cycles || [])
                 .map(c => `#${c.cycle_number} ${c.angle_pct_per_month >= 0 ? '+' : ''}${c.angle_pct_per_month}%/월`)
-                .join(' · ');
-            el.innerHTML = `🔄 ${cycleMatch.summary}<br><span style="opacity:0.75; font-size:9px;">과거 사이클 각도: ${hist || '-'}</span>`;
+                .join('<br>');
+            el.innerHTML = `🔄 ${cycleMatch.summary}<br><span style="opacity:0.75; font-size:9px; display:block; margin-top:4px;">과거 사이클 각도:<br>${hist || '-'}</span>`;
         }
 
         function formatProfitPct(val) {
@@ -4294,6 +5388,20 @@ HTML_CONTENT = """
         function updateOptimizedDefaultPanel(ticker, configOrData) {
             const el = document.getElementById(`optimized-default-${ticker}`);
             if (!el) return;
+            if (ticker === 'USDT') {
+                const cfg = (configOrData && configOrData.resolved_usdt_strategy !== undefined)
+                    ? configOrData
+                    : (tickerConfigs.USDT || configOrData || {});
+                const resolved = cfg.resolved_usdt_strategy || cfg.usdt_auto_pick || 'fixed_fusion';
+                const label = resolved === 'learned_mixed' ? '학습 3대지표' : '고정 융합';
+                const reason = cfg.usdt_auto_pick_reason || '백테스트 최적화 후 자동 갱신';
+                const gap = cfg.usdt_fx?.min_consider_gap_krw ?? USDT_DEFAULT_GAP;
+                const minProfit = cfg.usdt_fx?.min_target_profit_pct ?? '-';
+                el.innerHTML = `✅ <b>USDT ${label}</b> · 검토 gap ${gap}원 · 익절≥${minProfit}%<br>`
+                    + `<span style="opacity:0.8;">${reason}</span>`;
+                updateUsdtOptGapDisplay();
+                return;
+            }
             const od = configOrData?.optimized_default || configOrData;
             if (!od || !od.regimes) {
                 el.innerText = '일일 최적화 디폴트 전략 대기 중... (02:00 KST 자동 갱신)';
@@ -4307,13 +5415,16 @@ HTML_CONTENT = """
                 ? ` · ${od.cycle_match_cycle}번째 사이클 참고(${od.cycle_similarity_pct || 0}%)`
                 : '';
             const applied = od.applied_at ? od.applied_at.replace('T', ' ').slice(0, 16) : '-';
+            const sellInfo = active.sell_strategy || active.risk_type || '-';
+            const holdInfo = active.avg_hold_days ? ` · 평균보유 ${active.avg_hold_days}일` : '';
             el.innerHTML = `✅ <b>디폴트 적용</b> ${regime}: ${active.logic || '-'} ${strats}${bearNote}<br>`
-                + `<span style="opacity:0.8;">리스크 ${active.risk_type || '-'} · 1D예상 ${active.expected_profit_1d ?? '-'}% · 1M예상 ${active.expected_profit_1m ?? '-'}% · Sharpe ${active.sharpe ?? '-'}${cycleNote}</span><br>`
+                + `<span style="opacity:0.8;">매도 ${sellInfo}${holdInfo} · 1D예상 ${active.expected_profit_1d ?? '-'}% · 1M예상 ${active.expected_profit_1m ?? '-'}% · Sharpe ${active.sharpe ?? '-'}${cycleNote}</span><br>`
                 + (od.bear_auto_pick_reason ? `<span style="opacity:0.75; font-size:9px;">BEAR 선택: ${od.bear_auto_pick_reason}</span><br>` : '')
-                + `<span style="opacity:0.65; font-size:9px;">갱신: ${applied} (${od.source || 'backtest'})</span>`;
+                + `<span style="opacity:0.65; font-size:9px;">갱신: ${applied} (02:00 KST 학습·완료 시 자동)</span>`;
         }
 
         async function loadAllConfigs() {
+            ensureSystemTickerCards();
             try {
                 const response = await fetch('/api/config');
                 tickerConfigs = await response.json();
@@ -4348,8 +5459,6 @@ HTML_CONTENT = """
                     updateStrategyDetailsTable(ticker, config);
                     updateCycleMatchPanel(ticker, config.cycle_analysis);
                     updateOptimizedDefaultPanel(ticker, config);
-                    
-                    // 장세 고정 및 기간 드롭다운 동기화
                     const regSelect = document.getElementById(`regime-select-${ticker}`);
                     const durSelect = document.getElementById(`regime-duration-${ticker}`);
                     if (regSelect && config.regime_override) {
@@ -4385,10 +5494,26 @@ HTML_CONTENT = """
                         }
                     }
                 });
+
+                for (const ticker of SYSTEM_TICKERS) {
+                    const config = tickerConfigs[ticker];
+                    if (!config) continue;
+                    const currentRegime = config.current_regime || (ticker === 'USDT' ? 'RANGE' : 'BEAR');
+                    const tactic = config.tactics ? config.tactics[currentRegime] : null;
+                    const logic = tactic ? tactic.logic : (ticker === 'USDT' ? 'OR' : 'AND');
+                    createTickerCardIfNotExist(ticker, logic, config.active !== false);
+                    updateStrategyDetailsTable(ticker, config);
+                    updateCycleMatchPanel(ticker, config.cycle_analysis);
+                    updateOptimizedDefaultPanel(ticker, config);
+                    upgradeUsdtSidebarBlock(ticker);
+                }
                 
                 loadConfigForTicker(activeTicker);
+                syncUsdtPanel(activeTicker);
+                refreshUsdtFxStatus();
             } catch (e) {
                 console.error("Failed to load configs:", e);
+                ensureSystemTickerCards();
             }
         }
 
@@ -4401,7 +5526,8 @@ HTML_CONTENT = """
                 const strategies = tactic ? tactic.strategies : [];
                 strategies.forEach(s => {
                     if (s.enabled) {
-                        rowsHtml += `<tr><td>${s.name}</td><td>대기 중</td></tr>`;
+                        const label = s.name === 'UsdtFxBollinger' ? '환율+BB 융합' : s.name;
+                        rowsHtml += `<tr><td>${label}</td><td>대기 중</td></tr>`;
                     }
                 });
                 rowsHtml += `<tr><td>종합 판단</td><td>HOLD</td></tr>`;
@@ -4418,7 +5544,15 @@ HTML_CONTENT = """
             const tactic = config.tactics ? config.tactics[currentRegime] : null;
             if (!tactic) return;
 
-            updateTickerStrategyBadge(ticker, tactic.logic);
+            if (ticker === 'USDT') {
+                const resolved = config.resolved_usdt_strategy || 'fixed_fusion';
+                const badgeEl = document.getElementById(`badge-text-${ticker}`);
+                if (badgeEl) {
+                    badgeEl.innerText = resolved === 'learned_mixed' ? formatStrategyBadge(tactic.logic) : '환율+BB 융합';
+                }
+            } else {
+                updateTickerStrategyBadge(ticker, tactic.logic);
+            }
             
             document.getElementById('logic-select').value = (tactic.logic === 'CUSTOM_BEAR') ? 'OR' : tactic.logic;
             toggleThresholdDisplay(tactic.logic);
@@ -4454,7 +5588,6 @@ HTML_CONTENT = """
             strategies.forEach(s => {
                 const prefix = s.name.toLowerCase();
                 
-                // 해당 전략 카드 보여주기
                 const cardEl = document.getElementById(`card-item-${prefix}`);
                 if (cardEl) {
                     cardEl.style.display = 'flex';
@@ -4491,6 +5624,7 @@ HTML_CONTENT = """
             });
             updateConfigStatusBadge();
             syncBearStrategyUI(ticker);
+            syncUsdtPanel(ticker);
             loadBacktestCompareData(ticker);
         }
 
@@ -4960,6 +6094,7 @@ HTML_CONTENT = """
                 loadHistoricalCandles('BTC', activeTimeframe);
                 loadHistoricalCandles('ETH', activeTimeframe);
                 loadHistoricalCandles('XRP', activeTimeframe);
+                loadHistoricalCandles('USDT', activeTimeframe);
             };
 
             ws.onmessage = (event) => {
@@ -5064,8 +6199,12 @@ HTML_CONTENT = """
                     mergeRealtimePriceToCandle(ticker, price, msg.data.timestamp);
                     
                     // 2. 가격 판 갱신 및 플래시 이펙트
+                    if (ticker === 'USDT' && msg.data.usdt_fx_status) {
+                        updateUsdtFxPanel(msg.data.usdt_fx_status);
+                    }
+
                     if (priceEl) {
-                        const formattedPrice = ['DOGE', 'SAND'].includes(ticker) ? price.toFixed(2) : price.toLocaleString();
+                        const formattedPrice = ['XRP', 'USDT', 'DOGE', 'SAND'].includes(ticker) ? price.toFixed(2) : price.toLocaleString();
                         priceEl.innerText = formattedPrice + ' KRW';
                         
                         if (lastPrices[ticker] !== 0 && lastPrices[ticker] !== undefined) {
@@ -5356,7 +6495,7 @@ HTML_CONTENT = """
         }
         
         async function runBacktestNow() {
-            if (!confirm(`백그라운드에서 30분봉(48포인트/일) 9년 데이터 최적화를 즉시 시작하시겠습니까?
+            if (!confirm(`백그라운드에서 15분봉(96포인트/일) 9년 데이터 최적화를 즉시 시작하시겠습니까?
 (약 10~20분 소요, 캐시 재수집 포함. 거래 엔진은 중단 없이 동작하며 WebSocket 틱마다 조건 충족 시 즉시 매매합니다)`)) return;
             try {
                 const res = await fetch('/api/backtest/run-now', { method: 'POST' });
@@ -5369,6 +6508,8 @@ HTML_CONTENT = """
             }
         }
 
+        ensureSystemTickerCards();
+        loadAllConfigs();
         connectWebSocket();
         
         // 백테스트 진행률 주기적 체크 (4초 주기)
@@ -5632,14 +6773,10 @@ def load_dynamic_factory_defaults():
         }
     }
     
-    defaults = {
-        "BTC": fallback_defaults,
-        "ETH": fallback_defaults,
-        "XRP": fallback_defaults
-    }
+    defaults = {t: fallback_defaults for t in SUPPORTED_TICKERS}
     
     if results:
-        for market in ["KRW-BTC", "KRW-ETH", "KRW-XRP"]:
+        for market in [f"KRW-{t}" for t in SUPPORTED_TICKERS]:
             ticker = market.replace("KRW-", "")
             if market in results:
                 ticker_data = {}
