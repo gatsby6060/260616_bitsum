@@ -50,8 +50,15 @@ class CandleManager:
                 continue
                 
             url = f"{base_url}/candles/{sub_path}"
-            # 10년 치 분석을 위해 일봉은 3650개 로드
-            count = 4200 if tf == "D" else 150
+            # 장세 분석: 일봉 10년, 주봉·월봉 사이클 분석용 확장 로드
+            if tf == "D":
+                count = 4200
+            elif tf == "W":
+                count = 520
+            elif tf == "M":
+                count = 120
+            else:
+                count = 150
             
             success = False
             for attempt in range(3):

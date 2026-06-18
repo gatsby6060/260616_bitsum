@@ -1,130 +1,262 @@
 import numpy as np
 
+# 코인별 사이클 프로파일 (일봉 회귀·회기 앵커·월봉 회복 주기)
+TICKER_CYCLE_PROFILE = {
+    "BTC": {
+        "regression_days": 800,
+        "cycle_anchor_days": 800,
+        "recovery_days": 365,
+        "peak_lookback_days": 1095,
+        "bear_drawdown_pct": 25.0,
+        "bottoming_anchor_band_pct": 15.0,
+    },
+    "ETH": {
+        "regression_days": 300,
+        "cycle_anchor_days": 300,
+        "recovery_days": 365,
+        "peak_lookback_days": 730,
+        "bear_drawdown_pct": 25.0,
+        "bottoming_anchor_band_pct": 12.0,
+    },
+    "XRP": {
+        "regression_days": 300,
+        "cycle_anchor_days": 300,
+        "recovery_days": 1095,
+        "peak_lookback_days": 1460,
+        "bear_drawdown_pct": 30.0,
+        "bottoming_anchor_band_pct": 15.0,
+    },
+}
+
+
+def _slope_rate_pct(prices: list, window: int, price_now: float) -> float:
+    if len(prices) < window or price_now <= 0:
+        return 0.0
+    segment = prices[-window:]
+    slope, _ = np.polyfit(np.arange(len(segment)), segment, 1)
+    return float((slope / price_now) * 100)
+
+
+def _linear_fair_value(prices: list, period: int) -> tuple:
+    segment = prices[-period:]
+    x = np.arange(len(segment))
+    slope, intercept = np.polyfit(x, segment, 1)
+    fair = float(slope * (len(segment) - 1) + intercept)
+    return fair, float(slope)
+
+
 class MarketRegimeDetector:
     """
-    일봉의 장기 선형 회귀분석(Linear Regression)과 최근 기간별 추세 가속도(기울기 변화율)를 
-    복합 분석하여 현재 시장 국면을 진단하는 클래스.
-    
-    - BULL (상승장): 장기 회귀 적정가 대비 안정적 지지 및 중단기 추세 우상향인 경우
-    - BEAR (하락장): 장기 회귀선 아래에 있으며, 중단기 하락 추세가 지속되는 경우
-    - RANGE (횡보장): 장기 극단 과매도 상태에서 하락이 진정/횡보 전환되거나, 회귀선 부근에서 가격이 수렴하는 경우
+    일봉·주봉·월봉과 코인별 회기(회귀) 앵커를 복합 분석하여 장세를 진단합니다.
+
+    - BEAR: 고점 대비 의미 있는 하락(주봉 하락 추세) — 바닥 횡보 전까지 유지
+    - RANGE: 회기 앵커(300/800일 전 가격대) 부근에서 하락 둔화·횡보
+    - BULL: 월봉 회복 구간 진입 + 중단기 추세 우상향
     """
 
-    def __init__(self, candle_manager, long_term_ma_period=1500, bull_duration_limit_days=100, bear_duration_limit_days=200):
+    def __init__(self, candle_manager, long_term_ma_period=None, bull_duration_limit_days=100, bear_duration_limit_days=200):
         self.candle_manager = candle_manager
-        # long_term_ma_period 변수는 1500일 장기 회귀 분석 기간으로 사용됨
-        self.long_term_ma_period = long_term_ma_period
+        self.ticker = getattr(candle_manager, "ticker", "BTC")
+        profile = TICKER_CYCLE_PROFILE.get(self.ticker, TICKER_CYCLE_PROFILE["BTC"])
+
+        self.regression_days = long_term_ma_period or profile["regression_days"]
+        self.cycle_anchor_days = profile["cycle_anchor_days"]
+        self.recovery_days = profile["recovery_days"]
+        self.peak_lookback_days = profile["peak_lookback_days"]
+        self.bear_drawdown_pct = profile["bear_drawdown_pct"]
+        self.bottoming_anchor_band_pct = profile["bottoming_anchor_band_pct"]
+
+        self.long_term_ma_period = self.regression_days
         self.bull_duration_limit_days = bull_duration_limit_days
         self.bear_duration_limit_days = bear_duration_limit_days
 
+    def sync_regression_period(self, days: int):
+        """설정 파일에서 회귀 기간 변경 시 동기화."""
+        if days and days > 0:
+            self.regression_days = int(days)
+            self.long_term_ma_period = int(days)
+
     def detect_regime(self) -> str:
-        """
-        현재 시장 국면을 진단하여 'BULL', 'BEAR', 'RANGE' 중 하나를 반환합니다.
-        """
-        detailed = self.detect_regime_detailed()
-        return detailed["regime"]
+        return self.detect_regime_detailed()["regime"]
+
+    def _analyze_monthly(self, m_prices: list) -> dict:
+        if len(m_prices) < 6:
+            return {
+                "phase": "unknown",
+                "months_since_peak": 0,
+                "monthly_drawdown_pct": 0.0,
+                "slope_3m_pct": 0.0,
+                "slope_6m_pct": 0.0,
+                "recovery_progress_pct": 0.0,
+            }
+
+        price_now = float(m_prices[-1])
+        lookback = min(len(m_prices), 48)
+        window = m_prices[-lookback:]
+        peak = max(window)
+        peak_idx = window.index(peak)
+        months_since_peak = lookback - 1 - peak_idx
+        monthly_dd = (price_now - peak) / peak * 100 if peak > 0 else 0.0
+
+        slope_3m = _slope_rate_pct(m_prices, min(3, len(m_prices)), price_now) * 30
+        slope_6m = _slope_rate_pct(m_prices, min(6, len(m_prices)), price_now) * 30
+
+        recovery_progress = min(100.0, months_since_peak / max(self.recovery_days / 30.0, 1) * 100)
+
+        if monthly_dd <= -self.bear_drawdown_pct * 0.6 and slope_3m < -1.0:
+            phase = "decline"
+        elif abs(monthly_dd) <= self.bear_drawdown_pct * 0.5 and abs(slope_3m) <= 2.0 and abs(slope_6m) <= 1.5:
+            phase = "bottom"
+        elif slope_3m > 2.0 and slope_6m > 0:
+            phase = "recovery" if recovery_progress < 80 else "expansion"
+        elif slope_3m > 0 and monthly_dd < -10:
+            phase = "early_recovery"
+        else:
+            phase = "transition"
+
+        return {
+            "phase": phase,
+            "months_since_peak": int(months_since_peak),
+            "monthly_drawdown_pct": float(monthly_dd),
+            "slope_3m_pct": float(slope_3m),
+            "slope_6m_pct": float(slope_6m),
+            "recovery_progress_pct": float(recovery_progress),
+        }
+
+    def _is_bottoming(self, slope_rate_90: float, slope_rate_30: float, w_prices: list) -> bool:
+        daily_flat = slope_rate_90 >= -0.08 and slope_rate_30 >= -0.15
+        if len(w_prices) >= 8:
+            recent = w_prices[-8:]
+            w_high = max(recent)
+            w_low = min(recent)
+            w_range = (w_high - w_low) / w_low * 100 if w_low > 0 else 999
+            weekly_flat = w_range <= 18.0
+            return daily_flat and weekly_flat
+        return daily_flat and slope_rate_30 >= -0.05
 
     def detect_regime_detailed(self) -> dict:
-        """
-        1500일 장기 선형 회귀 및 최근 다중 타임프레임(365일, 180일, 90일, 30일) 기울기를 연산하여
-        상세한 장세 판정 근거와 보조 지표를 반환합니다.
-        """
-        # 일봉 종가 리스트 가져오기
         prices = self.candle_manager.get_prices("D")
+        w_prices = self.candle_manager.get_prices("W")
+        m_prices = self.candle_manager.get_prices("M")
         n = len(prices)
-        
-        # 데이터가 분석 기간보다 부족할 경우 가용한 최대 개수를 사용하도록 유연화
-        actual_period = self.long_term_ma_period
-        if n < actual_period:
-            actual_period = n
-            
-        # 데이터가 최소 분석 기간 미만이면 분석 대기
-        min_required = min(300, self.long_term_ma_period)
-        if actual_period < min_required:
+
+        min_required = min(180, self.regression_days)
+        if n < min_required:
             return {
                 "regime": "RANGE",
                 "reason": f"일봉 데이터 부족 ({n}/{min_required}). 분석 대기 중.",
-                "metrics": {
-                    "days_since_peak": 0,
-                    "deviation_pct": 0.0,
-                    "slope_pct": 0.0,
-                    "slope_rate_365": 0.0,
-                    "slope_rate_90": 0.0,
-                    "slope_rate_30": 0.0,
-                    "fair_value": 0.0
-                }
+                "metrics": self._empty_metrics(),
             }
 
-        # 1. 장기 선형 회귀 (Linear Regression)
-        p_long = prices[-actual_period:]
-        x_long = np.arange(actual_period)
-        slope_long, intercept_long = np.polyfit(x_long, p_long, 1)
-        
-        # 장기 회귀 적정가 및 현재 괴리율 계산
-        fair_value = slope_long * (actual_period - 1) + intercept_long
+        actual_period = min(self.regression_days, n)
         price_now = float(prices[-1])
-        dev_pct = (price_now - fair_value) / fair_value * 100
 
-        # 2. 최근 다중 기간 선형 회귀 기울기 계산 및 현재가 대비 백분율 환산 (Slope Rate % / 일)
-        p_365 = prices[-365:]
-        slope_365, _ = np.polyfit(np.arange(365), p_365, 1)
-        slope_rate_365 = (slope_365 / price_now) * 100
-        
-        p_180 = prices[-180:]
-        slope_180, _ = np.polyfit(np.arange(180), p_180, 1)
-        slope_rate_180 = (slope_180 / price_now) * 100
-        
-        p_90 = prices[-90:]
-        slope_90, _ = np.polyfit(np.arange(90), p_90, 1)
-        slope_rate_90 = (slope_90 / price_now) * 100
-        
-        p_30 = prices[-30:]
-        slope_30, _ = np.polyfit(np.arange(30), p_30, 1)
-        slope_rate_30 = (slope_30 / price_now) * 100
+        fair_value, _ = _linear_fair_value(prices, actual_period)
+        dev_pct = (price_now - fair_value) / fair_value * 100 if fair_value > 0 else 0.0
 
-        # 3. 최고점(Peak) 경과 일수 계산 (보조용)
-        lookback_period = min(n, 730)
-        recent_prices = prices[-lookback_period:]
-        peak_price = max(recent_prices)
-        peak_index = recent_prices.index(peak_price)
-        days_since_peak = lookback_period - 1 - peak_index
+        anchor_idx = min(self.cycle_anchor_days, n - 1)
+        cycle_anchor_price = float(prices[-1 - anchor_idx])
+        anchor_dev_pct = (price_now - cycle_anchor_price) / cycle_anchor_price * 100 if cycle_anchor_price > 0 else 0.0
 
-        # 4. 종합 조건 판정 로직
-        final_regime = "RANGE"
+        peak_lb = min(n, self.peak_lookback_days)
+        recent = prices[-peak_lb:]
+        peak_price = max(recent)
+        peak_index = recent.index(peak_price)
+        days_since_peak = peak_lb - 1 - peak_index
+        drawdown_pct = (price_now - peak_price) / peak_price * 100 if peak_price > 0 else 0.0
+
+        slope_rate_365 = _slope_rate_pct(prices, min(365, n), price_now)
+        slope_rate_180 = _slope_rate_pct(prices, min(180, n), price_now)
+        slope_rate_90 = _slope_rate_pct(prices, min(90, n), price_now)
+        slope_rate_30 = _slope_rate_pct(prices, min(30, n), price_now)
+
+        weekly_dd = 0.0
+        if len(w_prices) >= 12:
+            w_peak = max(w_prices[-12:])
+            weekly_dd = (price_now - w_peak) / w_peak * 100 if w_peak > 0 else 0.0
+
+        monthly = self._analyze_monthly(m_prices)
+        bottoming = self._is_bottoming(slope_rate_90, slope_rate_30, w_prices)
+        at_anchor_zone = abs(anchor_dev_pct) <= self.bottoming_anchor_band_pct
+
+        final_regime = "BEAR"
         reason = ""
 
-        # 하락 가속도 둔화(바닥 형성) 여부 판단 필터
-        is_bottoming = (slope_rate_90 >= -0.05) or (slope_rate_30 >= 0.0)
-
-        # A. 극단적 저평가 (괴리율 -25% 이하 영역, 강한 장기 매집대)
-        if dev_pct <= -25.0:
-            if slope_rate_30 >= 0.1:
-                final_regime = "BULL"
-                reason = f"대세 회귀선 괴리율 극소화({dev_pct:.1f}%) 상태에서 최근 30일 단기 상승 반전 모멘텀(+{slope_rate_30:.3f}%/일) 확인으로 BULL 전환."
-            elif is_bottoming:
-                final_regime = "RANGE"
-                reason = f"대세 회귀선 괴리율 극소화({dev_pct:.1f}%) 상태에서 최근 90일 및 30일 하락 둔화/횡보 신호(90일 기울기율: {slope_rate_90:.3f}%/일) 확인으로 RANGE 전환."
-            else:
-                final_regime = "BEAR"
-                reason = f"대세 회귀선 괴리율 극소화({dev_pct:.1f}%) 상태이나 여전히 단기/중기 하락 추세(30일 기울기율: {slope_rate_30:.3f}%/일)가 우세하여 BEAR 유지."
-        
-        # B. 대세 상승 영역 (괴리율 -10% 이상이면서 단중기 추세가 양수일 때)
-        elif dev_pct >= -10.0 and slope_rate_90 > 0 and slope_rate_30 > 0:
+        # 1) BULL — 월봉 회복·확장 + 중단기 상승
+        if (
+            monthly["phase"] in ("recovery", "expansion", "early_recovery")
+            and slope_rate_90 > 0.03
+            and slope_rate_30 > 0.0
+            and drawdown_pct > -self.bear_drawdown_pct
+        ):
             final_regime = "BULL"
-            reason = f"대세 회귀선 괴리 안정화({dev_pct:.1f}%) 및 중단기(90일, 30일) 추세 동시 우상향(BULL) 안착."
-            
-        # C. 대세 하락 진행 영역 (적정가 하회 및 단중기 추세 하향)
-        elif dev_pct < -10.0 and (slope_rate_90 < -0.05 or slope_rate_30 < -0.1):
+            reason = (
+                f"월봉 {monthly['phase']} 구간(고점 대비 {monthly['monthly_drawdown_pct']:.1f}%, "
+                f"회복진행 {monthly['recovery_progress_pct']:.0f}%) + 90일 추세 우상향으로 BULL."
+            )
+        elif dev_pct >= -5.0 and slope_rate_90 > 0.05 and slope_rate_30 > 0.05 and drawdown_pct > -15:
+            final_regime = "BULL"
+            reason = (
+                f"{self.regression_days}일 회귀선 대비 안정({dev_pct:+.1f}%) + "
+                f"중단기 동반 상승으로 BULL."
+            )
+
+        # 2) RANGE — 하락 후 회기 앵커 부근 바닥 횡보 (BEAR에서만 전환)
+        elif (
+            drawdown_pct <= -self.bear_drawdown_pct * 0.5
+            and bottoming
+            and (at_anchor_zone or monthly["phase"] == "bottom")
+        ):
+            final_regime = "RANGE"
+            reason = (
+                f"고점 대비 {drawdown_pct:.1f}% 하락 후 {self.cycle_anchor_days}일 회기 앵커 "
+                f"({cycle_anchor_price:,.0f}원, 괴리 {anchor_dev_pct:+.1f}%) 부근 횡보 - 바닥 RANGE."
+            )
+
+        # 3) BEAR — 주봉/월봉 하락장 유지 (바닥 확인 전)
+        elif (
+            drawdown_pct <= -self.bear_drawdown_pct
+            or weekly_dd <= -self.bear_drawdown_pct * 0.8
+            or monthly["phase"] == "decline"
+            or (anchor_dev_pct < -self.bottoming_anchor_band_pct and slope_rate_90 < -0.03)
+            or (price_now < cycle_anchor_price * 0.90 and slope_rate_30 < 0)
+        ):
             final_regime = "BEAR"
-            reason = f"장기 회귀 적정가 하회 상태에서 중단기 하락 추세(최근 30일 기울기율: {slope_rate_30:.3f}%/일)가 뚜렷하여 BEAR 판정."
-            
-        # D. 기본 횡보/수렴 영역
+            reason = (
+                f"고점({peak_price:,.0f}) 대비 {drawdown_pct:.1f}% 하락, "
+                f"{self.cycle_anchor_days}일 회기가 {cycle_anchor_price:,.0f}원 "
+                f"(현재 괴리 {anchor_dev_pct:+.1f}%). "
+                f"월봉 {monthly['phase']}, 주봉 {weekly_dd:.1f}% - 하락장(BEAR) 유지."
+            )
+
+        # 4) 약한 하락/조정 — 회귀선·기울기 종합
+        elif slope_rate_90 < -0.05 or slope_rate_30 < -0.12:
+            final_regime = "BEAR"
+            reason = (
+                f"고점 대비 {drawdown_pct:.1f}% 조정 중, 90일 기울기 {slope_rate_90:+.3f}%/일 - BEAR."
+            )
+
+        elif bottoming and abs(slope_rate_90) <= 0.08:
+            final_regime = "RANGE"
+            reason = (
+                f"하락 둔화(90일 {slope_rate_90:+.3f}%/일), "
+                f"회기 앵커 괴리 {anchor_dev_pct:+.1f}% - 횡보(RANGE)."
+            )
+
         else:
             final_regime = "RANGE"
-            reason = f"대세 괴리율({dev_pct:.1f}%) 수렴 및 최근 90일 기울기율({slope_rate_90:.3f}%/일) 완화로 횡보(RANGE) 국면 판정."
+            reason = (
+                f"뚜렷한 방향성 없음 - 괴리 {dev_pct:+.1f}%, "
+                f"고점 대비 {drawdown_pct:.1f}%, 월봉 {monthly['phase']} → RANGE."
+            )
 
-        # 서버 콘솔 출력 (디버깅용)
-        print(f"[RegimeDetector] {self.candle_manager.ticker} 상세 | 현재가: {price_now:,.0f} | Fair_{self.long_term_ma_period}: {fair_value:,.0f} | 괴리: {dev_pct:+.2f}% | 30일기울기율: {slope_rate_30:+.3f}% | 최종판정: {final_regime} ({reason})")
+        print(
+            f"[RegimeDetector] {self.ticker} | 가격: {price_now:,.0f} | "
+            f"회귀{self.regression_days}d: {fair_value:,.0f} ({dev_pct:+.1f}%) | "
+            f"앵커{self.cycle_anchor_days}d: {cycle_anchor_price:,.0f} ({anchor_dev_pct:+.1f}%) | "
+            f"고점대비: {drawdown_pct:.1f}% | 월봉: {monthly['phase']} | "
+            f"판정: {final_regime} - {reason}"
+        )
 
         return {
             "regime": final_regime,
@@ -132,27 +264,65 @@ class MarketRegimeDetector:
             "metrics": {
                 "days_since_peak": int(days_since_peak),
                 "deviation_pct": float(dev_pct),
-                "slope_pct": float(slope_rate_90),  # UI 연동 호환성을 위해 90일 기울기율 매핑
+                "anchor_deviation_pct": float(anchor_dev_pct),
+                "drawdown_from_peak_pct": float(drawdown_pct),
+                "cycle_anchor_price": float(cycle_anchor_price),
+                "slope_pct": float(slope_rate_90),
                 "slope_rate_365": float(slope_rate_365),
                 "slope_rate_180": float(slope_rate_180),
                 "slope_rate_90": float(slope_rate_90),
                 "slope_rate_30": float(slope_rate_30),
-                "fair_value": float(fair_value)
-            }
+                "fair_value": float(fair_value),
+                "weekly_drawdown_pct": float(weekly_dd),
+                "monthly_phase": monthly["phase"],
+                "monthly_drawdown_pct": monthly["monthly_drawdown_pct"],
+                "recovery_progress_pct": monthly["recovery_progress_pct"],
+                "regression_days": int(self.regression_days),
+            },
+        }
+
+    @staticmethod
+    def _empty_metrics() -> dict:
+        return {
+            "days_since_peak": 0,
+            "deviation_pct": 0.0,
+            "anchor_deviation_pct": 0.0,
+            "drawdown_from_peak_pct": 0.0,
+            "cycle_anchor_price": 0.0,
+            "slope_pct": 0.0,
+            "slope_rate_365": 0.0,
+            "slope_rate_180": 0.0,
+            "slope_rate_90": 0.0,
+            "slope_rate_30": 0.0,
+            "fair_value": 0.0,
+            "weekly_drawdown_pct": 0.0,
+            "monthly_phase": "unknown",
+            "monthly_drawdown_pct": 0.0,
+            "recovery_progress_pct": 0.0,
+            "regression_days": 0,
         }
 
 
 if __name__ == "__main__":
-    # 단위 테스트 검증
     class DummyCandleManager:
-        def __init__(self, prices, ticker="BTC"):
-            self.prices_list = prices
+        def __init__(self, daily, weekly=None, monthly=None, ticker="BTC"):
+            self.prices_d = daily
+            self.prices_w = weekly or daily[-52:]
+            self.prices_m = monthly or daily[-24:]
             self.ticker = ticker
-        def get_prices(self, tf):
-            return self.prices_list
 
-    # 1500일 회귀 테스트용 데이터 생성
-    # 1500일 동안 매일 1000씩 꾸준히 상승하는 시나리오
-    bull_prices = [50000.0 + i * 1000.0 for i in range(1600)]
-    detector = MarketRegimeDetector(DummyCandleManager(bull_prices), long_term_ma_period=1500)
-    print("우상향 시나리오 진단 결과 (BULL 예상):", detector.detect_regime())
+        def get_prices(self, tf):
+            if tf == "D":
+                return self.prices_d
+            if tf == "W":
+                return self.prices_w
+            if tf == "M":
+                return self.prices_m
+            return self.prices_d
+
+    n = 1200
+    peak_at = 900
+    daily = [50_000_000 + i * 20_000 for i in range(peak_at)]
+    daily += [daily[-1] * (1 - 0.003 * i) for i in range(1, n - peak_at + 1)]
+    det = MarketRegimeDetector(DummyCandleManager(daily, ticker="BTC"), long_term_ma_period=800)
+    print("하락 시나리오:", det.detect_regime())

@@ -4,7 +4,7 @@
         "current_regime": "RANGE",
         "regime_override": "AUTO",
         "selected_bear_strategy": "auto",
-        "long_term_ma_period": 210,
+        "long_term_ma_period": 800,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -47,6 +47,11 @@
                     "type": "None",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             },
             "BEAR": {
@@ -72,6 +77,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.01,
                     "take_profit_pct": 9.9
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             },
             "RANGE": {
@@ -115,6 +125,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             }
         },
@@ -145,6 +160,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.01,
                     "take_profit_pct": 9.9
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             },
             "mixed": {
@@ -188,6 +208,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             }
         },
@@ -199,7 +224,7 @@
         "current_regime": "RANGE",
         "regime_override": "AUTO",
         "selected_bear_strategy": "auto",
-        "long_term_ma_period": 210,
+        "long_term_ma_period": 300,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -242,6 +267,11 @@
                     "type": "None",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             },
             "BEAR": {
@@ -285,6 +315,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             },
             "RANGE": {
@@ -328,6 +363,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             }
         },
@@ -358,6 +398,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.03,
                     "take_profit_pct": 9.9
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             },
             "mixed": {
@@ -401,6 +446,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             }
         },
@@ -412,7 +462,7 @@
         "current_regime": "RANGE",
         "regime_override": "AUTO",
         "selected_bear_strategy": "auto",
-        "long_term_ma_period": 210,
+        "long_term_ma_period": 300,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -455,6 +505,11 @@
                     "type": "None",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             },
             "BEAR": {
@@ -498,6 +553,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             },
             "RANGE": {
@@ -541,6 +601,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             }
         },
@@ -569,6 +634,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.01,
                     "take_profit_pct": 9.9
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             },
             "mixed": {
@@ -612,6 +682,11 @@
                     "type": "StopLoss",
                     "stop_loss_pct": 0.02,
                     "take_profit_pct": 0.03
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 0,
+                    "median_hold_hours": 0,
+                    "avg_hold_days": 0
                 }
             }
         },

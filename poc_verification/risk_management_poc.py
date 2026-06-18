@@ -21,6 +21,8 @@ from urllib.parse import urlencode, quote
 import sys
 import importlib
 
+KST = timezone(timedelta(hours=9))
+
 # ── 백테스팅 모듈 임포트 (같은 폴더) ──
 try:
     _bt_spec = importlib.util.spec_from_file_location(
@@ -124,7 +126,7 @@ active_ticker_configs = {
         "current_regime": "BEAR",
         "regime_override": "AUTO",
         "selected_bear_strategy": "auto",
-        "long_term_ma_period": 210,
+        "long_term_ma_period": 800,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -161,7 +163,7 @@ active_ticker_configs = {
         "current_regime": "BEAR",
         "regime_override": "AUTO",
         "selected_bear_strategy": "auto",
-        "long_term_ma_period": 210,
+        "long_term_ma_period": 300,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -198,7 +200,7 @@ active_ticker_configs = {
         "current_regime": "BEAR",
         "regime_override": "AUTO",
         "selected_bear_strategy": "auto",
-        "long_term_ma_period": 210,
+        "long_term_ma_period": 300,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -243,11 +245,11 @@ DEFAULT_BEAR_STRATEGY = "auto"  # 하락장 기본: 백테스트 우수 전략 �
 SUPPORTED_TICKERS = ["BTC", "ETH", "XRP"]
 
 def _compute_bear_auto_pick(bear_opt_reg: dict) -> str:
-    """BEAR 구간: 6개월 예상 수익률 우선, 동점 시 Sharpe·MDD로 mix vs CustomBear 자동 선택."""
+    """BEAR 구간: 1개월 예상 수익률 우선, 동점 시 Sharpe·MDD로 mix vs CustomBear 자동 선택."""
     custom = bear_opt_reg.get("custom_bear_strategy", {})
     mixed = bear_opt_reg.get("mixed_strategy", {})
-    c_prof = custom.get("period_expected_profits", {}).get("6m", 0)
-    m_prof = mixed.get("period_expected_profits", {}).get("6m", 0)
+    c_prof = custom.get("period_expected_profits", {}).get("1m", 0)
+    m_prof = mixed.get("period_expected_profits", {}).get("1m", 0)
     if m_prof > c_prof:
         return "mixed"
     if m_prof < c_prof:
@@ -312,7 +314,12 @@ def _build_tactics_from_opt_reg(opt_reg: dict) -> dict:
         "logic": opt_reg.get("logic", "OR"),
         "threshold": opt_reg.get("threshold", 0.5),
         "strategies": new_strategies,
-        "risk": opt_reg.get("risk", {"type": "None"})
+        "risk": opt_reg.get("risk", {"type": "None"}),
+        "backtest_meta": {
+            "avg_hold_hours": opt_reg.get("backtest", {}).get("avg_hold_hours", 0),
+            "median_hold_hours": opt_reg.get("backtest", {}).get("median_hold_hours", 0),
+            "avg_hold_days": opt_reg.get("backtest", {}).get("avg_hold_days", 0),
+        },
     }
 
 def _apply_bear_strategy_selection(ticker: str) -> bool:
@@ -786,7 +793,7 @@ class UITickerWorker(TickerWorker):
         self.order_amount = 5100.0  # 회당 기본 매매 주문금액 (빗썸 최소 5,000원 이상 + 여유분 반영)
         
         # 1. 백엔드 CandleManager 장착 및 웜업 구동
-        self.candle_manager = CandleManager(ticker, timeframes=["1m", "5m", "1h", "D"], max_candles=4500)
+        self.candle_manager = CandleManager(ticker, timeframes=["1m", "5m", "1h", "D", "W", "M"], max_candles=4500)
         self.candle_manager.warmup()
         
         # 2. 장세 감지기 장착 (전략 설정 파일에서 임계치 획득)
@@ -1522,7 +1529,7 @@ class MultiTickerUIEngine(TradingEngine):
         worker.trading_active = config.get("active", True)
         worker.long_term_ma_period = config.get("long_term_ma_period", 250)
         
-        worker.regime_detector.long_term_ma_period = worker.long_term_ma_period
+        worker.regime_detector.sync_regression_period(worker.long_term_ma_period)
         
         curr_reg = worker.regime_detector.detect_regime()
         worker.switch_regime(curr_reg, log_to_ui=True)
@@ -1541,7 +1548,7 @@ class MultiTickerUIEngine(TradingEngine):
                 "current_regime": "BEAR",
                 "regime_override": DEFAULT_REGIME_OVERRIDE,
                 "selected_bear_strategy": DEFAULT_BEAR_STRATEGY,
-                "long_term_ma_period": 210,
+                "long_term_ma_period": 300,
                 "tactics": {
                     "BULL": {
                         "logic": "OR",
@@ -1595,7 +1602,6 @@ def get_historical_candles(
 ):
     base_url = "https://api.bithumb.com/v1"
     url = ""
-    params = {"market": market, "count": 120}
     
     if timeframe == "1m":
         url = f"{base_url}/candles/minutes/1"
@@ -1622,30 +1628,67 @@ def get_historical_candles(
     else:
         return {"error": "Invalid timeframe"}
 
+    def _parse_candle_time(c: dict) -> int:
+        if timeframe in ["D", "W", "M"]:
+            dt = datetime.strptime(c["candle_date_time_utc"], "%Y-%m-%dT%H:%M:%S")
+            return int(dt.replace(tzinfo=timezone.utc).timestamp())
+        ts_ms = c.get("timestamp")
+        if ts_ms:
+            return int(ts_ms // 1000)
+        kst_str = c.get("candle_date_time_kst") or c.get("candle_date_time_utc", "")
+        dt = datetime.fromisoformat(kst_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=KST)
+        return int(dt.timestamp())
+
     try:
-        resp = requests.get(url, params=params, timeout=5)
-        if resp.status_code != 200:
-            return {"error": f"Bithumb API Error: {resp.text}"}
-        
-        raw_candles = resp.json()
+        raw_candles = []
+        to_cursor = None
+        max_pages = 3 if timeframe not in ["D", "W", "M"] else 1
+        per_page = 200
+
+        for _ in range(max_pages):
+            params = {"market": market, "count": per_page}
+            if to_cursor:
+                params["to"] = to_cursor
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code != 200:
+                return {"error": f"Bithumb API Error: {resp.text}"}
+            page = resp.json()
+            if not page:
+                break
+            raw_candles.extend(page)
+            if len(page) < per_page:
+                break
+            to_cursor = page[-1].get("candle_date_time_utc")
+            if not to_cursor:
+                break
+
         formatted_candles = []
-        
+        seen_times = set()
         for c in reversed(raw_candles):
-            if (timeframe in ["D", "W", "M"]):
-                dt = datetime.strptime(c["candle_date_time_utc"], "%Y-%m-%dT%H:%M:%S")
-                t_val = int(dt.replace(tzinfo=timezone.utc).timestamp())
-            else:
-                t_val = c["timestamp"] // 1000
-                
+            try:
+                t_val = _parse_candle_time(c)
+                o = float(c["opening_price"])
+                h = float(c["high_price"])
+                l = float(c["low_price"])
+                cl = float(c["trade_price"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if t_val <= 0 or o <= 0 or cl <= 0 or t_val in seen_times:
+                continue
+            seen_times.add(t_val)
             formatted_candles.append({
                 "time": t_val,
-                "open": float(c["opening_price"]),
-                "high": float(c["high_price"]),
-                "low": float(c["low_price"]),
-                "close": float(c["trade_price"]),
-                "volume": float(c["candle_acc_trade_volume"])
+                "open": o,
+                "high": h,
+                "low": l,
+                "close": cl,
+                "volume": float(c.get("candle_acc_trade_volume", 0))
             })
-            
+
+        if not formatted_candles:
+            return {"error": "No valid candle data returned from Bithumb"}
         return formatted_candles
     except Exception as e:
         return {"error": f"Internal Server Error: {str(e)}"}
@@ -3066,6 +3109,9 @@ HTML_CONTENT = """
                                 <option value="AveragingDown">AveragingDown (물타기)</option>
                             </select>
                             <div class="logic-desc" id="risk-desc-text">리스크 관리를 수행하지 않고 전략 신호만을 따릅니다.</div>
+                            <div class="logic-desc" id="backtest-hold-summary" style="margin-top:8px; color:var(--accent-blue); font-weight:600;">
+                                최적화 백테스트 평균 보유: -
+                            </div>
                         </div>
 
                         <!-- StopLoss 파라미터 -->
@@ -3147,7 +3193,7 @@ HTML_CONTENT = """
                 하락장(BEAR) 최적화 전략 선택 및 성능 비교 데스크
             </h2>
             
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
+            <div class="bear-strategy-cards-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
                 <!-- 카드 0: AI 자동 선택 (기본) -->
                 <div class="bear-strategy-card" id="bear-card-auto" onclick="selectBearStrategy('auto')" style="background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.35); border-radius:10px; padding:15px; cursor:pointer; grid-column: 1 / -1;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
@@ -3155,7 +3201,7 @@ HTML_CONTENT = """
                         <span class="active-badge" id="badge-auto" style="display:none; background:var(--accent-blue); color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; font-weight:bold;">적용 중</span>
                     </div>
                     <p style="font-size:11px; color:var(--text-secondary); margin:0; line-height:1.5;">
-                        하락장(BEAR) 판정 시에만 적용됩니다. 종목별 백테스트 <strong>6개월 예상 수익률</strong>이 더 높은 전략을 매일 자동 선택합니다.
+                        하락장(BEAR) 판정 시에만 적용됩니다. 종목별 백테스트 <strong>1개월 예상 수익률</strong>이 더 높은 전략을 매일 자동 선택합니다.
                         현재 AI 선택: <strong id="bear-resolved-label" style="color:var(--accent-green);">-</strong>
                     </p>
                 </div>
@@ -3202,7 +3248,7 @@ HTML_CONTENT = """
             <!-- 백테스팅 과거 데이터 하락장/상승장/횡보장 종합 성과 모니터 -->
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:12px; margin-top:12px;">
                 <!-- 1. 하락장 (BEAR) 성과 비교 카드 -->
-                <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:12px;">
+                <div id="bear-regime-compare-table" style="background:rgba(0,0,0,0.2); border-radius:8px; padding:12px;">
                     <div style="font-size:12px; font-weight:700; color:#fff; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
                         <span style="display:inline-block; width:6px; height:6px; background-color:var(--accent-red); border-radius:50%; box-shadow:var(--glow-red);"></span>
                         과거 9년 하락장(BEAR) 성과 비교
@@ -3231,10 +3277,20 @@ HTML_CONTENT = """
                                 <td style="padding:6px 4px;" id="compare-mixed-mdd">-</td>
                                 <td style="padding:6px 4px; font-weight:bold;" id="compare-custom-mdd">-</td>
                             </tr>
-                            <tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
                                 <td style="padding:6px 4px;">거래 횟수/승률</td>
                                 <td style="padding:6px 4px;" id="compare-mixed-trades">-</td>
                                 <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-trades">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">평균 보유 기간</td>
+                                <td style="padding:6px 4px;" id="compare-mixed-hold">-</td>
+                                <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-hold">-</td>
+                            </tr>
+                            <tr>
+                                <td style="padding:6px 4px;">최적 리스크 기법</td>
+                                <td style="padding:6px 4px;" id="compare-mixed-risk">-</td>
+                                <td style="padding:6px 4px; font-weight:bold; color:var(--accent-green);" id="compare-custom-risk">-</td>
                             </tr>
                         </tbody>
                     </table>
@@ -3269,6 +3325,14 @@ HTML_CONTENT = """
                             <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
                                 <td style="padding:6px 4px;">거래 횟수/승률</td>
                                 <td style="padding:6px 4px;" id="bull-trades">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">평균 보유 기간</td>
+                                <td style="padding:6px 4px;" id="bull-hold">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">최적 리스크 기법</td>
+                                <td style="padding:6px 4px;" id="bull-risk">-</td>
                             </tr>
                             <tr>
                                 <td style="padding:6px 4px;">기대 이윤 (3M/6M)</td>
@@ -3307,6 +3371,14 @@ HTML_CONTENT = """
                             <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
                                 <td style="padding:6px 4px;">거래 횟수/승률</td>
                                 <td style="padding:6px 4px;" id="range-trades">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">평균 보유 기간</td>
+                                <td style="padding:6px 4px;" id="range-hold">-</td>
+                            </tr>
+                            <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <td style="padding:6px 4px;">최적 리스크 기법</td>
+                                <td style="padding:6px 4px;" id="range-risk">-</td>
                             </tr>
                             <tr>
                                 <td style="padding:6px 4px;">기대 이윤 (3M/6M)</td>
@@ -3542,13 +3614,26 @@ HTML_CONTENT = """
                     chartLoaderEl.style.display = 'none';
                     return;
                 }
+
+                if (!Array.isArray(data) || data.length === 0) {
+                    addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `${ticker} ${timeframe} 캔들 데이터가 비어 있습니다.`);
+                    chartLoaderEl.style.display = 'none';
+                    return;
+                }
+
+                const validData = data.filter(c => c.time > 0 && c.open > 0 && c.close > 0);
+                if (validData.length === 0) {
+                    addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `${ticker} ${timeframe} 유효한 캔들이 없습니다.`);
+                    chartLoaderEl.style.display = 'none';
+                    return;
+                }
                 
-                candleCache[cacheKey] = data;
+                candleCache[cacheKey] = validData;
                 
                 if (ticker === activeTicker && timeframe === activeTimeframe && candlestickSeries) {
-                    candlestickSeries.setData(data);
+                    candlestickSeries.setData(validData);
                     chart.timeScale().fitContent();
-                    addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `${ticker}의 ${timeframe} 과거 캔들 ${data.length}개 렌더링 완료.`);
+                    addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `${ticker}의 ${timeframe} 과거 캔들 ${validData.length}개 렌더링 완료.`);
                 }
             } catch (e) {
                 console.error("Historical candles fetch error:", e);
@@ -3729,7 +3814,7 @@ HTML_CONTENT = """
             
             // 캐시 로드 혹은 REST 호출
             const cacheKey = `${ticker}_${activeTimeframe}`;
-            if (candleCache[cacheKey]) {
+            if (candleCache[cacheKey] && candleCache[cacheKey].length > 0) {
                 candlestickSeries.setData(candleCache[cacheKey]);
                 chart.timeScale().fitContent();
             } else {
@@ -3779,7 +3864,7 @@ HTML_CONTENT = """
             recreateSeries();
 
             const cacheKey = `${activeTicker}_${timeframe}`;
-            if (candleCache[cacheKey]) {
+            if (candleCache[cacheKey] && candleCache[cacheKey].length > 0) {
                 candlestickSeries.setData(candleCache[cacheKey]);
                 chart.timeScale().fitContent();
             } else {
@@ -4084,6 +4169,16 @@ HTML_CONTENT = """
                 
                 document.getElementById('risk-max-add-count').value = maxAddCount;
                 document.getElementById('risk-max-add-count-val').innerText = maxAddCount;
+            }
+
+            const holdEl = document.getElementById('backtest-hold-summary');
+            if (holdEl) {
+                const meta = tactic.backtest_meta;
+                if (meta && meta.avg_hold_hours > 0) {
+                    holdEl.innerText = `최적화 백테스트 평균 보유: ${formatHoldDuration(meta.avg_hold_hours, meta.avg_hold_days)} (매수→매도)`;
+                } else {
+                    holdEl.innerText = '최적화 백테스트 평균 보유: 최적화 실행 후 표시됩니다';
+                }
             }
             
             // 모든 전략 카드 숨기기
@@ -5041,84 +5136,114 @@ HTML_CONTENT = """
             if (badgeEl && logic) badgeEl.innerText = formatStrategyBadge(logic);
         }
 
+        function formatHoldDuration(hours, days) {
+            if (!hours || hours <= 0) return '-';
+            if (hours < 24) return `약 ${hours.toFixed(1)}시간`;
+            if (days < 7) return `약 ${days.toFixed(1)}일 (${hours.toFixed(0)}h)`;
+            const weeks = days / 7;
+            return `약 ${weeks.toFixed(1)}주 (${days.toFixed(1)}일)`;
+        }
+
+        function formatRiskLabel(risk) {
+            if (!risk || risk.type === 'None') return 'None (미적용)';
+            if (risk.type === 'StopLoss') {
+                const sl = ((risk.stop_loss_pct || 0) * 100).toFixed(1);
+                const tp = ((risk.take_profit_pct || 0) * 100).toFixed(1);
+                return `StopLoss ${sl}% / TP ${tp}%`;
+            }
+            if (risk.type === 'TrailingStop') {
+                return `Trailing ${((risk.trail_pct || 0) * 100).toFixed(1)}%`;
+            }
+            return risk.type;
+        }
+
         async function loadBacktestCompareData(ticker) {
             try {
                 const comparePanel = document.getElementById('bear-compare-panel');
                 if (!comparePanel) return;
 
                 const liveRegime = getTickerLiveRegime(ticker);
-                if (liveRegime !== 'BEAR') {
+                const response = await fetch('/api/backtest/results');
+                const resData = await response.json();
+                
+                if (resData.status !== 'ok' || !resData.data) {
                     comparePanel.style.display = 'none';
                     return;
                 }
 
-                const response = await fetch('/api/backtest/results');
-                const resData = await response.json();
-                
-                if (resData.status === 'ok' && resData.data) {
-                    const market = `KRW-${ticker}`;
-                    const optData = resData.data[market];
-                    if (optData && optData.BEAR) {
-                        const bearData = optData.BEAR;
-                        
-                        if (bearData.mixed_strategy && bearData.custom_bear_strategy) {
-                            comparePanel.style.display = 'block';
-                            
-                            const mixed = bearData.mixed_strategy;
-                            const custom = bearData.custom_bear_strategy;
-                            
-                            const mixedProfits = mixed.period_expected_profits || { "1w": 0, "1m": 0, "3m": 0, "6m": 0 };
-                            const customProfits = custom.period_expected_profits || { "1w": 0, "1m": 0, "3m": 0, "6m": 0 };
-                            
-                            document.getElementById('mixed-profit-1w').innerText = `${mixedProfits["1w"] >= 0 ? '+' : ''}${mixedProfits["1w"]}%`;
-                            document.getElementById('mixed-profit-1m').innerText = `${mixedProfits["1m"] >= 0 ? '+' : ''}${mixedProfits["1m"]}%`;
-                            document.getElementById('mixed-profit-3m').innerText = `${mixedProfits["3m"] >= 0 ? '+' : ''}${mixedProfits["3m"]}%`;
-                            document.getElementById('mixed-profit-6m').innerText = `${mixedProfits["6m"] >= 0 ? '+' : ''}${mixedProfits["6m"]}%`;
-                            
-                            document.getElementById('custom-profit-1w').innerText = `${customProfits["1w"] >= 0 ? '+' : ''}${customProfits["1w"]}%`;
-                            document.getElementById('custom-profit-1m').innerText = `${customProfits["1m"] >= 0 ? '+' : ''}${customProfits["1m"]}%`;
-                            document.getElementById('custom-profit-3m').innerText = `${customProfits["3m"] >= 0 ? '+' : ''}${customProfits["3m"]}%`;
-                            document.getElementById('custom-profit-6m').innerText = `${customProfits["6m"] >= 0 ? '+' : ''}${customProfits["6m"]}%`;
-                            
-                            document.getElementById('compare-mixed-ret').innerText = `${mixed.backtest.total_return_pct >= 0 ? '+' : ''}${mixed.backtest.total_return_pct.toFixed(2)}%`;
-                            document.getElementById('compare-custom-ret').innerText = `${custom.backtest.total_return_pct >= 0 ? '+' : ''}${custom.backtest.total_return_pct.toFixed(2)}%`;
-                            
-                            document.getElementById('compare-mixed-sharpe').innerText = mixed.backtest.sharpe_ratio.toFixed(4);
-                            document.getElementById('compare-custom-sharpe').innerText = custom.backtest.sharpe_ratio.toFixed(4);
-                            
-                            document.getElementById('compare-mixed-mdd').innerText = `-${mixed.backtest.mdd_pct.toFixed(1)}%`;
-                            document.getElementById('compare-custom-mdd').innerText = `-${custom.backtest.mdd_pct.toFixed(1)}%`;
-                            
-                            document.getElementById('compare-mixed-trades').innerText = `${mixed.backtest.trade_count}회 / ${mixed.backtest.win_rate_pct.toFixed(1)}%`;
-                            document.getElementById('compare-custom-trades').innerText = `${custom.backtest.trade_count}회 / ${custom.backtest.win_rate_pct.toFixed(1)}%`;
-                            
-                            // BULL 데이터 바인딩
-                            if (optData.BULL && optData.BULL.backtest) {
-                                const b = optData.BULL.backtest;
-                                const bProfits = optData.BULL.period_expected_profits || { "3m": 0, "6m": 0 };
-                                document.getElementById('bull-ret').innerText = `${b.total_return_pct >= 0 ? '+' : ''}${b.total_return_pct.toFixed(2)}%`;
-                                document.getElementById('bull-sharpe').innerText = b.sharpe_ratio.toFixed(4);
-                                document.getElementById('bull-mdd').innerText = `-${b.mdd_pct.toFixed(1)}%`;
-                                document.getElementById('bull-trades').innerText = `${b.trade_count}회 / ${b.win_rate_pct.toFixed(1)}%`;
-                                document.getElementById('bull-expected').innerText = `3m: +${bProfits["3m"]}% / 6m: +${bProfits["6m"]}%`;
-                            }
-                            
-                            // RANGE 데이터 바인딩
-                            if (optData.RANGE && optData.RANGE.backtest) {
-                                const r = optData.RANGE.backtest;
-                                const rProfits = optData.RANGE.period_expected_profits || { "3m": 0, "6m": 0 };
-                                document.getElementById('range-ret').innerText = `${r.total_return_pct >= 0 ? '+' : ''}${r.total_return_pct.toFixed(2)}%`;
-                                document.getElementById('range-sharpe').innerText = r.sharpe_ratio.toFixed(4);
-                                document.getElementById('range-mdd').innerText = `-${r.mdd_pct.toFixed(1)}%`;
-                                document.getElementById('range-trades').innerText = `${r.trade_count}회 / ${r.win_rate_pct.toFixed(1)}%`;
-                                document.getElementById('range-expected').innerText = `3m: +${rProfits["3m"]}% / 6m: +${rProfits["6m"]}%`;
-                            }
-                            
-                            return;
-                        }
-                    }
+                const market = `KRW-${ticker}`;
+                const optData = resData.data[market];
+                if (!optData) {
+                    comparePanel.style.display = 'none';
+                    return;
                 }
-                comparePanel.style.display = 'none';
+
+                comparePanel.style.display = 'block';
+
+                if (optData.BULL && optData.BULL.backtest) {
+                    const b = optData.BULL.backtest;
+                    const bProfits = optData.BULL.period_expected_profits || { "3m": 0, "6m": 0 };
+                    document.getElementById('bull-ret').innerText = `${b.total_return_pct >= 0 ? '+' : ''}${b.total_return_pct.toFixed(2)}%`;
+                    document.getElementById('bull-sharpe').innerText = b.sharpe_ratio.toFixed(4);
+                    document.getElementById('bull-mdd').innerText = `-${b.mdd_pct.toFixed(1)}%`;
+                    document.getElementById('bull-trades').innerText = `${b.trade_count}회 / ${b.win_rate_pct.toFixed(1)}%`;
+                    document.getElementById('bull-hold').innerText = formatHoldDuration(b.avg_hold_hours, b.avg_hold_days);
+                    document.getElementById('bull-risk').innerText = formatRiskLabel(optData.BULL.risk);
+                    document.getElementById('bull-expected').innerText = `3m: +${bProfits["3m"]}% / 6m: +${bProfits["6m"]}%`;
+                }
+
+                if (optData.RANGE && optData.RANGE.backtest) {
+                    const r = optData.RANGE.backtest;
+                    const rProfits = optData.RANGE.period_expected_profits || { "3m": 0, "6m": 0 };
+                    document.getElementById('range-ret').innerText = `${r.total_return_pct >= 0 ? '+' : ''}${r.total_return_pct.toFixed(2)}%`;
+                    document.getElementById('range-sharpe').innerText = r.sharpe_ratio.toFixed(4);
+                    document.getElementById('range-mdd').innerText = `-${r.mdd_pct.toFixed(1)}%`;
+                    document.getElementById('range-trades').innerText = `${r.trade_count}회 / ${r.win_rate_pct.toFixed(1)}%`;
+                    document.getElementById('range-hold').innerText = formatHoldDuration(r.avg_hold_hours, r.avg_hold_days);
+                    document.getElementById('range-risk').innerText = formatRiskLabel(optData.RANGE.risk);
+                    document.getElementById('range-expected').innerText = `3m: +${rProfits["3m"]}% / 6m: +${rProfits["6m"]}%`;
+                }
+
+                const bearCards = comparePanel.querySelector('.bear-strategy-cards-grid');
+                const bearCompareTable = document.getElementById('bear-regime-compare-table');
+
+                if (liveRegime === 'BEAR' && optData.BEAR && optData.BEAR.mixed_strategy && optData.BEAR.custom_bear_strategy) {
+                    if (bearCards) bearCards.style.display = '';
+                    if (bearCompareTable) bearCompareTable.style.display = '';
+
+                    const mixed = optData.BEAR.mixed_strategy;
+                    const custom = optData.BEAR.custom_bear_strategy;
+                    const mixedProfits = mixed.period_expected_profits || { "1w": 0, "1m": 0, "3m": 0, "6m": 0 };
+                    const customProfits = custom.period_expected_profits || { "1w": 0, "1m": 0, "3m": 0, "6m": 0 };
+
+                    document.getElementById('mixed-profit-1w').innerText = `${mixedProfits["1w"] >= 0 ? '+' : ''}${mixedProfits["1w"]}%`;
+                    document.getElementById('mixed-profit-1m').innerText = `${mixedProfits["1m"] >= 0 ? '+' : ''}${mixedProfits["1m"]}%`;
+                    document.getElementById('mixed-profit-3m').innerText = `${mixedProfits["3m"] >= 0 ? '+' : ''}${mixedProfits["3m"]}%`;
+                    document.getElementById('mixed-profit-6m').innerText = `${mixedProfits["6m"] >= 0 ? '+' : ''}${mixedProfits["6m"]}%`;
+
+                    document.getElementById('custom-profit-1w').innerText = `${customProfits["1w"] >= 0 ? '+' : ''}${customProfits["1w"]}%`;
+                    document.getElementById('custom-profit-1m').innerText = `${customProfits["1m"] >= 0 ? '+' : ''}${customProfits["1m"]}%`;
+                    document.getElementById('custom-profit-3m').innerText = `${customProfits["3m"] >= 0 ? '+' : ''}${customProfits["3m"]}%`;
+                    document.getElementById('custom-profit-6m').innerText = `${customProfits["6m"] >= 0 ? '+' : ''}${customProfits["6m"]}%`;
+
+                    document.getElementById('compare-mixed-ret').innerText = `${mixed.backtest.total_return_pct >= 0 ? '+' : ''}${mixed.backtest.total_return_pct.toFixed(2)}%`;
+                    document.getElementById('compare-custom-ret').innerText = `${custom.backtest.total_return_pct >= 0 ? '+' : ''}${custom.backtest.total_return_pct.toFixed(2)}%`;
+                    document.getElementById('compare-mixed-sharpe').innerText = mixed.backtest.sharpe_ratio.toFixed(4);
+                    document.getElementById('compare-custom-sharpe').innerText = custom.backtest.sharpe_ratio.toFixed(4);
+                    document.getElementById('compare-mixed-mdd').innerText = `-${mixed.backtest.mdd_pct.toFixed(1)}%`;
+                    document.getElementById('compare-custom-mdd').innerText = `-${custom.backtest.mdd_pct.toFixed(1)}%`;
+                    document.getElementById('compare-mixed-trades').innerText = `${mixed.backtest.trade_count}회 / ${mixed.backtest.win_rate_pct.toFixed(1)}%`;
+                    document.getElementById('compare-custom-trades').innerText = `${custom.backtest.trade_count}회 / ${custom.backtest.win_rate_pct.toFixed(1)}%`;
+                    document.getElementById('compare-mixed-hold').innerText = formatHoldDuration(
+                        mixed.backtest.avg_hold_hours, mixed.backtest.avg_hold_days);
+                    document.getElementById('compare-custom-hold').innerText = formatHoldDuration(
+                        custom.backtest.avg_hold_hours, custom.backtest.avg_hold_days);
+                    document.getElementById('compare-mixed-risk').innerText = formatRiskLabel(mixed.risk);
+                    document.getElementById('compare-custom-risk').innerText = formatRiskLabel(custom.risk);
+                } else {
+                    if (bearCards) bearCards.style.display = 'none';
+                    if (bearCompareTable) bearCompareTable.style.display = 'none';
+                }
             } catch (e) {
                 console.error("Failed to load backtest compare data:", e);
             }
