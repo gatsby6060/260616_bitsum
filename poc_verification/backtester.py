@@ -1,8 +1,8 @@
 """
 backtester.py — 9년 실 데이터 기반 자동 파라미터 최적화 모듈
 =====================================================================
-■ 데이터:    빗썸 1시간봉 캔들, 하루 24개 포인트 (매시 정각 KST)
-■ 최초 수집: 9년치 전체 (약 78,840개 × 3종목), 이후 매일 24개만 추가(증분)
+■ 데이터:    빗썸 30분봉 캔들, 하루 48개 포인트 (매시 0·30분 KST)
+■ 최초 수집: 9년치 전체 (약 157,680개 × 3종목), 이후 매일 48개만 추가(증분)
 ■ 최적화:   BULL/BEAR/RANGE × 지표 7조합 × Logic 4종 × 리스크 기법/비율 그리드
 ■ 기준:     Sharpe Ratio 최대 + MDD ≤ 50% 필터
 ■ 수수료:   빗썸 실측 편도 0.25% (왕복 0.50%)
@@ -16,8 +16,10 @@ import logging
 import requests
 import sys
 import io
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Callable
 
 # Windows 터미널 인코딩 오류 방지 (UTF-8 강제 지정)
 if sys.platform.startswith('win'):
@@ -42,10 +44,11 @@ logger = logging.getLogger("Backtester")
 KST = timezone(timedelta(hours=9))
 BITHUMB_BASE = "https://api.bithumb.com"
 
-# 하루 중 수집할 KST 시각 — 1시간봉 (매시 정각, 하루 24개)
-CANDLE_INTERVAL_HOURS = 1
-CACHE_SCHEMA = "1h_v1"
-TARGET_TIMES_KST = [(h, 0) for h in range(24)]
+# 하루 중 수집할 KST 시각 — 30분봉 (매시 0·30분, 하루 48개)
+CANDLE_INTERVAL_MINUTES = 30
+CANDLE_INTERVAL_HOURS = CANDLE_INTERVAL_MINUTES / 60.0
+CACHE_SCHEMA = "30m_v1"
+TARGET_TIMES_KST = [(h, m) for h in range(24) for m in (0, 30)]
 
 # 수수료: 빗썸 실거래 체결 기준 편도 약 0.25% (왕복 0.50%)
 FEE_RATE = 0.0025          # 편도 1회 수수료
@@ -53,6 +56,8 @@ ROUND_TRIP_FEE = FEE_RATE * 2  # 왕복 0.005
 
 # 캐시 파일 경로 (backtester.py 와 같은 폴더)
 _DIR = os.path.dirname(os.path.abspath(__file__))
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
 CACHE_FILE    = os.path.join(_DIR, "historical_data_cache.json")
 RESULT_FILE   = os.path.join(_DIR, "optimized_params.json")
 PROGRESS_FILE = os.path.join(_DIR, "backtest_progress.json")
@@ -87,6 +92,15 @@ LOGIC_TYPES = ["OR", "AND", "VOTE", "WEIGHTED_VOTE"]
 DEFAULT_WEIGHTED_THRESHOLD = 0.5
 
 MDD_LIMIT = 0.50  # MDD 허용 한계 50%
+
+# 병렬 최적화: 물리 코어 6개 사용 (12 스레드 중 절반만 — 나머지는 OS·실시간 매매용 여유)
+OPTIMIZER_MAX_WORKERS = 6
+# Windows 프로세스 spawn 비용(~5초) 때문에 소량 배치는 순차 실행
+PARALLEL_MIN_BATCH = 80
+
+_RISK_ONLY_KEYS = frozenset({
+    "risk_type", "stop_loss_pct", "take_profit_pct", "trail_pct", "target_regime",
+})
 
 # 리스크 관리 그리드 (장세·코인별 최적화 대상)
 RISK_GRID_BULL = [
@@ -222,11 +236,11 @@ def _save_progress(stage: str, pct: float, msg: str = ""):
 # ─────────────────────────────────────────────────────────────────────────────
 class HistoricalDataFetcher:
     """
-    빗썸 1시간봉 캔들을 페이지네이션하여 수집, JSON 캐시에 저장.
+    빗썸 30분봉 캔들을 페이지네이션하여 수집, JSON 캐시에 저장.
     증분 업데이트: 이미 캐시된 날짜 이후 데이터만 추가.
     """
 
-    CANDLE_URL = f"{BITHUMB_BASE}/v1/candles/minutes/60"
+    CANDLE_URL = f"{BITHUMB_BASE}/v1/candles/minutes/30"
     MAX_PER_CALL = 200
     CALL_DELAY = 0.25  # Rate-limit 준수
 
@@ -259,7 +273,7 @@ class HistoricalDataFetcher:
         cursor = datetime.now(KST)
         call_count = 0
 
-        logger.info(f"[Fetcher] {market} 전체 히스토리 수집 시작 ({years}년 / 1시간봉)")
+        logger.info(f"[Fetcher] {market} 전체 히스토리 수집 시작 ({years}년 / 30분봉)")
 
         while cursor > cutoff:
             page = self._fetch_page(market, cursor)
@@ -388,7 +402,7 @@ class DataCache:
         return {}
 
     def _check_cache_invalid(self, cache: dict) -> bool:
-        """1시간봉 스키마·시각·필드 검증."""
+        """30분봉 스키마·시각·필드 검증."""
         meta = cache.get("_meta", {})
         if meta.get("schema") != CACHE_SCHEMA:
             return True
@@ -613,7 +627,7 @@ class RegimeLabeler:
                 
             daily_regimes[date_str] = reg
 
-        # 3. 30분봉 데이터에 일자별 장세 역매핑
+        # 3. 봉 데이터에 일자별 장세 역매핑
         labeled = []
         for row in data:
             date_str = row["ts"].split("T")[0]
@@ -882,10 +896,72 @@ class StrategySimulator:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 5b. 병렬 시뮬레이션 (ProcessPool — CPU 코어 6개까지)
+# ─────────────────────────────────────────────────────────────────────────────
+_pool_data = None
+_pool_sim = None
+
+
+def _init_optimizer_pool(data: list):
+    global _pool_data, _pool_sim
+    _pool_data = data
+    _pool_sim = StrategySimulator()
+
+
+def _run_sim_task(params: dict) -> tuple:
+    return params, _pool_sim.simulate(_pool_data, params)
+
+
+def _strip_risk_fields(params: dict) -> dict:
+    return {k: v for k, v in params.items() if k not in _RISK_ONLY_KEYS}
+
+
+def _parallel_simulate(
+    data: list,
+    params_list: list,
+    max_workers: int = OPTIMIZER_MAX_WORKERS,
+    progress_every: int = 200,
+    progress_fn: Optional[Callable[[int, int], None]] = None,
+) -> list:
+    """파라미터 목록을 ProcessPool로 병렬 백테스트 (스레드가 아닌 프로세스)."""
+    if not params_list:
+        return []
+
+    workers = min(max_workers, len(params_list))
+    if workers <= 1 or len(params_list) < PARALLEL_MIN_BATCH:
+        sim = StrategySimulator()
+        out = []
+        for i, params in enumerate(params_list):
+            out.append((params, sim.simulate(data, params)))
+            if progress_fn and ((i + 1) % progress_every == 0):
+                progress_fn(i + 1, len(params_list))
+        return out
+
+    results = []
+    done = 0
+    last_t = time.time()
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=ctx,
+        initializer=_init_optimizer_pool,
+        initargs=(data,),
+    ) as executor:
+        futures = [executor.submit(_run_sim_task, p) for p in params_list]
+        for fut in as_completed(futures):
+            results.append(fut.result())
+            done += 1
+            if progress_fn and (done % progress_every == 0 or time.time() - last_t > 4.0):
+                progress_fn(done, len(params_list))
+                last_t = time.time()
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 6. 그리드 서치 최적화
 # ─────────────────────────────────────────────────────────────────────────────
 def _calculate_expected_profits(total_return_pct: float, regime_data: list) -> dict:
-    """전체 백테스트 기간 기반 1주/1달/3개월/6개월 기대 수익률(복리) 계산."""
+    """전체 백테스트 기간 기반 단기→장기 기대 수익률(복리) 계산."""
     if len(regime_data) >= 2:
         try:
             t1 = datetime.fromisoformat(regime_data[0]["ts"])
@@ -895,25 +971,23 @@ def _calculate_expected_profits(total_return_pct: float, regime_data: list) -> d
             days = 365
     else:
         days = 365
-        
+
     daily_rate = (1 + total_return_pct / 100.0) ** (1.0 / days) - 1.0
-    
-    w1 = ((1 + daily_rate) ** 7 - 1.0) * 100.0
-    m1 = ((1 + daily_rate) ** 30 - 1.0) * 100.0
-    m3 = ((1 + daily_rate) ** 90 - 1.0) * 100.0
-    m6 = ((1 + daily_rate) ** 180 - 1.0) * 100.0
-    
+
+    def _compound(n_days: int) -> float:
+        return ((1 + daily_rate) ** n_days - 1.0) * 100.0
+
     return {
-        "1w": round(w1, 2),
-        "1m": round(m1, 2),
-        "3m": round(m3, 2),
-        "6m": round(m6, 2)
+        "1d": round(_compound(1), 2),
+        "3d": round(_compound(3), 2),
+        "1w": round(_compound(7), 2),
+        "2w": round(_compound(14), 2),
+        "1m": round(_compound(30), 2),
+        "3m": round(_compound(90), 2),
+        "6m": round(_compound(180), 2),
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. 그리드 서치 최적화
-# ─────────────────────────────────────────────────────────────────────────────
 class GridSearchOptimizer:
     def __init__(self):
         self.sim = StrategySimulator()
@@ -1009,7 +1083,9 @@ class GridSearchOptimizer:
             
             if mixed_params is None:
                 mixed_out = _default_regime_params(regime)
-                mixed_out["period_expected_profits"] = {"1w": 0, "1m": 0, "3m": 0, "6m": 0}
+                mixed_out["period_expected_profits"] = {
+                    "1d": 0, "3d": 0, "1w": 0, "2w": 0, "1m": 0, "3m": 0, "6m": 0
+                }
             else:
                 mixed_out = _build_output(mixed_params, mixed_result, get_profits(mixed_result["total_return"]))
                 
@@ -1039,23 +1115,29 @@ class GridSearchOptimizer:
         first_span = span_pct * 0.75
         second_span = span_pct * 0.25
         last_update_time = time.time()
-        total = 0
 
         # 1단계: 전략 파라미터 그리드 (기본 리스크 1종으로 후보 추림)
+        phase1_params = [
+            {**base, **default_risk, "target_regime": regime}
+            for base in strategy_combos
+        ]
+
+        def _on_phase1(done, total):
+            nonlocal last_update_time
+            pct = base_pct + (done / max(total, 1)) * first_span
+            _save_progress(
+                "optimizing", pct,
+                f"{market} {regime} 전략 그리드 ({done}/{total}) [×{OPTIMIZER_MAX_WORKERS}]",
+            )
+            last_update_time = time.time()
+
         candidates = []
-        for base in strategy_combos:
-            params = {**base, **default_risk, "target_regime": regime}
-            result = self.sim.simulate(data, params)
-            total += 1
-
+        for params, result in _parallel_simulate(data, phase1_params, progress_fn=_on_phase1):
+            base = _strip_risk_fields(params)
             if result["mdd"] <= MDD_LIMIT and result["trades"] >= 5:
-                candidates.append((result["sharpe"], dict(base), result))
+                candidates.append((result["sharpe"], base, result))
 
-            current_time = time.time()
-            if total % 200 == 0 or (current_time - last_update_time) > 4.0:
-                pct = base_pct + (total / max(total_phase1, 1)) * first_span
-                _save_progress("optimizing", pct, f"{market} {regime} 전략 그리드 ({total}/{total_phase1})")
-                last_update_time = current_time
+        total = len(phase1_params)
 
         candidates.sort(key=lambda x: x[0], reverse=True)
         top_bases = [c[1] for c in candidates[:25]]
@@ -1065,26 +1147,31 @@ class GridSearchOptimizer:
         logger.info(f"[Optimizer] {market}/{regime} Mixed 1단계: {len(candidates)}개 후보 → 리스크 2단계 {len(top_bases)}×{len(risk_combos)}")
 
         # 2단계: 상위 전략 × 리스크 그리드
-        phase2_total = 0
-        for base in top_bases:
-            for risk_cfg in risk_combos:
-                params = {**base, **risk_cfg, "target_regime": regime}
-                result = self.sim.simulate(data, params)
-                total += 1
-                phase2_total += 1
+        phase2_params = [
+            {**base, **risk_cfg, "target_regime": regime}
+            for base in top_bases
+            for risk_cfg in risk_combos
+        ]
+        phase2_total = len(phase2_params)
 
-                if result["mdd"] > MDD_LIMIT or result["trades"] < 5:
-                    continue
-                if result["sharpe"] > best_sharpe:
-                    best_sharpe = result["sharpe"]
-                    best_result = result
-                    best_params = dict(params)
+        def _on_phase2(done, total):
+            nonlocal last_update_time
+            pct = base_pct + first_span + (done / max(total, 1)) * second_span
+            _save_progress(
+                "optimizing", pct,
+                f"{market} {regime} 리스크 최적화 ({done}/{total}) [×{OPTIMIZER_MAX_WORKERS}]",
+            )
+            last_update_time = time.time()
 
-                current_time = time.time()
-                if phase2_total % 50 == 0 or (current_time - last_update_time) > 4.0:
-                    pct = base_pct + first_span + (phase2_total / max(total_phase2, 1)) * second_span
-                    _save_progress("optimizing", pct, f"{market} {regime} 리스크 최적화 ({phase2_total}/{total_phase2})")
-                    last_update_time = current_time
+        for params, result in _parallel_simulate(data, phase2_params, progress_every=50, progress_fn=_on_phase2):
+            if result["mdd"] > MDD_LIMIT or result["trades"] < 5:
+                continue
+            if result["sharpe"] > best_sharpe:
+                best_sharpe = result["sharpe"]
+                best_result = result
+                best_params = dict(params)
+
+        total += phase2_total
 
         logger.info(f"[Optimizer] {market}/{regime} Mixed: 총 {total}조합, 최적 Sharpe={best_sharpe:.4f}")
 
@@ -1114,51 +1201,59 @@ class GridSearchOptimizer:
         first_span = span_pct * 0.8
         fallback_span = span_pct * 0.2
 
+        custom_params_list = []
         for params in self._iter_custom_bear_params():
-            params["target_regime"] = regime
-            result = self.sim.simulate(data, params)
-            total += 1
+            p = dict(params)
+            p["target_regime"] = regime
+            custom_params_list.append(p)
 
+        def _on_custom(done, total):
+            nonlocal last_update_time
+            combo_pct = (done / max(total, 1)) * first_span
+            pct = base_pct + combo_pct
+            _save_progress(
+                "optimizing", pct,
+                f"{market} {regime} CustomBear 최적화 중 ({done}/{total}) [×{OPTIMIZER_MAX_WORKERS}]",
+            )
+            last_update_time = time.time()
+
+        total = len(custom_params_list)
+        valid = 0
+        for params, result in _parallel_simulate(
+            data, custom_params_list, progress_every=50, progress_fn=_on_custom
+        ):
             if result["mdd"] > MDD_LIMIT:
                 continue
             if result["trades"] < 3:
                 continue
-
             valid += 1
             if result["sharpe"] > best_sharpe:
                 best_sharpe = result["sharpe"]
                 best_result = result
                 best_params = dict(params)
 
-            current_time = time.time()
-            if total % 50 == 0 or (current_time - last_update_time) > 4.0:
-                combo_pct = (total / total_combos) * first_span
-                pct = base_pct + combo_pct
-                _save_progress("optimizing", pct, f"{market} {regime} CustomBear 최적화 중 ({total}/{total_combos})")
-                last_update_time = current_time
-
         logger.info(f"[Optimizer] {market}/{regime} CustomBear: 총 {total}조합 검색, {valid}개 통과, 최적 Sharpe={best_sharpe:.4f}")
 
         if best_params is None:
             logger.warning(f"[Optimizer] {market}/{regime} CustomBear: 필터 통과 없음 → 차선책 선택")
-            fb_total = 0
-            last_update_time = time.time()
-            for params in self._iter_custom_bear_params():
-                params["target_regime"] = regime
-                result = self.sim.simulate(data, params)
-                fb_total += 1
-                
+
+            def _on_fallback(done, total):
+                nonlocal last_update_time
+                fb_pct = (done / max(total, 1)) * fallback_span
+                pct = base_pct + first_span + fb_pct
+                _save_progress(
+                    "optimizing", pct,
+                    f"{market} {regime} CustomBear 차선책 ({done}/{total}) [×{OPTIMIZER_MAX_WORKERS}]",
+                )
+                last_update_time = time.time()
+
+            for params, result in _parallel_simulate(
+                data, custom_params_list, progress_every=50, progress_fn=_on_fallback
+            ):
                 if result["sharpe"] > best_sharpe and result["trades"] >= 1:
                     best_sharpe = result["sharpe"]
                     best_result = result
                     best_params = dict(params)
-                    
-                current_time = time.time()
-                if fb_total % 50 == 0 or (current_time - last_update_time) > 4.0:
-                    fb_pct = (fb_total / total_combos) * fallback_span
-                    pct = base_pct + first_span + fb_pct
-                    _save_progress("optimizing", pct, f"{market} {regime} CustomBear 차선책 최적화 중 ({fb_total}/{total_combos})")
-                    last_update_time = current_time
 
         _save_progress("optimizing", base_pct + span_pct, f"{market} {regime} CustomBear 최적화 완료")
         return best_params, best_result
@@ -1312,7 +1407,9 @@ def _default_custom_bear_params(regime: str) -> dict:
             "median_hold_hours": 0,
             "avg_hold_days": 0,
         },
-        "period_expected_profits": {"1w": 0, "1m": 0, "3m": 0, "6m": 0}
+        "period_expected_profits": {
+            "1d": 0, "3d": 0, "1w": 0, "2w": 0, "1m": 0, "3m": 0, "6m": 0
+        }
     }
 
 
@@ -1331,6 +1428,7 @@ def run_optimization(markets: list = None) -> dict:
         markets = MARKETS
 
     _save_progress("start", 0, "백테스팅 최적화 시작...")
+    logger.info(f"[Pipeline] 병렬 프로세스 {OPTIMIZER_MAX_WORKERS}개 사용 (CPU 코어 기준)")
     fetcher = HistoricalDataFetcher()
     cache_mgr = DataCache()
     optimizer = GridSearchOptimizer()
@@ -1338,18 +1436,19 @@ def run_optimization(markets: list = None) -> dict:
     cache = cache_mgr.load()
     cache["_meta"] = {
         "schema": CACHE_SCHEMA,
-        "interval": "1h",
+        "interval": "30m",
         "points_per_day": len(TARGET_TIMES_KST),
     }
     results = {
         "last_updated": datetime.now(KST).isoformat(),
-        "source": f"빗썸 1시간봉 ({len(TARGET_TIMES_KST)}포인트/일, "
-                  f"KST 매시 정각)",
+        "source": f"빗썸 30분봉 ({len(TARGET_TIMES_KST)}포인트/일, "
+                  f"KST 매시 0·30분)",
         "fee_assumption": "편도 0.25% (빗썸 실거래 체결 기준, 왕복 0.50%)",
         "optimization_criteria": (
             f"Sharpe Ratio 최대 + MDD <= {int(MDD_LIMIT * 100)}% "
             "(지표 7조합 × OR/AND/VOTE/WEIGHTED_VOTE × 리스크 그리드)"
         ),
+        "parallel_workers": OPTIMIZER_MAX_WORKERS,
     }
 
     num_markets = len(markets)

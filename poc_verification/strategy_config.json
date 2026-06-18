@@ -1,41 +1,87 @@
 {
     "BTC": {
         "active": true,
-        "current_regime": "RANGE",
+        "current_regime": "BEAR",
         "regime_override": "AUTO",
         "selected_bear_strategy": "auto",
         "long_term_ma_period": 800,
         "tactics": {
             "BULL": {
-                "logic": "OR",
+                "logic": "AND",
                 "threshold": 0.5,
                 "strategies": [
                     {
                         "name": "RSI",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "5m",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 10,
-                            "oversold": 20,
-                            "overbought": 60
+                            "period": 5,
+                            "oversold": 25,
+                            "overbought": 70
                         }
                     },
                     {
                         "name": "Bollinger",
-                        "enabled": false,
+                        "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "D",
+                        "timeframe": "30m",
                         "params": {
                             "period": 20,
-                            "std_dev": 2.0
+                            "std_dev": 1.5
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "fast": 5,
+                            "slow": 10,
+                            "signal_period": 5
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "None"
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 2130.8,
+                    "median_hold_hours": 1472.2,
+                    "avg_hold_days": 88.78
+                }
+            },
+            "BEAR": {
+                "logic": "AND",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "RSI",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "period": 10,
+                            "oversold": 25,
+                            "overbought": 75
+                        }
+                    },
+                    {
+                        "name": "Bollinger",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "period": 15,
+                            "std_dev": 2.5
                         }
                     },
                     {
                         "name": "MACD",
                         "enabled": false,
                         "weight": 1.0,
-                        "timeframe": "1h",
+                        "timeframe": "30m",
                         "params": {
                             "fast": 12,
                             "slow": 26,
@@ -44,57 +90,27 @@
                     }
                 ],
                 "risk": {
-                    "type": "None",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
-                },
-                "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
-                }
-            },
-            "BEAR": {
-                "logic": "CUSTOM_BEAR",
-                "threshold": 0.5,
-                "strategies": [
-                    {
-                        "name": "CustomBear",
-                        "enabled": true,
-                        "weight": 1.0,
-                        "timeframe": "30m",
-                        "params": {
-                            "lookback": 6,
-                            "drop_pct": 0.05,
-                            "volume_ratio": 1.5,
-                            "trail_pct": 0.02,
-                            "stop_loss": 0.01,
-                            "time_cut": 12
-                        }
-                    }
-                ],
-                "risk": {
                     "type": "StopLoss",
-                    "stop_loss_pct": 0.01,
-                    "take_profit_pct": 9.9
+                    "stop_loss_pct": 0.03,
+                    "take_profit_pct": 0.05
                 },
                 "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
+                    "avg_hold_hours": 46.9,
+                    "median_hold_hours": 27.2,
+                    "avg_hold_days": 1.95
                 }
             },
             "RANGE": {
-                "logic": "OR",
+                "logic": "AND",
                 "threshold": 0.5,
                 "strategies": [
                     {
                         "name": "RSI",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "5m",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 7,
+                            "period": 14,
                             "oversold": 20,
                             "overbought": 70
                         }
@@ -103,17 +119,17 @@
                         "name": "Bollinger",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "D",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 10,
-                            "std_dev": 2.0
+                            "period": 5,
+                            "std_dev": 1.5
                         }
                     },
                     {
                         "name": "MACD",
                         "enabled": false,
                         "weight": 1.0,
-                        "timeframe": "1h",
+                        "timeframe": "30m",
                         "params": {
                             "fast": 12,
                             "slow": 26,
@@ -122,14 +138,13 @@
                     }
                 ],
                 "risk": {
-                    "type": "StopLoss",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
+                    "type": "TrailingStop",
+                    "trail_pct": 0.025
                 },
                 "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
+                    "avg_hold_hours": 31.9,
+                    "median_hold_hours": 13.5,
+                    "avg_hold_days": 1.33
                 }
             }
         },
@@ -147,12 +162,12 @@
                         "weight": 1.0,
                         "timeframe": "30m",
                         "params": {
-                            "lookback": 6,
-                            "drop_pct": 0.05,
-                            "volume_ratio": 1.5,
-                            "trail_pct": 0.02,
+                            "lookback": 4,
+                            "drop_pct": 0.03,
+                            "volume_ratio": 3.0,
+                            "trail_pct": 0.03,
                             "stop_loss": 0.01,
-                            "time_cut": 12
+                            "time_cut": 24
                         }
                     }
                 ],
@@ -162,148 +177,41 @@
                     "take_profit_pct": 9.9
                 },
                 "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
+                    "avg_hold_hours": 5.0,
+                    "median_hold_hours": 2.5,
+                    "avg_hold_days": 0.21
                 }
             },
             "mixed": {
-                "logic": "OR",
+                "logic": "AND",
                 "threshold": 0.5,
                 "strategies": [
                     {
                         "name": "RSI",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "5m",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 14,
-                            "oversold": 20,
-                            "overbought": 70
-                        }
-                    },
-                    {
-                        "name": "Bollinger",
-                        "enabled": false,
-                        "weight": 1.0,
-                        "timeframe": "D",
-                        "params": {
-                            "period": 20,
-                            "std_dev": 2.0
-                        }
-                    },
-                    {
-                        "name": "MACD",
-                        "enabled": false,
-                        "weight": 1.0,
-                        "timeframe": "1h",
-                        "params": {
-                            "fast": 12,
-                            "slow": 26,
-                            "signal_period": 9
-                        }
-                    }
-                ],
-                "risk": {
-                    "type": "StopLoss",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
-                },
-                "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
-                }
-            }
-        },
-        "bear_auto_pick": "custom_bear",
-        "resolved_bear_strategy": "custom_bear"
-    },
-    "ETH": {
-        "active": true,
-        "current_regime": "RANGE",
-        "regime_override": "AUTO",
-        "selected_bear_strategy": "auto",
-        "long_term_ma_period": 300,
-        "tactics": {
-            "BULL": {
-                "logic": "OR",
-                "threshold": 0.5,
-                "strategies": [
-                    {
-                        "name": "RSI",
-                        "enabled": true,
-                        "weight": 1.0,
-                        "timeframe": "5m",
-                        "params": {
-                            "period": 14,
-                            "oversold": 20,
-                            "overbought": 65
-                        }
-                    },
-                    {
-                        "name": "Bollinger",
-                        "enabled": false,
-                        "weight": 1.0,
-                        "timeframe": "D",
-                        "params": {
-                            "period": 20,
-                            "std_dev": 2.0
-                        }
-                    },
-                    {
-                        "name": "MACD",
-                        "enabled": false,
-                        "weight": 1.0,
-                        "timeframe": "1h",
-                        "params": {
-                            "fast": 12,
-                            "slow": 26,
-                            "signal_period": 9
-                        }
-                    }
-                ],
-                "risk": {
-                    "type": "None",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
-                },
-                "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
-                }
-            },
-            "BEAR": {
-                "logic": "OR",
-                "threshold": 0.5,
-                "strategies": [
-                    {
-                        "name": "RSI",
-                        "enabled": true,
-                        "weight": 1.0,
-                        "timeframe": "5m",
-                        "params": {
-                            "period": 14,
-                            "oversold": 35,
+                            "period": 10,
+                            "oversold": 25,
                             "overbought": 75
                         }
                     },
                     {
                         "name": "Bollinger",
-                        "enabled": false,
+                        "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "D",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 20,
-                            "std_dev": 2.0
+                            "period": 15,
+                            "std_dev": 2.5
                         }
                     },
                     {
                         "name": "MACD",
                         "enabled": false,
                         "weight": 1.0,
-                        "timeframe": "1h",
+                        "timeframe": "30m",
                         "params": {
                             "fast": 12,
                             "slow": 26,
@@ -313,27 +221,213 @@
                 ],
                 "risk": {
                     "type": "StopLoss",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
+                    "stop_loss_pct": 0.03,
+                    "take_profit_pct": 0.05
                 },
                 "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
+                    "avg_hold_hours": 46.9,
+                    "median_hold_hours": 27.2,
+                    "avg_hold_days": 1.95
                 }
-            },
-            "RANGE": {
-                "logic": "OR",
+            }
+        },
+        "bear_auto_pick": "mixed",
+        "resolved_bear_strategy": "mixed",
+        "optimized_default": {
+            "applied_at": "2026-06-18T14:14:24.562563+09:00",
+            "source": "빗썸 30분봉 (48포인트/일, KST 매시 0·30분)",
+            "current_regime": "BEAR",
+            "active_logic": "AND",
+            "active_strategies": [
+                "RSI",
+                "Bollinger"
+            ],
+            "active_risk_type": "StopLoss",
+            "resolved_bear_strategy": "mixed",
+            "bear_auto_pick_reason": "1일 예상 수익 우세 (Mixed +0.08% > Custom +0.00%)",
+            "cycle_match_cycle": 11,
+            "cycle_similarity_pct": 71.3,
+            "regimes": {
+                "BULL": {
+                    "logic": "AND",
+                    "strategies": [
+                        "RSI",
+                        "Bollinger",
+                        "MACD"
+                    ],
+                    "risk_type": "None",
+                    "return_pct": 820.59,
+                    "sharpe": 0.9349,
+                    "avg_hold_days": 88.78,
+                    "expected_profit_1d": 0.07,
+                    "expected_profit_1m": 2.21
+                },
+                "BEAR": {
+                    "logic": "AND",
+                    "strategies": [
+                        "RSI",
+                        "Bollinger"
+                    ],
+                    "risk_type": "StopLoss",
+                    "return_pct": 936.52,
+                    "sharpe": 0.1763,
+                    "avg_hold_days": 1.95,
+                    "expected_profit_1d": 0.08,
+                    "expected_profit_1m": 2.39,
+                    "bear_variant": "mixed",
+                    "bear_pick_reason": "1일 예상 수익 우세 (Mixed +0.08% > Custom +0.00%)"
+                },
+                "RANGE": {
+                    "logic": "AND",
+                    "strategies": [
+                        "RSI",
+                        "Bollinger"
+                    ],
+                    "risk_type": "TrailingStop",
+                    "return_pct": 171.16,
+                    "sharpe": 0.1847,
+                    "avg_hold_days": 1.33,
+                    "expected_profit_1d": 0.03,
+                    "expected_profit_1m": 0.92
+                }
+            }
+        },
+        "cycle_analysis": {
+            "matched_cycle_number": 11,
+            "total_cycles": 8,
+            "similarity_pct": 71.3,
+            "current_angle_pct_per_month": -0.19,
+            "current_angle_pct_per_day": -0.0064,
+            "matched_angle_pct_per_month": 3.38,
+            "matched_rise_pct": 54.0,
+            "matched_duration_days": 183,
+            "summary": "현재 회귀각 -0.2%/월 → 과거 11번째 상승 사이클(+3.4%/월, 유사도 71%)과 가장 유사",
+            "historical_cycles": [
+                {
+                    "cycle_number": 5,
+                    "angle_pct_per_month": 5.5,
+                    "angle_pct_per_day": 0.1834,
+                    "rise_pct": 1158.3,
+                    "duration_days": 394
+                },
+                {
+                    "cycle_number": 6,
+                    "angle_pct_per_month": 11.25,
+                    "angle_pct_per_day": 0.3749,
+                    "rise_pct": 132.1,
+                    "duration_days": 113
+                },
+                {
+                    "cycle_number": 7,
+                    "angle_pct_per_month": 4.38,
+                    "angle_pct_per_day": 0.1459,
+                    "rise_pct": 39.0,
+                    "duration_days": 64
+                },
+                {
+                    "cycle_number": 8,
+                    "angle_pct_per_month": 11.77,
+                    "angle_pct_per_day": 0.3923,
+                    "rise_pct": 92.9,
+                    "duration_days": 104
+                },
+                {
+                    "cycle_number": 9,
+                    "angle_pct_per_month": 4.79,
+                    "angle_pct_per_day": 0.1597,
+                    "rise_pct": 214.4,
+                    "duration_days": 272
+                },
+                {
+                    "cycle_number": 10,
+                    "angle_pct_per_month": 12.44,
+                    "angle_pct_per_day": 0.4147,
+                    "rise_pct": 118.2,
+                    "duration_days": 134
+                },
+                {
+                    "cycle_number": 11,
+                    "angle_pct_per_month": 3.38,
+                    "angle_pct_per_day": 0.1126,
+                    "rise_pct": 54.0,
+                    "duration_days": 183
+                },
+                {
+                    "cycle_number": 12,
+                    "angle_pct_per_month": 6.74,
+                    "angle_pct_per_day": 0.2247,
+                    "rise_pct": 29.3,
+                    "duration_days": 70
+                }
+            ]
+        },
+        "bear_auto_pick_reason": "1일 예상 수익 우세 (Mixed +0.08% > Custom +0.00%)"
+    },
+    "ETH": {
+        "active": true,
+        "current_regime": "BEAR",
+        "regime_override": "AUTO",
+        "selected_bear_strategy": "auto",
+        "long_term_ma_period": 400,
+        "tactics": {
+            "BULL": {
+                "logic": "VOTE",
                 "threshold": 0.5,
                 "strategies": [
                     {
                         "name": "RSI",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "5m",
+                        "timeframe": "30m",
                         "params": {
                             "period": 5,
                             "oversold": 20,
+                            "overbought": 75
+                        }
+                    },
+                    {
+                        "name": "Bollinger",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "period": 5,
+                            "std_dev": 2.0
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "fast": 12,
+                            "slow": 26,
+                            "signal_period": 9
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "None"
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 506.4,
+                    "median_hold_hours": 218.2,
+                    "avg_hold_days": 21.1
+                }
+            },
+            "BEAR": {
+                "logic": "AND",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "RSI",
+                        "enabled": false,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "period": 14,
+                            "oversold": 30,
                             "overbought": 70
                         }
                     },
@@ -341,17 +435,65 @@
                         "name": "Bollinger",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "D",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 15,
+                            "period": 20,
+                            "std_dev": 1.5
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "fast": 5,
+                            "slow": 15,
+                            "signal_period": 9
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "StopLoss",
+                    "stop_loss_pct": 0.025,
+                    "take_profit_pct": 0.04
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 28.0,
+                    "median_hold_hours": 9.5,
+                    "avg_hold_days": 1.17
+                }
+            },
+            "RANGE": {
+                "logic": "AND",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "RSI",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "period": 5,
+                            "oversold": 20,
+                            "overbought": 60
+                        }
+                    },
+                    {
+                        "name": "Bollinger",
+                        "enabled": false,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "period": 20,
                             "std_dev": 2.0
                         }
                     },
                     {
                         "name": "MACD",
-                        "enabled": false,
+                        "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "1h",
+                        "timeframe": "30m",
                         "params": {
                             "fast": 12,
                             "slow": 26,
@@ -361,13 +503,13 @@
                 ],
                 "risk": {
                     "type": "StopLoss",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
+                    "stop_loss_pct": 0.03,
+                    "take_profit_pct": 0.05
                 },
                 "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
+                    "avg_hold_hours": 42.5,
+                    "median_hold_hours": 24.2,
+                    "avg_hold_days": 1.77
                 }
             }
         },
@@ -387,10 +529,10 @@
                         "params": {
                             "lookback": 4,
                             "drop_pct": 0.08,
-                            "volume_ratio": 2.5,
-                            "trail_pct": 0.04,
+                            "volume_ratio": 3.0,
+                            "trail_pct": 0.03,
                             "stop_loss": 0.03,
-                            "time_cut": 12
+                            "time_cut": 24
                         }
                     }
                 ],
@@ -400,127 +542,20 @@
                     "take_profit_pct": 9.9
                 },
                 "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
+                    "avg_hold_hours": 8.4,
+                    "median_hold_hours": 9.5,
+                    "avg_hold_days": 0.35
                 }
             },
             "mixed": {
-                "logic": "OR",
-                "threshold": 0.5,
-                "strategies": [
-                    {
-                        "name": "RSI",
-                        "enabled": true,
-                        "weight": 1.0,
-                        "timeframe": "5m",
-                        "params": {
-                            "period": 14,
-                            "oversold": 35,
-                            "overbought": 75
-                        }
-                    },
-                    {
-                        "name": "Bollinger",
-                        "enabled": false,
-                        "weight": 1.0,
-                        "timeframe": "D",
-                        "params": {
-                            "period": 20,
-                            "std_dev": 2.0
-                        }
-                    },
-                    {
-                        "name": "MACD",
-                        "enabled": false,
-                        "weight": 1.0,
-                        "timeframe": "1h",
-                        "params": {
-                            "fast": 12,
-                            "slow": 26,
-                            "signal_period": 9
-                        }
-                    }
-                ],
-                "risk": {
-                    "type": "StopLoss",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
-                },
-                "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
-                }
-            }
-        },
-        "bear_auto_pick": "mixed",
-        "resolved_bear_strategy": "mixed"
-    },
-    "XRP": {
-        "active": true,
-        "current_regime": "RANGE",
-        "regime_override": "AUTO",
-        "selected_bear_strategy": "auto",
-        "long_term_ma_period": 300,
-        "tactics": {
-            "BULL": {
-                "logic": "OR",
-                "threshold": 0.5,
-                "strategies": [
-                    {
-                        "name": "RSI",
-                        "enabled": true,
-                        "weight": 1.0,
-                        "timeframe": "5m",
-                        "params": {
-                            "period": 14,
-                            "oversold": 20,
-                            "overbought": 60
-                        }
-                    },
-                    {
-                        "name": "Bollinger",
-                        "enabled": true,
-                        "weight": 1.0,
-                        "timeframe": "D",
-                        "params": {
-                            "period": 10,
-                            "std_dev": 2.5
-                        }
-                    },
-                    {
-                        "name": "MACD",
-                        "enabled": false,
-                        "weight": 1.0,
-                        "timeframe": "1h",
-                        "params": {
-                            "fast": 12,
-                            "slow": 26,
-                            "signal_period": 9
-                        }
-                    }
-                ],
-                "risk": {
-                    "type": "None",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
-                },
-                "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
-                }
-            },
-            "BEAR": {
-                "logic": "OR",
+                "logic": "AND",
                 "threshold": 0.5,
                 "strategies": [
                     {
                         "name": "RSI",
                         "enabled": false,
                         "weight": 1.0,
-                        "timeframe": "5m",
+                        "timeframe": "30m",
                         "params": {
                             "period": 14,
                             "oversold": 30,
@@ -531,44 +566,184 @@
                         "name": "Bollinger",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "D",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 10,
-                            "std_dev": 2.5
+                            "period": 20,
+                            "std_dev": 1.5
                         }
                     },
                     {
                         "name": "MACD",
-                        "enabled": false,
+                        "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "1h",
+                        "timeframe": "30m",
                         "params": {
-                            "fast": 12,
-                            "slow": 26,
+                            "fast": 5,
+                            "slow": 15,
                             "signal_period": 9
                         }
                     }
                 ],
                 "risk": {
                     "type": "StopLoss",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
+                    "stop_loss_pct": 0.025,
+                    "take_profit_pct": 0.04
                 },
                 "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
+                    "avg_hold_hours": 28.0,
+                    "median_hold_hours": 9.5,
+                    "avg_hold_days": 1.17
                 }
-            },
-            "RANGE": {
-                "logic": "OR",
+            }
+        },
+        "bear_auto_pick": "mixed",
+        "resolved_bear_strategy": "mixed",
+        "optimized_default": {
+            "applied_at": "2026-06-18T14:14:24.562563+09:00",
+            "source": "빗썸 30분봉 (48포인트/일, KST 매시 0·30분)",
+            "current_regime": "BEAR",
+            "active_logic": "AND",
+            "active_strategies": [
+                "Bollinger",
+                "MACD"
+            ],
+            "active_risk_type": "StopLoss",
+            "resolved_bear_strategy": "mixed",
+            "bear_auto_pick_reason": "2주 예상 수익 우세 (Mixed +0.05% > Custom +0.04%)",
+            "cycle_match_cycle": 8,
+            "cycle_similarity_pct": 53.4,
+            "regimes": {
+                "BULL": {
+                    "logic": "VOTE",
+                    "strategies": [
+                        "RSI",
+                        "Bollinger",
+                        "MACD"
+                    ],
+                    "risk_type": "None",
+                    "return_pct": 481.48,
+                    "sharpe": 0.8439,
+                    "avg_hold_days": 21.1,
+                    "expected_profit_1d": 0.06,
+                    "expected_profit_1m": 1.75
+                },
+                "BEAR": {
+                    "logic": "AND",
+                    "strategies": [
+                        "Bollinger",
+                        "MACD"
+                    ],
+                    "risk_type": "StopLoss",
+                    "return_pct": 10.86,
+                    "sharpe": 0.4421,
+                    "avg_hold_days": 1.17,
+                    "expected_profit_1d": 0.0,
+                    "expected_profit_1m": 0.1,
+                    "bear_variant": "mixed",
+                    "bear_pick_reason": "2주 예상 수익 우세 (Mixed +0.05% > Custom +0.04%)"
+                },
+                "RANGE": {
+                    "logic": "AND",
+                    "strategies": [
+                        "RSI",
+                        "MACD"
+                    ],
+                    "risk_type": "StopLoss",
+                    "return_pct": 70.91,
+                    "sharpe": 0.5186,
+                    "avg_hold_days": 1.77,
+                    "expected_profit_1d": 0.02,
+                    "expected_profit_1m": 0.49
+                }
+            }
+        },
+        "cycle_analysis": {
+            "matched_cycle_number": 8,
+            "total_cycles": 8,
+            "similarity_pct": 53.4,
+            "current_angle_pct_per_month": 21.23,
+            "current_angle_pct_per_day": 0.7077,
+            "matched_angle_pct_per_month": 14.48,
+            "matched_rise_pct": 89.3,
+            "matched_duration_days": 92,
+            "summary": "현재 회귀각 +21.2%/월 → 과거 8번째 상승 사이클(+14.5%/월, 유사도 53%)과 가장 유사",
+            "historical_cycles": [
+                {
+                    "cycle_number": 2,
+                    "angle_pct_per_month": 8.01,
+                    "angle_pct_per_day": 0.2671,
+                    "rise_pct": 339.6,
+                    "duration_days": 193
+                },
+                {
+                    "cycle_number": 3,
+                    "angle_pct_per_month": 2.87,
+                    "angle_pct_per_day": 0.0957,
+                    "rise_pct": 3573.8,
+                    "duration_days": 511
+                },
+                {
+                    "cycle_number": 4,
+                    "angle_pct_per_month": 11.28,
+                    "angle_pct_per_day": 0.3761,
+                    "rise_pct": 181.4,
+                    "duration_days": 158
+                },
+                {
+                    "cycle_number": 5,
+                    "angle_pct_per_month": 5.91,
+                    "angle_pct_per_day": 0.1969,
+                    "rise_pct": 57.4,
+                    "duration_days": 69
+                },
+                {
+                    "cycle_number": 6,
+                    "angle_pct_per_month": 8.84,
+                    "angle_pct_per_day": 0.2945,
+                    "rise_pct": 82.8,
+                    "duration_days": 106
+                },
+                {
+                    "cycle_number": 7,
+                    "angle_pct_per_month": 8.18,
+                    "angle_pct_per_day": 0.2728,
+                    "rise_pct": 168.2,
+                    "duration_days": 151
+                },
+                {
+                    "cycle_number": 8,
+                    "angle_pct_per_month": 14.48,
+                    "angle_pct_per_day": 0.4826,
+                    "rise_pct": 89.3,
+                    "duration_days": 92
+                },
+                {
+                    "cycle_number": 9,
+                    "angle_pct_per_month": 12.04,
+                    "angle_pct_per_day": 0.4013,
+                    "rise_pct": 202.2,
+                    "duration_days": 137
+                }
+            ]
+        },
+        "bear_auto_pick_reason": "2주 예상 수익 우세 (Mixed +0.05% > Custom +0.04%)"
+    },
+    "XRP": {
+        "active": true,
+        "current_regime": "BEAR",
+        "regime_override": "AUTO",
+        "selected_bear_strategy": "auto",
+        "long_term_ma_period": 400,
+        "tactics": {
+            "BULL": {
+                "logic": "VOTE",
                 "threshold": 0.5,
                 "strategies": [
                     {
                         "name": "RSI",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "5m",
+                        "timeframe": "30m",
                         "params": {
                             "period": 7,
                             "oversold": 20,
@@ -579,17 +754,17 @@
                         "name": "Bollinger",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "D",
+                        "timeframe": "30m",
                         "params": {
                             "period": 10,
-                            "std_dev": 2.0
+                            "std_dev": 2.5
                         }
                     },
                     {
                         "name": "MACD",
                         "enabled": false,
                         "weight": 1.0,
-                        "timeframe": "1h",
+                        "timeframe": "30m",
                         "params": {
                             "fast": 12,
                             "slow": 26,
@@ -598,14 +773,90 @@
                     }
                 ],
                 "risk": {
-                    "type": "StopLoss",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
+                    "type": "None"
                 },
                 "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
+                    "avg_hold_hours": 393.5,
+                    "median_hold_hours": 301.0,
+                    "avg_hold_days": 16.4
+                }
+            },
+            "BEAR": {
+                "logic": "CUSTOM_BEAR",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "CustomBear",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "lookback": 16,
+                            "drop_pct": 0.08,
+                            "volume_ratio": 3.0,
+                            "trail_pct": 0.04,
+                            "stop_loss": 0.01,
+                            "time_cut": 36
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "StopLoss",
+                    "stop_loss_pct": 0.01,
+                    "take_profit_pct": 9.9
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 4.6,
+                    "median_hold_hours": 1.5,
+                    "avg_hold_days": 0.19
+                }
+            },
+            "RANGE": {
+                "logic": "AND",
+                "threshold": 0.5,
+                "strategies": [
+                    {
+                        "name": "RSI",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "period": 5,
+                            "oversold": 20,
+                            "overbought": 60
+                        }
+                    },
+                    {
+                        "name": "Bollinger",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "period": 5,
+                            "std_dev": 1.5
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "enabled": true,
+                        "weight": 1.0,
+                        "timeframe": "30m",
+                        "params": {
+                            "fast": 8,
+                            "slow": 10,
+                            "signal_period": 5
+                        }
+                    }
+                ],
+                "risk": {
+                    "type": "StopLoss",
+                    "stop_loss_pct": 0.03,
+                    "take_profit_pct": 0.05
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 108.6,
+                    "median_hold_hours": 8.5,
+                    "avg_hold_days": 4.52
                 }
             }
         },
@@ -621,12 +872,12 @@
                         "weight": 1.0,
                         "timeframe": "30m",
                         "params": {
-                            "lookback": 6,
+                            "lookback": 16,
                             "drop_pct": 0.08,
                             "volume_ratio": 3.0,
-                            "trail_pct": 0.02,
+                            "trail_pct": 0.04,
                             "stop_loss": 0.01,
-                            "time_cut": 12
+                            "time_cut": 36
                         }
                     }
                 ],
@@ -636,62 +887,182 @@
                     "take_profit_pct": 9.9
                 },
                 "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
+                    "avg_hold_hours": 4.6,
+                    "median_hold_hours": 1.5,
+                    "avg_hold_days": 0.19
                 }
             },
             "mixed": {
-                "logic": "OR",
+                "logic": "AND",
                 "threshold": 0.5,
                 "strategies": [
                     {
                         "name": "RSI",
-                        "enabled": false,
+                        "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "5m",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 14,
-                            "oversold": 30,
-                            "overbought": 70
+                            "period": 5,
+                            "oversold": 20,
+                            "overbought": 65
                         }
                     },
                     {
                         "name": "Bollinger",
                         "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "D",
+                        "timeframe": "30m",
                         "params": {
-                            "period": 10,
-                            "std_dev": 2.5
+                            "period": 20,
+                            "std_dev": 1.5
                         }
                     },
                     {
                         "name": "MACD",
-                        "enabled": false,
+                        "enabled": true,
                         "weight": 1.0,
-                        "timeframe": "1h",
+                        "timeframe": "30m",
                         "params": {
-                            "fast": 12,
-                            "slow": 26,
-                            "signal_period": 9
+                            "fast": 5,
+                            "slow": 10,
+                            "signal_period": 5
                         }
                     }
                 ],
                 "risk": {
                     "type": "StopLoss",
-                    "stop_loss_pct": 0.02,
-                    "take_profit_pct": 0.03
+                    "stop_loss_pct": 0.015,
+                    "take_profit_pct": 0.02
                 },
                 "backtest_meta": {
-                    "avg_hold_hours": 0,
-                    "median_hold_hours": 0,
-                    "avg_hold_days": 0
+                    "avg_hold_hours": 6.4,
+                    "median_hold_hours": 5.5,
+                    "avg_hold_days": 0.27
                 }
             }
         },
-        "bear_auto_pick": "mixed",
-        "resolved_bear_strategy": "mixed"
+        "bear_auto_pick": "custom_bear",
+        "resolved_bear_strategy": "custom_bear",
+        "optimized_default": {
+            "applied_at": "2026-06-18T14:14:24.562563+09:00",
+            "source": "빗썸 30분봉 (48포인트/일, KST 매시 0·30분)",
+            "current_regime": "BEAR",
+            "active_logic": "CUSTOM_BEAR",
+            "active_strategies": [
+                "CustomBear"
+            ],
+            "active_risk_type": "StopLoss",
+            "resolved_bear_strategy": "custom_bear",
+            "bear_auto_pick_reason": "1일 예상 수익 우세 (Custom +0.01% > Mixed +0.00%)",
+            "cycle_match_cycle": 3,
+            "cycle_similarity_pct": 89.6,
+            "regimes": {
+                "BULL": {
+                    "logic": "VOTE",
+                    "strategies": [
+                        "RSI",
+                        "Bollinger"
+                    ],
+                    "risk_type": "None",
+                    "return_pct": 112.51,
+                    "sharpe": 1.1916,
+                    "avg_hold_days": 16.4,
+                    "expected_profit_1d": 0.02,
+                    "expected_profit_1m": 0.75
+                },
+                "BEAR": {
+                    "logic": "CUSTOM_BEAR",
+                    "strategies": [
+                        "CustomBear"
+                    ],
+                    "risk_type": "StopLoss",
+                    "return_pct": 31.83,
+                    "sharpe": 0.4752,
+                    "avg_hold_days": 0.19,
+                    "expected_profit_1d": 0.01,
+                    "expected_profit_1m": 0.28,
+                    "bear_variant": "custom_bear",
+                    "bear_pick_reason": "1일 예상 수익 우세 (Custom +0.01% > Mixed +0.00%)"
+                },
+                "RANGE": {
+                    "logic": "AND",
+                    "strategies": [
+                        "RSI",
+                        "Bollinger",
+                        "MACD"
+                    ],
+                    "risk_type": "StopLoss",
+                    "return_pct": 29.19,
+                    "sharpe": 5.4118,
+                    "avg_hold_days": 4.52,
+                    "expected_profit_1d": 0.01,
+                    "expected_profit_1m": 0.23
+                }
+            }
+        },
+        "cycle_analysis": {
+            "matched_cycle_number": 3,
+            "total_cycles": 7,
+            "similarity_pct": 89.6,
+            "current_angle_pct_per_month": 13.8,
+            "current_angle_pct_per_day": 0.4599,
+            "matched_angle_pct_per_month": 10.91,
+            "matched_rise_pct": 897.7,
+            "matched_duration_days": 105,
+            "summary": "현재 회귀각 +13.8%/월 → 과거 3번째 상승 사이클(+10.9%/월, 유사도 90%)과 가장 유사",
+            "historical_cycles": [
+                {
+                    "cycle_number": 1,
+                    "angle_pct_per_month": 3.72,
+                    "angle_pct_per_day": 0.1238,
+                    "rise_pct": 80.3,
+                    "duration_days": 193
+                },
+                {
+                    "cycle_number": 2,
+                    "angle_pct_per_month": 2.11,
+                    "angle_pct_per_day": 0.0704,
+                    "rise_pct": 259.4,
+                    "duration_days": 143
+                },
+                {
+                    "cycle_number": 3,
+                    "angle_pct_per_month": 10.91,
+                    "angle_pct_per_day": 0.3636,
+                    "rise_pct": 897.7,
+                    "duration_days": 105
+                },
+                {
+                    "cycle_number": 4,
+                    "angle_pct_per_month": 7.74,
+                    "angle_pct_per_day": 0.2581,
+                    "rise_pct": 85.3,
+                    "duration_days": 113
+                },
+                {
+                    "cycle_number": 5,
+                    "angle_pct_per_month": 4.02,
+                    "angle_pct_per_day": 0.1338,
+                    "rise_pct": 139.6,
+                    "duration_days": 201
+                },
+                {
+                    "cycle_number": 6,
+                    "angle_pct_per_month": 27.76,
+                    "angle_pct_per_day": 0.9254,
+                    "rise_pct": 616.6,
+                    "duration_days": 78
+                },
+                {
+                    "cycle_number": 7,
+                    "angle_pct_per_month": 3.34,
+                    "angle_pct_per_day": 0.1114,
+                    "rise_pct": 81.1,
+                    "duration_days": 103
+                }
+            ]
+        },
+        "bear_auto_pick_reason": "1일 예상 수익 우세 (Custom +0.01% > Mixed +0.00%)"
     },
     "initial_balance": 16000
 }

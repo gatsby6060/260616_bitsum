@@ -18,19 +18,15 @@ import numpy as np
 import hashlib
 import jwt
 from urllib.parse import urlencode, quote
-import sys
-import importlib
 
 KST = timezone(timedelta(hours=9))
 
-# ── 백테스팅 모듈 임포트 (같은 폴더) ──
+# ── 백테스팅 모듈 임포트 (표준 import — ProcessPool pickle 호환) ──
+_bt_dir = os.path.dirname(os.path.abspath(__file__))
+if _bt_dir not in sys.path:
+    sys.path.insert(0, _bt_dir)
 try:
-    _bt_spec = importlib.util.spec_from_file_location(
-        "backtester",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "backtester.py")
-    )
-    _bt_mod = importlib.util.module_from_spec(_bt_spec)
-    _bt_spec.loader.exec_module(_bt_mod)
+    import backtester as _bt_mod
     run_optimization    = _bt_mod.run_optimization
     get_latest_results  = _bt_mod.get_latest_results
     get_progress        = _bt_mod.get_progress
@@ -38,6 +34,7 @@ try:
     print("[Backtester] 모듈 로드 성공")
 except Exception as _bt_err:
     BACKTEST_AVAILABLE = False
+    _bt_mod = None
     print(f"[Backtester] 모듈 로드 실패 (무시): {_bt_err}")
     def run_optimization(markets=None): return {}
     def get_latest_results(): return None
@@ -117,7 +114,7 @@ from core_engine import TradingEngine, AccountManager, BaseStrategy, BaseRiskMan
 
 # 추가 모듈 임포트
 from candle_manager import CandleManager
-from regime_detector import MarketRegimeDetector
+from regime_detector import MarketRegimeDetector, TICKER_CYCLE_PROFILE
 
 # 글로벌 설정 및 엔진 인스턴스 홀더
 active_ticker_configs = {
@@ -163,7 +160,7 @@ active_ticker_configs = {
         "current_regime": "BEAR",
         "regime_override": "AUTO",
         "selected_bear_strategy": "auto",
-        "long_term_ma_period": 300,
+        "long_term_ma_period": 400,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -200,7 +197,7 @@ active_ticker_configs = {
         "current_regime": "BEAR",
         "regime_override": "AUTO",
         "selected_bear_strategy": "auto",
-        "long_term_ma_period": 300,
+        "long_term_ma_period": 400,
         "tactics": {
             "BULL": {
                 "logic": "OR",
@@ -243,28 +240,66 @@ CONFIG_FILE_PATH = os.path.abspath(os.path.join(
 DEFAULT_REGIME_OVERRIDE = "AUTO"
 DEFAULT_BEAR_STRATEGY = "auto"  # 하락장 기본: 백테스트 우수 전략 자동 선택 (UI에서 custom_bear/mixed 고정 가능)
 SUPPORTED_TICKERS = ["BTC", "ETH", "XRP"]
+# 백테스트·실매매 지표 정렬 타임프레임 (30분봉 48포인트/일)
+OPTIM_BACKTEST_TIMEFRAME = "30m"
 
-def _compute_bear_auto_pick(bear_opt_reg: dict) -> str:
-    """BEAR 구간: 1개월 예상 수익률 우선, 동점 시 Sharpe·MDD로 mix vs CustomBear 자동 선택."""
+# BEAR auto: 단기→장기 순으로 예상 수익 비교 (동률 시 다음 기간)
+BEAR_COMPARE_HORIZONS = ["1d", "3d", "1w", "2w", "1m", "3m", "6m"]
+BEAR_HORIZON_LABELS = {
+    "1d": "1일", "3d": "3일", "1w": "1주", "2w": "2주",
+    "1m": "1개월", "3m": "3개월", "6m": "6개월",
+}
+
+
+def _expand_profit_horizons(strategy_reg: dict) -> dict:
+    """구버전 optimized_params에 1d/3d/2w가 없으면 백테스트 수익률로 보간."""
+    profits = dict(strategy_reg.get("period_expected_profits") or {})
+    if all(h in profits for h in BEAR_COMPARE_HORIZONS):
+        return profits
+    ret = strategy_reg.get("backtest", {}).get("total_return_pct", 0)
+    if BACKTEST_AVAILABLE and _bt_mod:
+        computed = _bt_mod._calculate_expected_profits(ret, [])
+        for h in BEAR_COMPARE_HORIZONS:
+            profits.setdefault(h, computed.get(h, 0))
+    return profits
+
+
+def _compute_bear_auto_pick(bear_opt_reg: dict, cycle_match: dict = None) -> tuple:
+    """BEAR: 1일→3일→1주→2주→1달→3달→6달 예상 수익 순 비교, 전부 동률이면 Sharpe·MDD·사이클."""
     custom = bear_opt_reg.get("custom_bear_strategy", {})
     mixed = bear_opt_reg.get("mixed_strategy", {})
-    c_prof = custom.get("period_expected_profits", {}).get("1m", 0)
-    m_prof = mixed.get("period_expected_profits", {}).get("1m", 0)
-    if m_prof > c_prof:
-        return "mixed"
-    if m_prof < c_prof:
-        return "custom_bear"
+    c_profits = _expand_profit_horizons(custom)
+    m_profits = _expand_profit_horizons(mixed)
+
+    for horizon in BEAR_COMPARE_HORIZONS:
+        c_val = c_profits.get(horizon, 0)
+        m_val = m_profits.get(horizon, 0)
+        label = BEAR_HORIZON_LABELS[horizon]
+        if m_val > c_val:
+            return "mixed", f"{label} 예상 수익 우세 (Mixed {m_val:+.2f}% > Custom {c_val:+.2f}%)"
+        if c_val > m_val:
+            return "custom_bear", f"{label} 예상 수익 우세 (Custom {c_val:+.2f}% > Mixed {m_val:+.2f}%)"
+
     custom_bt = custom.get("backtest", {})
     mixed_bt = mixed.get("backtest", {})
     c_sharpe = custom_bt.get("sharpe_ratio", -999)
     m_sharpe = mixed_bt.get("sharpe_ratio", -999)
     if m_sharpe > c_sharpe:
-        return "mixed"
+        return "mixed", "전 기간 동률 → Sharpe 우세 (Mixed)"
     if m_sharpe < c_sharpe:
-        return "custom_bear"
+        return "custom_bear", "전 기간 동률 → Sharpe 우세 (CustomBear)"
     c_mdd = custom_bt.get("mdd_pct", 999)
     m_mdd = mixed_bt.get("mdd_pct", 999)
-    return "mixed" if m_mdd < c_mdd else "custom_bear"
+    if m_mdd != c_mdd:
+        pick = "mixed" if m_mdd < c_mdd else "custom_bear"
+        return pick, f"전 기간 동률 → MDD 우세 ({pick})"
+    if cycle_match and cycle_match.get("similarity_pct", 0) >= 55:
+        matched_angle = cycle_match.get("matched_angle_pct_per_month", 0)
+        if matched_angle >= 8:
+            return "custom_bear", "전 기간·Sharpe·MDD 동률 → 사이클 각도 급등 구간 (CustomBear)"
+        if matched_angle <= 3:
+            return "mixed", "전 기간·Sharpe·MDD 동률 → 사이클 각도 완만 구간 (Mixed)"
+    return "mixed", "전 기간 동률 → 기본 Mixed"
 
 def _resolve_bear_strategy(ticker: str) -> str:
     """selected_bear_strategy(auto/custom_bear/mixed)를 실제 적용 키로 해석."""
@@ -281,16 +316,16 @@ def _build_tactics_from_opt_reg(opt_reg: dict) -> dict:
     new_strategies = []
     for s_name, s_data in opt_strats.items():
         if s_name == "RSI":
-            tf = "5m"
+            tf = OPTIM_BACKTEST_TIMEFRAME
             params = {"period": s_data.get("period", 14), "oversold": s_data.get("oversold", 30), "overbought": s_data.get("overbought", 70)}
         elif s_name == "Bollinger":
-            tf = "D"
+            tf = OPTIM_BACKTEST_TIMEFRAME
             params = {"period": s_data.get("period", 20), "std_dev": s_data.get("std_dev", 2.0)}
         elif s_name == "MACD":
-            tf = "1h"
+            tf = OPTIM_BACKTEST_TIMEFRAME
             params = {"fast": s_data.get("fast", 12), "slow": s_data.get("slow", 26), "signal_period": s_data.get("signal_period", 9)}
         elif s_name == "CustomBear":
-            tf = "30m"
+            tf = OPTIM_BACKTEST_TIMEFRAME
             params = {
                 "lookback": s_data.get("lookback", 8),
                 "drop_pct": s_data.get("drop_pct", 0.05),
@@ -372,6 +407,71 @@ def save_persisted_configs():
     except Exception as e:
         print(f"[Storage] 설정 파일 저장 실패: {e}")
 
+def _summarize_opt_reg_for_ui(opt_reg: dict, bear_variant: str = None) -> dict:
+    """프론트 표시용 최적화 요약."""
+    bt = opt_reg.get("backtest", {})
+    strats = [k for k, v in opt_reg.get("strategies", {}).items() if v.get("enabled")]
+    risk = opt_reg.get("risk", {})
+    summary = {
+        "logic": opt_reg.get("logic", "OR"),
+        "strategies": strats,
+        "risk_type": risk.get("type", "None"),
+        "return_pct": round(bt.get("total_return_pct", 0), 2),
+        "sharpe": round(bt.get("sharpe_ratio", 0), 4),
+        "avg_hold_days": round(bt.get("avg_hold_days", 0), 2),
+        "expected_profit_1d": round(_expand_profit_horizons(opt_reg).get("1d", 0), 2),
+        "expected_profit_1m": round(_expand_profit_horizons(opt_reg).get("1m", 0), 2),
+    }
+    if bear_variant:
+        summary["bear_variant"] = bear_variant
+    return summary
+
+
+def _build_optimized_default_snapshot(ticker: str, results: dict) -> dict:
+    """코인별 최적화 디폴트 스냅샷 (프론트·설정 저장용)."""
+    market = f"KRW-{ticker}"
+    cfg = active_ticker_configs.get(ticker, {})
+    current_regime = cfg.get("current_regime", "BEAR")
+    regimes_summary = {}
+
+    if market in results:
+        for regime in ["BULL", "BEAR", "RANGE"]:
+            opt_reg = results[market].get(regime)
+            if not opt_reg:
+                continue
+            if regime == "BEAR":
+                pick = cfg.get("bear_auto_pick")
+                pick_reason = cfg.get("bear_auto_pick_reason", "")
+                if not pick and "custom_bear_strategy" in opt_reg and "mixed_strategy" in opt_reg:
+                    pick, pick_reason = _compute_bear_auto_pick(opt_reg, cfg.get("cycle_analysis"))
+                variant = pick or "custom_bear"
+                key_map = {"custom_bear": "custom_bear_strategy", "mixed": "mixed_strategy"}
+                src = opt_reg.get(key_map.get(variant, "custom_bear_strategy")) or opt_reg
+                summary = _summarize_opt_reg_for_ui(src, bear_variant=variant)
+                summary["bear_pick_reason"] = pick_reason
+                regimes_summary[regime] = summary
+            else:
+                regimes_summary[regime] = _summarize_opt_reg_for_ui(opt_reg)
+
+    active_tactic = cfg.get("tactics", {}).get(current_regime, {})
+    active_strats = [s.get("name") for s in active_tactic.get("strategies", []) if s.get("enabled")]
+    cycle = cfg.get("cycle_analysis") or {}
+
+    return {
+        "applied_at": results.get("last_updated"),
+        "source": results.get("source", "backtest"),
+        "current_regime": current_regime,
+        "active_logic": active_tactic.get("logic"),
+        "active_strategies": active_strats,
+        "active_risk_type": active_tactic.get("risk", {}).get("type", "None"),
+        "resolved_bear_strategy": cfg.get("resolved_bear_strategy"),
+        "bear_auto_pick_reason": cfg.get("bear_auto_pick_reason"),
+        "cycle_match_cycle": cycle.get("matched_cycle_number"),
+        "cycle_similarity_pct": cycle.get("similarity_pct"),
+        "regimes": regimes_summary,
+    }
+
+
 def update_configs_with_optimized_params():
     global active_ticker_configs
     results = get_latest_results()
@@ -383,6 +483,8 @@ def update_configs_with_optimized_params():
         ticker = market.replace("KRW-", "")
         if market not in results or ticker not in active_ticker_configs:
             continue
+
+        cycle_match = active_ticker_configs[ticker].get("cycle_analysis")
 
         for regime in ["BULL", "BEAR", "RANGE"]:
             opt_reg = results[market].get(regime)
@@ -397,7 +499,9 @@ def update_configs_with_optimized_params():
                     bear_cache["mixed"] = _build_tactics_from_opt_reg(opt_reg["mixed_strategy"])
                 if bear_cache:
                     if "custom_bear_strategy" in opt_reg and "mixed_strategy" in opt_reg:
-                        active_ticker_configs[ticker]["bear_auto_pick"] = _compute_bear_auto_pick(opt_reg)
+                        pick, reason = _compute_bear_auto_pick(opt_reg, cycle_match)
+                        active_ticker_configs[ticker]["bear_auto_pick"] = pick
+                        active_ticker_configs[ticker]["bear_auto_pick_reason"] = reason
                     active_ticker_configs[ticker]["bear_tactics_cache"] = bear_cache
                     _apply_bear_strategy_selection(ticker)
                     updated = True
@@ -406,9 +510,12 @@ def update_configs_with_optimized_params():
             active_ticker_configs[ticker]["tactics"][regime] = _build_tactics_from_opt_reg(opt_reg)
             updated = True
 
+        active_ticker_configs[ticker]["optimized_default"] = _build_optimized_default_snapshot(ticker, results)
+        updated = True
+
     if updated:
         save_persisted_configs()
-        print("[Storage] 종목별 최적화 파라미터(BULL/RANGE/mix·CustomBear)가 반영되었습니다.")
+        print("[Storage] 종목별 최적화 파라미터(BULL/RANGE/mix·CustomBear) 및 디폴트 스냅샷이 반영되었습니다.")
 
 def update_configs_and_apply_to_engine():
     update_configs_with_optimized_params()
@@ -528,7 +635,7 @@ class BithumbBollingerStrategy(BaseStrategy):
 
         curr_upper = upper.iloc[-1]
         curr_lower = lower.iloc[-1]
-        price = prices[-1]
+        price = float(data.get("price") or prices[-1])
 
         data["bb_val"] = f"U:{curr_upper:.1f}/L:{curr_lower:.1f}"
 
@@ -559,6 +666,7 @@ class BithumbCustomBearStrategy(BaseStrategy):
         opens = [c["open"] for c in candles]
         volumes = [c["volume"] for c in candles]
         highs = [c.get("high", c["close"]) for c in candles]
+        tick_price = float(data.get("price") or closes[-1])
         
         qty = data.get("position_qty", 0.0)
         
@@ -568,14 +676,14 @@ class BithumbCustomBearStrategy(BaseStrategy):
             lookback = self.params["lookback"]
             window_closes = closes[-lookback-1:-1]
             highest = max(window_closes) if window_closes else closes[-1]
-            curr_price = closes[-1]
+            curr_price = tick_price
             drop = (highest - curr_price) / highest if highest > 0 else 0
             
             vol_window = volumes[-11:-1]
             avg_vol = sum(vol_window) / len(vol_window) if vol_window else 1.0
             curr_vol = volumes[-1]
             
-            is_bullish = closes[-1] > opens[-1]
+            is_bullish = tick_price > opens[-1]
             
             buy = (drop >= self.params["drop_pct"]) and (curr_vol >= avg_vol * self.params["volume_ratio"]) and is_bullish
             
@@ -588,16 +696,16 @@ class BithumbCustomBearStrategy(BaseStrategy):
                 self.peak_price = curr_price
                 return "BUY"
         else:
-            # 매도 조건 (트레일링 스톱, 손절, 시간청산)
-            curr_price = closes[-1]
+            # 매도 조건 (트레일링 스톱, 손절, 시간청산) — 틱 가격으로 즉시 평가
+            curr_price = tick_price
             if self.entry_price == 0.0:
                 self.entry_price = data.get("avg_price", curr_price)
                 
             if self.peak_price == 0.0:
                 self.peak_price = max(self.entry_price, curr_price)
                 
-            # 실시간 최고가 업데이트
-            curr_high = highs[-1]
+            # 실시간 최고가 업데이트 (형성 중 봉 high + 현재 체결가)
+            curr_high = max(highs[-1] if highs else curr_price, curr_price)
             self.peak_price = max(self.peak_price, curr_high)
                 
             pnl = (curr_price - self.entry_price) / self.entry_price
@@ -793,7 +901,7 @@ class UITickerWorker(TickerWorker):
         self.order_amount = 5100.0  # 회당 기본 매매 주문금액 (빗썸 최소 5,000원 이상 + 여유분 반영)
         
         # 1. 백엔드 CandleManager 장착 및 웜업 구동
-        self.candle_manager = CandleManager(ticker, timeframes=["1m", "5m", "1h", "D", "W", "M"], max_candles=4500)
+        self.candle_manager = CandleManager(ticker, timeframes=["1m", "5m", "30m", "1h", "D", "W", "M"], max_candles=4500)
         self.candle_manager.warmup()
         
         # 2. 장세 감지기 장착 (전략 설정 파일에서 임계치 획득)
@@ -998,6 +1106,15 @@ class UITickerWorker(TickerWorker):
         detailed = self.regime_detector.detect_regime_detailed()
         detected_regime = detailed["regime"]
         regime_reason = detailed["reason"]
+        cycle_match = detailed.get("cycle_match")
+        if cycle_match and override == "AUTO":
+            self.config["cycle_analysis"] = cycle_match
+            if self.ticker in active_ticker_configs:
+                active_ticker_configs[self.ticker]["cycle_analysis"] = cycle_match
+                od = active_ticker_configs[self.ticker].get("optimized_default")
+                if od:
+                    od["cycle_match_cycle"] = cycle_match.get("matched_cycle_number")
+                    od["cycle_similarity_pct"] = cycle_match.get("similarity_pct")
         
         if override != "AUTO":
             detected_regime = override
@@ -1041,6 +1158,8 @@ class UITickerWorker(TickerWorker):
                 "regime": self.current_regime,
                 "regime_reason": regime_reason,
                 "regime_override": override,
+                "cycle_match": cycle_match,
+                "optimized_default": active_ticker_configs.get(self.ticker, {}).get("optimized_default"),
                 "timestamp": timestamp,
                 "trading_active": self.trading_active,
                 "balance": self.account.get_balance(),
@@ -1543,12 +1662,13 @@ class MultiTickerUIEngine(TradingEngine):
             return False
             
         if ticker not in active_ticker_configs:
+            _profile = TICKER_CYCLE_PROFILE.get(ticker, TICKER_CYCLE_PROFILE["BTC"])
             active_ticker_configs[ticker] = {
                 "active": True,
                 "current_regime": "BEAR",
                 "regime_override": DEFAULT_REGIME_OVERRIDE,
                 "selected_bear_strategy": DEFAULT_BEAR_STRATEGY,
-                "long_term_ma_period": 300,
+                "long_term_ma_period": _profile["regression_days"],
                 "tactics": {
                     "BULL": {
                         "logic": "OR",
@@ -3100,55 +3220,90 @@ HTML_CONTENT = """
                 <!-- Risk Settings 설정 콘텐츠 -->
                 <div id="risk-tab-content" class="tab-content" style="display:none;">
                     <div class="logic-settings-card">
-                        <div class="control-group">
-                            <label class="control-label-large">리스크 관리 기법</label>
-                            <select id="risk-type-select" class="logic-dropdown" onchange="toggleRiskParamsDisplay(this.value)">
-                                <option value="None">None (미적용)</option>
-                                <option value="StopLoss">StopLoss (고정 손절/익절)</option>
-                                <option value="TrailingStop">TrailingStop (트레일링 스탑)</option>
-                                <option value="AveragingDown">AveragingDown (물타기)</option>
-                            </select>
-                            <div class="logic-desc" id="risk-desc-text">리스크 관리를 수행하지 않고 전략 신호만을 따릅니다.</div>
-                            <div class="logic-desc" id="backtest-hold-summary" style="margin-top:8px; color:var(--accent-blue); font-weight:600;">
-                                최적화 백테스트 평균 보유: -
+                        <!-- 일반 전략(Mixed/BULL/RANGE)용 리스크 UI -->
+                        <div id="risk-standard-panel">
+                            <div class="control-group">
+                                <label class="control-label-large">리스크 관리 기법</label>
+                                <select id="risk-type-select" class="logic-dropdown" onchange="toggleRiskParamsDisplay(this.value)">
+                                    <option value="None">None (미적용)</option>
+                                    <option value="StopLoss">StopLoss (고정 손절/익절)</option>
+                                    <option value="TrailingStop">TrailingStop (트레일링 스탑)</option>
+                                    <option value="AveragingDown">AveragingDown (물타기)</option>
+                                </select>
+                            </div>
+
+                            <!-- StopLoss 파라미터 -->
+                            <div class="control-group" id="risk-params-stoploss" style="display:none; margin-top:10px;">
+                                <label class="control-label-large">Stop Loss (손절 비율 %)</label>
+                                <div class="slider-val-row">
+                                    <input type="range" class="param-slider" id="risk-stoploss-pct" min="0.5" max="10" step="0.5" value="3.0" oninput="updateParamValue('risk-stoploss-pct-val', this.value)">
+                                    <span class="param-val" id="risk-stoploss-pct-val" style="font-size:14px; width:45px;">3.0</span>
+                                </div>
+                                <label class="control-label-large" style="margin-top: 10px;">Take Profit (익절 비율 %)</label>
+                                <div class="slider-val-row">
+                                    <input type="range" class="param-slider" id="risk-takeprofit-pct" min="1.0" max="20" step="0.5" value="6.0" oninput="updateParamValue('risk-takeprofit-pct-val', this.value)">
+                                    <span class="param-val" id="risk-takeprofit-pct-val" style="font-size:14px; width:45px;">6.0</span>
+                                </div>
+                            </div>
+
+                            <!-- TrailingStop 파라미터 -->
+                            <div class="control-group" id="risk-params-trailing" style="display:none; margin-top:10px;">
+                                <label class="control-label-large">Trailing Stop (하락폭 비율 %)</label>
+                                <div class="slider-val-row">
+                                    <input type="range" class="param-slider" id="risk-trail-pct" min="0.5" max="10" step="0.5" value="2.0" oninput="updateParamValue('risk-trail-pct-val', this.value)">
+                                    <span class="param-val" id="risk-trail-pct-val" style="font-size:14px; width:45px;">2.0</span>
+                                </div>
+                            </div>
+
+                            <!-- AveragingDown 파라미터 -->
+                            <div class="control-group" id="risk-params-averaging" style="display:none; margin-top:10px;">
+                                <label class="control-label-large">Drop Trigger (추가 매수 발동 %)</label>
+                                <div class="slider-val-row">
+                                    <input type="range" class="param-slider" id="risk-drop-trigger-pct" min="1.0" max="15" step="0.5" value="4.0" oninput="updateParamValue('risk-drop-trigger-val', this.value)">
+                                    <span class="param-val" id="risk-drop-trigger-val" style="font-size:14px; width:45px;">4.0</span>
+                                </div>
+                                <label class="control-label-large" style="margin-top: 10px;">Max Add Count (최대 추가 매수 횟수)</label>
+                                <div class="slider-val-row">
+                                    <input type="range" class="param-slider" id="risk-max-add-count" min="1" max="5" step="1" value="3" oninput="updateParamValue('risk-max-add-count-val', this.value)">
+                                    <span class="param-val" id="risk-max-add-count-val" style="font-size:14px; width:45px;">3</span>
+                                </div>
                             </div>
                         </div>
 
-                        <!-- StopLoss 파라미터 -->
-                        <div class="control-group" id="risk-params-stoploss" style="display:none; margin-top:10px;">
-                            <label class="control-label-large">Stop Loss (손절 비율 %)</label>
-                            <div class="slider-val-row">
-                                <input type="range" class="param-slider" id="risk-stoploss-pct" min="0.5" max="10" step="0.5" value="3.0" oninput="updateParamValue('risk-stoploss-pct-val', this.value)">
-                                <span class="param-val" id="risk-stoploss-pct-val" style="font-size:14px; width:45px;">3.0</span>
+                        <!-- CustomBear 전용: 실제 청산 규칙 표시 -->
+                        <div id="risk-custombear-panel" style="display:none;">
+                            <div class="control-group">
+                                <label class="control-label-large">리스크 관리 기법</label>
+                                <div style="padding:10px 12px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.25); border-radius:8px; font-size:13px; font-weight:700; color:#fca5a5;">
+                                    CustomBear 내장 청산 (최적화값)
+                                </div>
                             </div>
-                            <label class="control-label-large" style="margin-top: 10px;">Take Profit (익절 비율 %)</label>
-                            <div class="slider-val-row">
-                                <input type="range" class="param-slider" id="risk-takeprofit-pct" min="1.0" max="20" step="0.5" value="6.0" oninput="updateParamValue('risk-takeprofit-pct-val', this.value)">
-                                <span class="param-val" id="risk-takeprofit-pct-val" style="font-size:14px; width:45px;">6.0</span>
+                            <div style="display:grid; gap:8px; margin-top:10px; font-size:12px; color:var(--text-secondary);">
+                                <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px 12px;">
+                                    <div style="color:#fff; font-weight:600; margin-bottom:4px;">트레일링 익절</div>
+                                    <div>진입 후 최고가 대비 <strong id="risk-cb-trail-val" style="color:var(--accent-green);">-</strong> 하락 시 매도</div>
+                                </div>
+                                <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px 12px;">
+                                    <div style="color:#fff; font-weight:600; margin-bottom:4px;">손절 (전략)</div>
+                                    <div>진입가 대비 <strong id="risk-cb-stop-val" style="color:var(--accent-red);">-</strong> 이하 시 매도</div>
+                                </div>
+                                <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px 12px;">
+                                    <div style="color:#fff; font-weight:600; margin-bottom:4px;">시간 청산</div>
+                                    <div><strong id="risk-cb-timecut-val" style="color:var(--accent-blue);">-</strong> (<span id="risk-cb-timecut-hint">-</span>)</div>
+                                </div>
+                                <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px 12px;">
+                                    <div style="color:#fff; font-weight:600; margin-bottom:4px;">보조 안전손절 (리스크매니저)</div>
+                                    <div>진입가 대비 <strong id="risk-cb-backup-sl-val" style="color:var(--accent-red);">-</strong> 이하 강제 청산</div>
+                                </div>
+                            </div>
+                            <div class="logic-desc" style="margin-top:10px; color:#94a3b8;">
+                                고정 Take Profit(익절 %)은 사용하지 않습니다. 위 규칙으로 매수→매도가 결정됩니다.
                             </div>
                         </div>
 
-                        <!-- TrailingStop 파라미터 -->
-                        <div class="control-group" id="risk-params-trailing" style="display:none; margin-top:10px;">
-                            <label class="control-label-large">Trailing Stop (하락폭 비율 %)</label>
-                            <div class="slider-val-row">
-                                <input type="range" class="param-slider" id="risk-trail-pct" min="0.5" max="10" step="0.5" value="2.0" oninput="updateParamValue('risk-trail-pct-val', this.value)">
-                                <span class="param-val" id="risk-trail-pct-val" style="font-size:14px; width:45px;">2.0</span>
-                            </div>
-                        </div>
-
-                        <!-- AveragingDown 파라미터 -->
-                        <div class="control-group" id="risk-params-averaging" style="display:none; margin-top:10px;">
-                            <label class="control-label-large">Drop Trigger (물타기 기준 하락폭 %)</label>
-                            <div class="slider-val-row">
-                                <input type="range" class="param-slider" id="risk-drop-trigger-pct" min="1.0" max="15" step="0.5" value="4.0" oninput="updateParamValue('risk-drop-trigger-val', this.value)">
-                                <span class="param-val" id="risk-drop-trigger-val" style="font-size:14px; width:45px;">4.0</span>
-                            </div>
-                            <label class="control-label-large" style="margin-top: 10px;">Max Add Count (최대 물타기 횟수)</label>
-                            <div class="slider-val-row">
-                                <input type="range" class="param-slider" id="risk-max-add-count" min="1" max="5" step="1" value="3" oninput="updateParamValue('risk-max-add-count-val', this.value)">
-                                <span class="param-val" id="risk-max-add-count-val" style="font-size:14px; width:45px;">3</span>
-                            </div>
+                        <div class="logic-desc" id="risk-desc-text" style="margin-top:10px;">리스크 관리를 수행하지 않고 전략 신호만을 따릅니다.</div>
+                        <div class="logic-desc" id="backtest-hold-summary" style="margin-top:8px; color:var(--accent-blue); font-weight:600;">
+                            최적화 백테스트 평균 보유: -
                         </div>
                     </div>
                 </div>
@@ -3201,8 +3356,9 @@ HTML_CONTENT = """
                         <span class="active-badge" id="badge-auto" style="display:none; background:var(--accent-blue); color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; font-weight:bold;">적용 중</span>
                     </div>
                     <p style="font-size:11px; color:var(--text-secondary); margin:0; line-height:1.5;">
-                        하락장(BEAR) 판정 시에만 적용됩니다. 종목별 백테스트 <strong>1개월 예상 수익률</strong>이 더 높은 전략을 매일 자동 선택합니다.
-                        현재 AI 선택: <strong id="bear-resolved-label" style="color:var(--accent-green);">-</strong>
+                        하락장(BEAR) 판정 시에만 적용됩니다. 백테스트 예상 수익을 <strong>1일 → 3일 → 1주 → 2주 → 1달 → 3달 → 6달</strong> 순으로 비교해 더 높은 전략을 매일 자동 선택합니다.
+                        현재 AI 선택: <strong id="bear-resolved-label" style="color:var(--accent-green);">-</strong><br>
+                        <span id="bear-auto-pick-reason" style="font-size:10px; color:#a5b4fc; margin-top:4px; display:inline-block;">-</span>
                     </p>
                 </div>
 
@@ -3216,7 +3372,10 @@ HTML_CONTENT = """
                     <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:8px 12px;">
                         <div style="font-size:11px; color:#94a3b8; font-weight:bold; margin-bottom:4px;">예상 기대 이윤 (복리 환산)</div>
                         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; font-size:11px;">
-                            <div>1주일: <span id="mixed-profit-1w" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>1일: <span id="mixed-profit-1d" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>3일: <span id="mixed-profit-3d" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>1주: <span id="mixed-profit-1w" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>2주: <span id="mixed-profit-2w" style="font-weight:700; color:var(--accent-green);">-</span></div>
                             <div>1개월: <span id="mixed-profit-1m" style="font-weight:700; color:var(--accent-green);">-</span></div>
                             <div>3개월: <span id="mixed-profit-3m" style="font-weight:700; color:var(--accent-green);">-</span></div>
                             <div>6개월: <span id="mixed-profit-6m" style="font-weight:700; color:var(--accent-green);">-</span></div>
@@ -3236,7 +3395,10 @@ HTML_CONTENT = """
                     <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:8px 12px;">
                         <div style="font-size:11px; color:#94a3b8; font-weight:bold; margin-bottom:4px;">예상 기대 이윤 (복리 환산)</div>
                         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; font-size:11px;">
-                            <div>1주일: <span id="custom-profit-1w" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>1일: <span id="custom-profit-1d" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>3일: <span id="custom-profit-3d" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>1주: <span id="custom-profit-1w" style="font-weight:700; color:var(--accent-green);">-</span></div>
+                            <div>2주: <span id="custom-profit-2w" style="font-weight:700; color:var(--accent-green);">-</span></div>
                             <div>1개월: <span id="custom-profit-1m" style="font-weight:700; color:var(--accent-green);">-</span></div>
                             <div>3개월: <span id="custom-profit-3m" style="font-weight:700; color:var(--accent-green);">-</span></div>
                             <div>6개월: <span id="custom-profit-6m" style="font-weight:700; color:var(--accent-green);">-</span></div>
@@ -3767,6 +3929,12 @@ HTML_CONTENT = """
                 <div id="regime-reason-${ticker}" style="font-size:10px; color:var(--text-secondary); background:rgba(255,255,255,0.02); padding:6px 10px; border-radius:8px; margin-bottom:8px; line-height:1.4; border-left:2px solid var(--accent-blue); word-break:keep-all;">
                     AI 분석 대기 중...
                 </div>
+                <div id="cycle-match-${ticker}" style="font-size:10px; color:#a5b4fc; background:rgba(99,102,241,0.06); padding:5px 10px; border-radius:8px; margin-bottom:8px; line-height:1.4; border-left:2px solid #6366f1; word-break:keep-all;">
+                    사이클 회귀각 분석 대기 중...
+                </div>
+                <div id="optimized-default-${ticker}" style="font-size:10px; color:#86efac; background:rgba(34,197,94,0.06); padding:5px 10px; border-radius:8px; margin-bottom:8px; line-height:1.4; border-left:2px solid var(--accent-green); word-break:keep-all;">
+                    일일 최적화 디폴트 전략 대기 중...
+                </div>
 
                 <div class="price-display" id="price-${ticker}">- KRW</div>
                 
@@ -3916,6 +4084,70 @@ HTML_CONTENT = """
             }
         }
 
+        function _timeframeBarHours(tf) {
+            const map = { '1m': 1/60, '3m': 3/60, '5m': 5/60, '10m': 10/60, '15m': 15/60, '30m': 0.5, '1h': 1, '4h': 4, 'D': 24, 'W': 168, 'M': 720 };
+            return map[tf] || 0.5;
+        }
+
+        function syncRiskPanelForTactic(tactic) {
+            const stdPanel = document.getElementById('risk-standard-panel');
+            const cbPanel = document.getElementById('risk-custombear-panel');
+            const desc = document.getElementById('risk-desc-text');
+            if (!stdPanel || !cbPanel || !tactic) return;
+
+            const isCustomBear = tactic.logic === 'CUSTOM_BEAR';
+
+            if (isCustomBear) {
+                stdPanel.style.display = 'none';
+                cbPanel.style.display = 'block';
+
+                const cbStrat = (tactic.strategies || []).find(s => s.name === 'CustomBear');
+                const p = cbStrat ? cbStrat.params : {};
+                const tf = cbStrat ? (cbStrat.timeframe || '30m') : '30m';
+                const trailPct = ((p.trail_pct ?? 0.02) * 100).toFixed(1);
+                const stopPct = ((p.stop_loss ?? 0.015) * 100).toFixed(1);
+                const timeCut = p.time_cut ?? 24;
+                const barHours = _timeframeBarHours(tf);
+                const holdHours = (timeCut * barHours).toFixed(1);
+                const backupSl = ((tactic.risk?.stop_loss_pct ?? p.stop_loss ?? 0.015) * 100).toFixed(1);
+
+                document.getElementById('risk-cb-trail-val').innerText = trailPct + '%';
+                document.getElementById('risk-cb-stop-val').innerText = '-' + stopPct + '%';
+                document.getElementById('risk-cb-timecut-val').innerText = `${timeCut}봉 (${tf})`;
+                document.getElementById('risk-cb-timecut-hint').innerText = `약 ${holdHours}시간 경과 시 무조건 청산`;
+                document.getElementById('risk-cb-backup-sl-val').innerText = '-' + backupSl + '%';
+
+                desc.innerText = 'CustomBear: 급락 반등 매수 후 트레일링·손절·시간청산으로 매도합니다. 고정 익절(TP)은 사용하지 않습니다.';
+            } else {
+                cbPanel.style.display = 'none';
+                stdPanel.style.display = 'block';
+
+                const risk = tactic.risk || { type: 'None' };
+                document.getElementById('risk-type-select').value = risk.type;
+                toggleRiskParamsDisplay(risk.type);
+
+                if (risk.type === 'StopLoss') {
+                    const slVal = ((risk.stop_loss_pct || 0.03) * 100).toFixed(1);
+                    const tpVal = ((risk.take_profit_pct || 0.06) * 100).toFixed(1);
+                    document.getElementById('risk-stoploss-pct').value = slVal;
+                    document.getElementById('risk-stoploss-pct-val').innerText = slVal;
+                    document.getElementById('risk-takeprofit-pct').value = tpVal;
+                    document.getElementById('risk-takeprofit-pct-val').innerText = tpVal;
+                } else if (risk.type === 'TrailingStop') {
+                    const trailVal = ((risk.trail_pct || 0.02) * 100).toFixed(1);
+                    document.getElementById('risk-trail-pct').value = trailVal;
+                    document.getElementById('risk-trail-pct-val').innerText = trailVal;
+                } else if (risk.type === 'AveragingDown') {
+                    const dropVal = ((risk.drop_trigger_pct || 0.04) * 100).toFixed(1);
+                    const maxAddCount = risk.max_add_count || 3;
+                    document.getElementById('risk-drop-trigger-pct').value = dropVal;
+                    document.getElementById('risk-drop-trigger-val').innerText = dropVal;
+                    document.getElementById('risk-max-add-count').value = maxAddCount;
+                    document.getElementById('risk-max-add-count-val').innerText = maxAddCount;
+                }
+            }
+        }
+
         function updateParamValue(elId, val) {
             document.getElementById(elId).innerText = val;
         }
@@ -4025,6 +4257,62 @@ HTML_CONTENT = """
             }
         }
 
+        function updateCycleMatchPanel(ticker, cycleMatch) {
+            const el = document.getElementById(`cycle-match-${ticker}`);
+            if (!el) return;
+            if (!cycleMatch || !cycleMatch.summary) {
+                el.innerText = '사이클 회귀각 분석 대기 중...';
+                return;
+            }
+            const hist = (cycleMatch.historical_cycles || [])
+                .map(c => `#${c.cycle_number} ${c.angle_pct_per_month >= 0 ? '+' : ''}${c.angle_pct_per_month}%/월`)
+                .join(' · ');
+            el.innerHTML = `🔄 ${cycleMatch.summary}<br><span style="opacity:0.75; font-size:9px;">과거 사이클 각도: ${hist || '-'}</span>`;
+        }
+
+        function formatProfitPct(val) {
+            if (val === undefined || val === null) return '-';
+            return `${val >= 0 ? '+' : ''}${val}%`;
+        }
+
+        function fillBearProfitHorizons(prefix, profits, backtest) {
+            const keys = ['1d', '3d', '1w', '2w', '1m', '3m', '6m'];
+            const ret = backtest?.total_return_pct ?? 0;
+            const daily = ret !== 0 ? Math.pow(1 + ret / 100, 1 / 365) - 1 : 0;
+            const dayMap = { '1d': 1, '3d': 3, '1w': 7, '2w': 14, '1m': 30, '3m': 90, '6m': 180 };
+            keys.forEach(k => {
+                const el = document.getElementById(`${prefix}-profit-${k}`);
+                if (!el) return;
+                let v = profits?.[k];
+                if (v === undefined && daily !== 0) {
+                    v = Math.round(((Math.pow(1 + daily, dayMap[k]) - 1) * 100) * 100) / 100;
+                }
+                el.innerText = formatProfitPct(v ?? 0);
+            });
+        }
+
+        function updateOptimizedDefaultPanel(ticker, configOrData) {
+            const el = document.getElementById(`optimized-default-${ticker}`);
+            if (!el) return;
+            const od = configOrData?.optimized_default || configOrData;
+            if (!od || !od.regimes) {
+                el.innerText = '일일 최적화 디폴트 전략 대기 중... (02:00 KST 자동 갱신)';
+                return;
+            }
+            const regime = od.current_regime || 'BEAR';
+            const active = od.regimes[regime] || {};
+            const strats = (active.strategies || []).join('+') || '-';
+            const bearNote = active.bear_variant ? ` (${active.bear_variant === 'mixed' ? 'Mixed' : 'CustomBear'})` : '';
+            const cycleNote = od.cycle_match_cycle
+                ? ` · ${od.cycle_match_cycle}번째 사이클 참고(${od.cycle_similarity_pct || 0}%)`
+                : '';
+            const applied = od.applied_at ? od.applied_at.replace('T', ' ').slice(0, 16) : '-';
+            el.innerHTML = `✅ <b>디폴트 적용</b> ${regime}: ${active.logic || '-'} ${strats}${bearNote}<br>`
+                + `<span style="opacity:0.8;">리스크 ${active.risk_type || '-'} · 1D예상 ${active.expected_profit_1d ?? '-'}% · 1M예상 ${active.expected_profit_1m ?? '-'}% · Sharpe ${active.sharpe ?? '-'}${cycleNote}</span><br>`
+                + (od.bear_auto_pick_reason ? `<span style="opacity:0.75; font-size:9px;">BEAR 선택: ${od.bear_auto_pick_reason}</span><br>` : '')
+                + `<span style="opacity:0.65; font-size:9px;">갱신: ${applied} (${od.source || 'backtest'})</span>`;
+        }
+
         async function loadAllConfigs() {
             try {
                 const response = await fetch('/api/config');
@@ -4058,6 +4346,8 @@ HTML_CONTENT = """
                     const logic = tactic ? tactic.logic : 'AND';
                     createTickerCardIfNotExist(ticker, logic, config.active !== false);
                     updateStrategyDetailsTable(ticker, config);
+                    updateCycleMatchPanel(ticker, config.cycle_analysis);
+                    updateOptimizedDefaultPanel(ticker, config);
                     
                     // 장세 고정 및 기간 드롭다운 동기화
                     const regSelect = document.getElementById(`regime-select-${ticker}`);
@@ -4142,34 +4432,8 @@ HTML_CONTENT = """
             document.getElementById('weighted-threshold').value = tactic.threshold || 0.5;
             document.getElementById('threshold-val').innerText = tactic.threshold || 0.5;
 
-            // 리스크 설정 동기화
-            const risk = tactic.risk || { type: "None" };
-            document.getElementById('risk-type-select').value = risk.type;
-            toggleRiskParamsDisplay(risk.type);
-
-            if (risk.type === 'StopLoss') {
-                const slVal = ((risk.stop_loss_pct || 0.03) * 100).toFixed(1);
-                const tpVal = ((risk.take_profit_pct || 0.06) * 100).toFixed(1);
-                
-                document.getElementById('risk-stoploss-pct').value = slVal;
-                document.getElementById('risk-stoploss-pct-val').innerText = slVal;
-                
-                document.getElementById('risk-takeprofit-pct').value = tpVal;
-                document.getElementById('risk-takeprofit-pct-val').innerText = tpVal;
-            } else if (risk.type === 'TrailingStop') {
-                const trailVal = ((risk.trail_pct || 0.02) * 100).toFixed(1);
-                document.getElementById('risk-trail-pct').value = trailVal;
-                document.getElementById('risk-trail-pct-val').innerText = trailVal;
-            } else if (risk.type === 'AveragingDown') {
-                const dropVal = ((risk.drop_trigger_pct || 0.04) * 100).toFixed(1);
-                const maxAddCount = risk.max_add_count || 3;
-                
-                document.getElementById('risk-drop-trigger-pct').value = dropVal;
-                document.getElementById('risk-drop-trigger-val').innerText = dropVal;
-                
-                document.getElementById('risk-max-add-count').value = maxAddCount;
-                document.getElementById('risk-max-add-count-val').innerText = maxAddCount;
-            }
+            // 리스크 설정 동기화 (CustomBear는 전용 패널)
+            syncRiskPanelForTactic(tactic);
 
             const holdEl = document.getElementById('backtest-hold-summary');
             if (holdEl) {
@@ -4417,28 +4681,7 @@ HTML_CONTENT = """
             document.getElementById('threshold-val').innerText = defaults.threshold;
 
             // 리스크 설정
-            document.getElementById('risk-type-select').value = defaults.risk.type;
-            toggleRiskParamsDisplay(defaults.risk.type);
-
-            if (defaults.risk.type === 'StopLoss') {
-                const slVal = (defaults.risk.stop_loss_pct * 100).toFixed(1);
-                const tpVal = (defaults.risk.take_profit_pct * 100).toFixed(1);
-                document.getElementById('risk-stoploss-pct').value = slVal;
-                document.getElementById('risk-stoploss-pct-val').innerText = slVal;
-                document.getElementById('risk-takeprofit-pct').value = tpVal;
-                document.getElementById('risk-takeprofit-pct-val').innerText = tpVal;
-            } else if (defaults.risk.type === 'TrailingStop') {
-                const trailVal = (defaults.risk.trail_pct * 100).toFixed(1);
-                document.getElementById('risk-trail-pct').value = trailVal;
-                document.getElementById('risk-trail-pct-val').innerText = trailVal;
-            } else if (defaults.risk.type === 'AveragingDown') {
-                const dropVal = (defaults.risk.drop_trigger_pct * 100).toFixed(1);
-                const maxAddCount = defaults.risk.max_add_count;
-                document.getElementById('risk-drop-trigger-pct').value = dropVal;
-                document.getElementById('risk-drop-trigger-val').innerText = dropVal;
-                document.getElementById('risk-max-add-count').value = maxAddCount;
-                document.getElementById('risk-max-add-count-val').innerText = maxAddCount;
-            }
+            syncRiskPanelForTactic(defaults);
 
             // 개별 전략
             Object.entries(defaults.strategies).forEach(([sName, sCfg]) => {
@@ -4573,22 +4816,31 @@ HTML_CONTENT = """
             }
             
             // Risk Settings 파싱
-            const riskType = document.getElementById('risk-type-select').value;
-            const risk = { type: riskType };
+            const isCustomBearMode = toggleCustomBear && toggleCustomBear.checked &&
+                strategies.filter(s => s.enabled).every(s => s.name === 'CustomBear');
+            let effectiveLogic = isCustomBearMode ? 'CUSTOM_BEAR' : logic;
 
-            if (riskType === 'StopLoss') {
-                risk.stop_loss_pct = parseFloat(document.getElementById('risk-stoploss-pct').value) / 100;
-                risk.take_profit_pct = parseFloat(document.getElementById('risk-takeprofit-pct').value) / 100;
-            } else if (riskType === 'TrailingStop') {
-                risk.trail_pct = parseFloat(document.getElementById('risk-trail-pct').value) / 100;
-            } else if (riskType === 'AveragingDown') {
-                risk.drop_trigger_pct = parseFloat(document.getElementById('risk-drop-trigger-pct').value) / 100;
-                risk.max_add_count = parseInt(document.getElementById('risk-max-add-count').value);
+            let risk;
+            if (effectiveLogic === 'CUSTOM_BEAR') {
+                const sl = parseFloat(document.getElementById('custombear-stop_loss').value) / 100;
+                risk = { type: 'StopLoss', stop_loss_pct: sl, take_profit_pct: 9.9 };
+            } else {
+                const riskType = document.getElementById('risk-type-select').value;
+                risk = { type: riskType };
+                if (riskType === 'StopLoss') {
+                    risk.stop_loss_pct = parseFloat(document.getElementById('risk-stoploss-pct').value) / 100;
+                    risk.take_profit_pct = parseFloat(document.getElementById('risk-takeprofit-pct').value) / 100;
+                } else if (riskType === 'TrailingStop') {
+                    risk.trail_pct = parseFloat(document.getElementById('risk-trail-pct').value) / 100;
+                } else if (riskType === 'AveragingDown') {
+                    risk.drop_trigger_pct = parseFloat(document.getElementById('risk-drop-trigger-pct').value) / 100;
+                    risk.max_add_count = parseInt(document.getElementById('risk-max-add-count').value);
+                }
             }
 
             const newConfig = {
                 ticker: activeTicker,
-                logic: logic,
+                logic: effectiveLogic,
                 threshold: threshold,
                 strategies: strategies,
                 risk: risk
@@ -4607,14 +4859,15 @@ HTML_CONTENT = """
                         tickerConfigs[activeTicker].tactics = {};
                     }
                     tickerConfigs[activeTicker].tactics[currentRegime] = {
-                        logic: logic,
+                        logic: effectiveLogic,
                         threshold: threshold,
                         strategies: strategies,
                         risk: risk
                     };
+                    syncRiskPanelForTactic(tickerConfigs[activeTicker].tactics[currentRegime]);
                     const badgeEl = document.getElementById(`badge-text-${activeTicker}`);
-                    if (badgeEl) badgeEl.innerText = formatStrategyBadge(logic);
-                    addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `복합 전략 설정이 런타임 엔진에 실시간 적용되었습니다. (${logic})`);
+                    if (badgeEl) badgeEl.innerText = formatStrategyBadge(effectiveLogic);
+                    addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `복합 전략 설정이 런타임 엔진에 실시간 적용되었습니다. (${effectiveLogic})`);
                     updateStrategyDetailsTable(activeTicker, tickerConfigs[activeTicker]);
                     updateConfigStatusBadge();
                 } else {
@@ -4786,6 +5039,19 @@ HTML_CONTENT = """
                         } else {
                             reasonEl.style.borderLeftColor = 'var(--accent-blue)';
                         }
+                    }
+
+                    if (msg.data.cycle_match) {
+                        if (tickerConfigs[ticker]) {
+                            tickerConfigs[ticker].cycle_analysis = msg.data.cycle_match;
+                        }
+                        updateCycleMatchPanel(ticker, msg.data.cycle_match);
+                    }
+                    if (msg.data.optimized_default) {
+                        if (tickerConfigs[ticker]) {
+                            tickerConfigs[ticker].optimized_default = msg.data.optimized_default;
+                        }
+                        updateOptimizedDefaultPanel(ticker, msg.data.optimized_default);
                     }
 
                     // 장세 드롭다운 동기화 (사용자가 클릭해 변경한 상태가 소켓 메시지로 재수신될 때 동기화)
@@ -5063,6 +5329,10 @@ HTML_CONTENT = """
                     stageStr = '최근 최적화 완료';
                     dotColor = '#10b981'; // green
                     if (isRunning === undefined) isRunning = false;
+                } else if (stage === 'error') {
+                    stageStr = '최적화 실패';
+                    dotColor = '#ef4444'; // red
+                    isRunning = false;
                 }
                 isRunning = !!isRunning;
                 
@@ -5086,8 +5356,8 @@ HTML_CONTENT = """
         }
         
         async function runBacktestNow() {
-            if (!confirm(`백그라운드에서 실시간 9년 데이터 최적화를 즉시 시작하시겠습니까?
-(약 5~10분 정도 소요되며 거래 엔진은 중단 없이 계속 동작합니다)`)) return;
+            if (!confirm(`백그라운드에서 30분봉(48포인트/일) 9년 데이터 최적화를 즉시 시작하시겠습니까?
+(약 10~20분 소요, 캐시 재수집 포함. 거래 엔진은 중단 없이 동작하며 WebSocket 틱마다 조건 충족 시 즉시 매매합니다)`)) return;
             try {
                 const res = await fetch('/api/backtest/run-now', { method: 'POST' });
                 const data = await res.json();
@@ -5144,8 +5414,14 @@ HTML_CONTENT = """
             return `약 ${weeks.toFixed(1)}주 (${days.toFixed(1)}일)`;
         }
 
-        function formatRiskLabel(risk) {
+        function formatRiskLabel(risk, logic) {
+            if (logic === 'CUSTOM_BEAR') {
+                return 'CustomBear 내장 (트레일링·손절·시간청산)';
+            }
             if (!risk || risk.type === 'None') return 'None (미적용)';
+            if (risk.take_profit_pct >= 5) {
+                return `StopLoss SL ${((risk.stop_loss_pct || 0) * 100).toFixed(1)}% (익절: 전략 내장)`;
+            }
             if (risk.type === 'StopLoss') {
                 const sl = ((risk.stop_loss_pct || 0) * 100).toFixed(1);
                 const tp = ((risk.take_profit_pct || 0) * 100).toFixed(1);
@@ -5188,7 +5464,7 @@ HTML_CONTENT = """
                     document.getElementById('bull-mdd').innerText = `-${b.mdd_pct.toFixed(1)}%`;
                     document.getElementById('bull-trades').innerText = `${b.trade_count}회 / ${b.win_rate_pct.toFixed(1)}%`;
                     document.getElementById('bull-hold').innerText = formatHoldDuration(b.avg_hold_hours, b.avg_hold_days);
-                    document.getElementById('bull-risk').innerText = formatRiskLabel(optData.BULL.risk);
+                    document.getElementById('bull-risk').innerText = formatRiskLabel(optData.BULL.risk, optData.BULL.logic);
                     document.getElementById('bull-expected').innerText = `3m: +${bProfits["3m"]}% / 6m: +${bProfits["6m"]}%`;
                 }
 
@@ -5200,7 +5476,7 @@ HTML_CONTENT = """
                     document.getElementById('range-mdd').innerText = `-${r.mdd_pct.toFixed(1)}%`;
                     document.getElementById('range-trades').innerText = `${r.trade_count}회 / ${r.win_rate_pct.toFixed(1)}%`;
                     document.getElementById('range-hold').innerText = formatHoldDuration(r.avg_hold_hours, r.avg_hold_days);
-                    document.getElementById('range-risk').innerText = formatRiskLabel(optData.RANGE.risk);
+                    document.getElementById('range-risk').innerText = formatRiskLabel(optData.RANGE.risk, optData.RANGE.logic);
                     document.getElementById('range-expected').innerText = `3m: +${rProfits["3m"]}% / 6m: +${rProfits["6m"]}%`;
                 }
 
@@ -5213,18 +5489,17 @@ HTML_CONTENT = """
 
                     const mixed = optData.BEAR.mixed_strategy;
                     const custom = optData.BEAR.custom_bear_strategy;
-                    const mixedProfits = mixed.period_expected_profits || { "1w": 0, "1m": 0, "3m": 0, "6m": 0 };
-                    const customProfits = custom.period_expected_profits || { "1w": 0, "1m": 0, "3m": 0, "6m": 0 };
+                    const mixedProfits = mixed.period_expected_profits || {};
+                    const customProfits = custom.period_expected_profits || {};
 
-                    document.getElementById('mixed-profit-1w').innerText = `${mixedProfits["1w"] >= 0 ? '+' : ''}${mixedProfits["1w"]}%`;
-                    document.getElementById('mixed-profit-1m').innerText = `${mixedProfits["1m"] >= 0 ? '+' : ''}${mixedProfits["1m"]}%`;
-                    document.getElementById('mixed-profit-3m').innerText = `${mixedProfits["3m"] >= 0 ? '+' : ''}${mixedProfits["3m"]}%`;
-                    document.getElementById('mixed-profit-6m').innerText = `${mixedProfits["6m"] >= 0 ? '+' : ''}${mixedProfits["6m"]}%`;
+                    fillBearProfitHorizons('mixed', mixedProfits, mixed.backtest);
+                    fillBearProfitHorizons('custom', customProfits, custom.backtest);
 
-                    document.getElementById('custom-profit-1w').innerText = `${customProfits["1w"] >= 0 ? '+' : ''}${customProfits["1w"]}%`;
-                    document.getElementById('custom-profit-1m').innerText = `${customProfits["1m"] >= 0 ? '+' : ''}${customProfits["1m"]}%`;
-                    document.getElementById('custom-profit-3m').innerText = `${customProfits["3m"] >= 0 ? '+' : ''}${customProfits["3m"]}%`;
-                    document.getElementById('custom-profit-6m').innerText = `${customProfits["6m"] >= 0 ? '+' : ''}${customProfits["6m"]}%`;
+                    const reasonEl = document.getElementById('bear-auto-pick-reason');
+                    const cfg = tickerConfigs[activeTicker];
+                    if (reasonEl && cfg?.bear_auto_pick_reason) {
+                        reasonEl.innerText = `선택 근거: ${cfg.bear_auto_pick_reason}`;
+                    }
 
                     document.getElementById('compare-mixed-ret').innerText = `${mixed.backtest.total_return_pct >= 0 ? '+' : ''}${mixed.backtest.total_return_pct.toFixed(2)}%`;
                     document.getElementById('compare-custom-ret').innerText = `${custom.backtest.total_return_pct >= 0 ? '+' : ''}${custom.backtest.total_return_pct.toFixed(2)}%`;
@@ -5238,8 +5513,8 @@ HTML_CONTENT = """
                         mixed.backtest.avg_hold_hours, mixed.backtest.avg_hold_days);
                     document.getElementById('compare-custom-hold').innerText = formatHoldDuration(
                         custom.backtest.avg_hold_hours, custom.backtest.avg_hold_days);
-                    document.getElementById('compare-mixed-risk').innerText = formatRiskLabel(mixed.risk);
-                    document.getElementById('compare-custom-risk').innerText = formatRiskLabel(custom.risk);
+                    document.getElementById('compare-mixed-risk').innerText = formatRiskLabel(mixed.risk, mixed.logic);
+                    document.getElementById('compare-custom-risk').innerText = formatRiskLabel(custom.risk, 'CUSTOM_BEAR');
                 } else {
                     if (bearCards) bearCards.style.display = 'none';
                     if (bearCompareTable) bearCompareTable.style.display = 'none';
@@ -5263,9 +5538,15 @@ HTML_CONTENT = """
             const badgeMixed = document.getElementById('badge-mixed');
             const badgeCustom = document.getElementById('badge-custom');
             const resolvedLabel = document.getElementById('bear-resolved-label');
+            const reasonEl = document.getElementById('bear-auto-pick-reason');
 
             const resolvedName = resolved === 'mixed' ? '3대 지표 결합 (Mixed)' : 'CustomBear';
             if (resolvedLabel) resolvedLabel.innerText = resolvedName;
+            if (reasonEl) {
+                reasonEl.innerText = config.bear_auto_pick_reason
+                    ? `선택 근거: ${config.bear_auto_pick_reason}`
+                    : (selected === 'auto' ? '선택 근거: 백테스트 갱신 후 표시됩니다.' : '');
+            }
 
             if (cardAuto) cardAuto.className = selected === 'auto' ? 'bear-strategy-card selected' : 'bear-strategy-card';
             if (cardMixed) cardMixed.className = (selected === 'mixed' || (selected === 'auto' && resolved === 'mixed')) ? 'bear-strategy-card selected' : 'bear-strategy-card';
@@ -5370,7 +5651,10 @@ def load_dynamic_factory_defaults():
                             if selected == "auto":
                                 pick = active_ticker_configs.get(ticker, {}).get("bear_auto_pick")
                                 if not pick and "custom_bear_strategy" in reg_data and "mixed_strategy" in reg_data:
-                                    pick = _compute_bear_auto_pick(reg_data)
+                                    pick, _reason = _compute_bear_auto_pick(
+                                        reg_data,
+                                        active_ticker_configs.get(ticker, {}).get("cycle_analysis"),
+                                    )
                                 pick = pick or "custom_bear"
                                 if pick == "custom_bear" and "custom_bear_strategy" in reg_data:
                                     reg_data = reg_data["custom_bear_strategy"]
@@ -5513,7 +5797,11 @@ def _run_optimizer_bg():
         ui_event_queue.put_nowait(json.dumps(msg))
         print("[DailyOptimizer] 최적화 완료 — UI 알림 전송")
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"[DailyOptimizer] 최적화 중 오류: {e}")
+        if BACKTEST_AVAILABLE and _bt_mod:
+            _bt_mod._save_progress("error", 0, f"최적화 실패: {e}")
     finally:
         _optimizer_running = False
 

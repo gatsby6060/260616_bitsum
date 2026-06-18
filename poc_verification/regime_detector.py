@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Optional
 
 # 코인별 사이클 프로파일 (일봉 회귀·회기 앵커·월봉 회복 주기)
 TICKER_CYCLE_PROFILE = {
@@ -11,16 +12,16 @@ TICKER_CYCLE_PROFILE = {
         "bottoming_anchor_band_pct": 15.0,
     },
     "ETH": {
-        "regression_days": 300,
-        "cycle_anchor_days": 300,
+        "regression_days": 400,
+        "cycle_anchor_days": 400,
         "recovery_days": 365,
         "peak_lookback_days": 730,
         "bear_drawdown_pct": 25.0,
         "bottoming_anchor_band_pct": 12.0,
     },
     "XRP": {
-        "regression_days": 300,
-        "cycle_anchor_days": 300,
+        "regression_days": 400,
+        "cycle_anchor_days": 400,
         "recovery_days": 1095,
         "peak_lookback_days": 1460,
         "bear_drawdown_pct": 30.0,
@@ -45,12 +46,128 @@ def _linear_fair_value(prices: list, period: int) -> tuple:
     return fair, float(slope)
 
 
+def _segment_slope_pct_per_day(prices: list) -> float:
+    if len(prices) < 2:
+        return 0.0
+    slope, _ = np.polyfit(np.arange(len(prices)), prices, 1)
+    ref = float(prices[-1])
+    return float((slope / ref) * 100) if ref > 0 else 0.0
+
+
+def _current_cycle_angle_pct_per_month(prices: list, lookback: int = 400) -> float:
+    """최근 저점 이후 회복(또는 하락) 구간의 회귀각(%/월)을 계산합니다."""
+    n = len(prices)
+    if n < 90:
+        return 0.0
+    window = min(lookback, n)
+    segment = prices[-window:]
+    trough_idx = int(np.argmin(segment))
+    leg = segment[trough_idx:]
+    if len(leg) >= 14:
+        return _segment_slope_pct_per_day(leg) * 30
+    return _segment_slope_pct_per_day(prices[-min(90, n):]) * 30
+
+
+def _detect_historical_bull_cycles(prices: list, min_rise_pct: float = 20.0, min_duration_days: int = 60) -> list:
+    """일봉 저점→고점 상승 구간별 회귀각(%/월)을 추출해 과거 사이클 목록을 만듭니다."""
+    n = len(prices)
+    if n < 365:
+        return []
+
+    lookback = 60
+    troughs = []
+    for i in range(lookback, n - 30):
+        before = prices[i - lookback : i + 1]
+        after = prices[i : min(i + 30, n)]
+        if prices[i] != min(before):
+            continue
+        if prices[i] > min(after) * 1.03:
+            continue
+        if troughs and i - troughs[-1] < 90:
+            if prices[i] < prices[troughs[-1]]:
+                troughs[-1] = i
+            continue
+        troughs.append(i)
+
+    cycles = []
+    for idx, trough_idx in enumerate(troughs):
+        end_idx = troughs[idx + 1] if idx + 1 < len(troughs) else n - 1
+        segment = prices[trough_idx : end_idx + 1]
+        if len(segment) < min_duration_days:
+            continue
+
+        peak_rel = int(np.argmax(segment))
+        peak_idx = trough_idx + peak_rel
+        trough_price = float(prices[trough_idx])
+        peak_price = float(prices[peak_idx])
+        if trough_price <= 0:
+            continue
+
+        rise_pct = (peak_price - trough_price) / trough_price * 100
+        duration_days = peak_idx - trough_idx
+        if rise_pct < min_rise_pct or duration_days < min_duration_days:
+            continue
+
+        leg = prices[trough_idx : peak_idx + 1]
+        slope_daily = _segment_slope_pct_per_day(leg)
+        cycles.append(
+            {
+                "cycle_number": len(cycles) + 1,
+                "trough_idx": int(trough_idx),
+                "peak_idx": int(peak_idx),
+                "rise_pct": float(rise_pct),
+                "duration_days": int(duration_days),
+                "angle_pct_per_day": float(slope_daily),
+                "angle_pct_per_month": float(slope_daily * 30),
+                "days_ago_trough": int(n - 1 - trough_idx),
+            }
+        )
+
+    return cycles[-8:]
+
+
+def _match_current_to_historical_cycles(cycles: list, current_angle_pct_per_month: float) -> Optional[dict]:
+    if not cycles:
+        return None
+
+    best = min(cycles, key=lambda c: abs(c["angle_pct_per_month"] - current_angle_pct_per_month))
+    diff = abs(best["angle_pct_per_month"] - current_angle_pct_per_month)
+    spread = max(abs(c["angle_pct_per_month"]) for c in cycles) or 5.0
+    similarity = max(0.0, min(100.0, 100.0 - (diff / max(spread, 5.0)) * 100.0))
+
+    return {
+        "matched_cycle_number": int(best["cycle_number"]),
+        "total_cycles": len(cycles),
+        "similarity_pct": round(similarity, 1),
+        "current_angle_pct_per_month": round(current_angle_pct_per_month, 2),
+        "current_angle_pct_per_day": round(current_angle_pct_per_month / 30.0, 4),
+        "matched_angle_pct_per_month": round(best["angle_pct_per_month"], 2),
+        "matched_rise_pct": round(best["rise_pct"], 1),
+        "matched_duration_days": int(best["duration_days"]),
+        "summary": (
+            f"현재 회귀각 {current_angle_pct_per_month:+.1f}%/월 → "
+            f"과거 {best['cycle_number']}번째 상승 사이클({best['angle_pct_per_month']:+.1f}%/월, "
+            f"유사도 {similarity:.0f}%)과 가장 유사"
+        ),
+        "historical_cycles": [
+            {
+                "cycle_number": c["cycle_number"],
+                "angle_pct_per_month": round(c["angle_pct_per_month"], 2),
+                "angle_pct_per_day": round(c["angle_pct_per_day"], 4),
+                "rise_pct": round(c["rise_pct"], 1),
+                "duration_days": c["duration_days"],
+            }
+            for c in cycles
+        ],
+    }
+
+
 class MarketRegimeDetector:
     """
     일봉·주봉·월봉과 코인별 회기(회귀) 앵커를 복합 분석하여 장세를 진단합니다.
 
     - BEAR: 고점 대비 의미 있는 하락(주봉 하락 추세) — 바닥 횡보 전까지 유지
-    - RANGE: 회기 앵커(300/800일 전 가격대) 부근에서 하락 둔화·횡보
+    - RANGE: 회기 앵커(400/800일 전 가격대) 부근에서 하락 둔화·횡보
     - BULL: 월봉 회복 구간 진입 + 중단기 추세 우상향
     """
 
@@ -60,7 +177,10 @@ class MarketRegimeDetector:
         profile = TICKER_CYCLE_PROFILE.get(self.ticker, TICKER_CYCLE_PROFILE["BTC"])
 
         self.regression_days = long_term_ma_period or profile["regression_days"]
-        self.cycle_anchor_days = profile["cycle_anchor_days"]
+        if long_term_ma_period and profile.get("regression_days") == profile.get("cycle_anchor_days"):
+            self.cycle_anchor_days = int(long_term_ma_period)
+        else:
+            self.cycle_anchor_days = profile["cycle_anchor_days"]
         self.recovery_days = profile["recovery_days"]
         self.peak_lookback_days = profile["peak_lookback_days"]
         self.bear_drawdown_pct = profile["bear_drawdown_pct"]
@@ -75,6 +195,9 @@ class MarketRegimeDetector:
         if days and days > 0:
             self.regression_days = int(days)
             self.long_term_ma_period = int(days)
+            profile = TICKER_CYCLE_PROFILE.get(self.ticker, TICKER_CYCLE_PROFILE["BTC"])
+            if profile.get("regression_days") == profile.get("cycle_anchor_days"):
+                self.cycle_anchor_days = int(days)
 
     def detect_regime(self) -> str:
         return self.detect_regime_detailed()["regime"]
@@ -250,6 +373,17 @@ class MarketRegimeDetector:
                 f"고점 대비 {drawdown_pct:.1f}%, 월봉 {monthly['phase']} → RANGE."
             )
 
+        bull_cycles = _detect_historical_bull_cycles(prices)
+        current_angle_monthly = _current_cycle_angle_pct_per_month(prices, self.regression_days)
+        if final_regime == "BULL":
+            alt = slope_rate_90 * 30
+            if abs(alt) > abs(current_angle_monthly):
+                current_angle_monthly = alt
+        cycle_match = _match_current_to_historical_cycles(bull_cycles, current_angle_monthly)
+
+        if cycle_match:
+            reason = f"{reason} | {cycle_match['summary']}"
+
         print(
             f"[RegimeDetector] {self.ticker} | 가격: {price_now:,.0f} | "
             f"회귀{self.regression_days}d: {fair_value:,.0f} ({dev_pct:+.1f}%) | "
@@ -261,6 +395,7 @@ class MarketRegimeDetector:
         return {
             "regime": final_regime,
             "reason": reason,
+            "cycle_match": cycle_match,
             "metrics": {
                 "days_since_peak": int(days_since_peak),
                 "deviation_pct": float(dev_pct),
@@ -278,6 +413,10 @@ class MarketRegimeDetector:
                 "monthly_drawdown_pct": monthly["monthly_drawdown_pct"],
                 "recovery_progress_pct": monthly["recovery_progress_pct"],
                 "regression_days": int(self.regression_days),
+                "cycle_anchor_days": int(self.cycle_anchor_days),
+                "current_angle_pct_per_month": float(current_angle_monthly),
+                "cycle_match": cycle_match,
+                "historical_cycles": cycle_match.get("historical_cycles", []) if cycle_match else [],
             },
         }
 
@@ -300,6 +439,10 @@ class MarketRegimeDetector:
             "monthly_drawdown_pct": 0.0,
             "recovery_progress_pct": 0.0,
             "regression_days": 0,
+            "cycle_anchor_days": 0,
+            "current_angle_pct_per_month": 0.0,
+            "cycle_match": None,
+            "historical_cycles": [],
         }
 
 
