@@ -28,8 +28,9 @@ if _bt_dir not in sys.path:
     sys.path.insert(0, _bt_dir)
 try:
     import backtester as _bt_mod
-    run_optimization    = _bt_mod.run_optimization
-    get_latest_results  = _bt_mod.get_latest_results
+    run_optimization       = _bt_mod.run_optimization
+    run_usdt_daily_tuning  = _bt_mod.run_usdt_daily_tuning
+    get_latest_results     = _bt_mod.get_latest_results
     get_progress        = _bt_mod.get_progress
     BACKTEST_AVAILABLE  = True
     print("[Backtester] 모듈 로드 성공")
@@ -38,6 +39,7 @@ except Exception as _bt_err:
     _bt_mod = None
     print(f"[Backtester] 모듈 로드 실패 (무시): {_bt_err}")
     def run_optimization(markets=None): return {}
+    def run_usdt_daily_tuning(): return None
     def get_latest_results(): return None
     def get_progress(): return {"stage": "unavailable", "percent": 0, "message": "모듈 없음"}
 
@@ -123,18 +125,59 @@ from usdt_fx_reference import (
     calc_usdt_consideration_phase,
 )
 try:
-    from usdt_fx_historical import usdt_fx_buy_allowed
+    from usdt_fx_historical import (
+        usdt_fx_buy_allowed,
+        usdt_fx_exit_allowed,
+        calc_usdt_fx_convergence,
+        ensure_fx_history,
+        fx_cache_stats,
+    )
 except ImportError:
     usdt_fx_buy_allowed = None
+    usdt_fx_exit_allowed = None
+    calc_usdt_fx_convergence = None
+    ensure_fx_history = None
+    fx_cache_stats = None
 
 # 글로벌 설정 및 엔진 인스턴스 홀더
-USDT_DEFAULT_MIN_CONSIDER_GAP_KRW = 40
+USDT_DEFAULT_MIN_CONSIDER_GAP_KRW = 50
+USDT_MIN_TARGET_PROFIT_PCT = 2.0  # 과거 데이터 학습 하한 — 일 1회 갱신
 USDT_FX_REFRESH_MINUTES = 10  # USD/KRW 기준환율 API 갱신 주기 — USDT 체결가는 WebSocket 실시간
+
+
+def _usdt_profit_sell_allowed(avg_price: float, current_price: float) -> bool:
+    """USDT: 수수료 반영 순손실이면 매도 불가 — 환율 수렴까지 홀딩."""
+    return calc_net_pnl_pct(avg_price, current_price) > 0
+
+
+def _usdt_fx_should_exit(
+    entry_price: float,
+    entry_fair: float,
+    current_price: float,
+    current_fair: float,
+    params: dict,
+) -> dict:
+    """환율 수렴 기반 탈출 판단 (실전·전략 공통)."""
+    if not usdt_fx_exit_allowed or entry_price <= 0 or entry_fair <= 0:
+        return {"allowed": False, "reason": "환율 모델 미가용"}
+    fee = float(params.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
+    return usdt_fx_exit_allowed(
+        entry_price,
+        entry_fair,
+        current_price,
+        current_fair,
+        exit_gap_krw=float(params.get("exit_gap_krw", 15)),
+        exit_convergence_pct=float(params.get("exit_convergence_pct", 90)),
+        fee_one_way=fee,
+    )
+
 
 def _usdt_fx_bollinger_params() -> dict:
     return {
         "min_consider_gap_krw": USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
-        "min_target_profit_pct": 0.2,
+        "min_target_profit_pct": USDT_MIN_TARGET_PROFIT_PCT,
+        "exit_gap_krw": 15,
+        "exit_convergence_pct": 90,
         "sell_premium_pct": 0.15,
         "reference_krw": 0,
         "fx_refresh_minutes": USDT_FX_REFRESH_MINUTES,
@@ -153,7 +196,7 @@ def _build_default_usdt_config() -> dict:
             {"name": "UsdtFxBollinger", "enabled": True, "weight": 1.0, "timeframe": "15m",
              "params": _usdt_fx_bollinger_params()},
         ],
-        "risk": {"type": "StopLoss", "stop_loss_pct": 0.01, "take_profit_pct": 0.025},
+        "risk": {"type": "None"},
     }
     return {
         "active": True,
@@ -164,7 +207,9 @@ def _build_default_usdt_config() -> dict:
         "usdt_fx": {
             "reference_krw": 0,
             "min_consider_gap_krw": USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
-            "min_target_profit_pct": 0.2,
+            "min_target_profit_pct": USDT_MIN_TARGET_PROFIT_PCT,
+            "exit_gap_krw": 15,
+            "exit_convergence_pct": 90,
             "sell_premium_pct": 0.15,
             "fx_refresh_minutes": USDT_FX_REFRESH_MINUTES,
             "fee_one_way_pct": 0.25,
@@ -377,7 +422,7 @@ def _compute_usdt_auto_pick(usdt_opt_reg: dict) -> tuple:
         return "learned_mixed", "전 기간 동률 → Sharpe 우세 (학습믹스)"
     if f_sh > l_sh:
         return "fixed_fusion", "전 기간 동률 → Sharpe 우세 (고정융합)"
-    return "fixed_fusion", "전 기간 동률 → 고정 융합 전략 우선 (기본값)"
+    return "fixed_fusion", "신중 진입·2%↑ 목표 — 고정 융합 우선 (역사 데이터 학습)"
 
 
 def _build_usdt_fixed_fusion_tactics() -> dict:
@@ -453,14 +498,30 @@ def _apply_usdt_optimization_results(market_results: dict, ticker: str) -> bool:
     fx_filter = winner.get("usdt_fx_filter") or fixed.get("usdt_fx_filter") or {}
     if fx_filter:
         usdt_fx = cfg.setdefault("usdt_fx", {})
-        for k in ("min_consider_gap_krw", "min_target_profit_pct"):
+        gap = int(fx_filter.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW))
+        profit = max(
+            float(fx_filter.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
+            USDT_MIN_TARGET_PROFIT_PCT,
+        )
+        usdt_fx["min_consider_gap_krw"] = max(gap, USDT_DEFAULT_MIN_CONSIDER_GAP_KRW)
+        usdt_fx["min_target_profit_pct"] = round(profit, 2)
+        for k in ("exit_gap_krw", "exit_convergence_pct"):
             if k in fx_filter:
                 usdt_fx[k] = fx_filter[k]
         ufb = winner.get("strategies", {}).get("UsdtFxBollinger", {})
-        for k in ("bb_period", "bb_std_dev"):
+        for k in ("bb_period", "bb_std_dev", "exit_gap_krw", "exit_convergence_pct"):
             if k in ufb:
-                usdt_fx["bb_period" if k == "bb_period" else "bb_std_dev"] = ufb[k]
+                if k == "bb_period":
+                    usdt_fx["bb_period"] = ufb[k]
+                elif k == "bb_std_dev":
+                    usdt_fx["bb_std_dev"] = ufb[k]
+                else:
+                    usdt_fx[k] = ufb[k]
         _sync_usdt_strategy_params(usdt_fx)
+    tuning = (get_latest_results() or {}).get("usdt_daily_tuning")
+    if tuning:
+        cfg["usdt_daily_tuning"] = tuning
+        cfg["usdt_auto_pick_reason"] = tuning.get("reason", cfg.get("usdt_auto_pick_reason"))
     return _apply_usdt_strategy_selection(ticker)
 
 
@@ -476,7 +537,7 @@ def _usdt_live_fx_allows_buy(config: dict, price: float) -> bool:
     return usdt_fx_buy_allowed(
         price, fair,
         float(fx_cfg.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW)),
-        float(fx_cfg.get("min_target_profit_pct", 0.2)),
+        float(fx_cfg.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
         fee,
     )
 
@@ -859,10 +920,22 @@ def load_persisted_configs():
         if usdt_fx.get("min_consider_gap_krw", 30) < USDT_DEFAULT_MIN_CONSIDER_GAP_KRW:
             usdt_fx["min_consider_gap_krw"] = USDT_DEFAULT_MIN_CONSIDER_GAP_KRW
             _sync_usdt_strategy_params(usdt_fx)
+        if float(usdt_fx.get("min_target_profit_pct", 0)) < USDT_MIN_TARGET_PROFIT_PCT:
+            usdt_fx["min_target_profit_pct"] = USDT_MIN_TARGET_PROFIT_PCT
+            _sync_usdt_strategy_params(usdt_fx)
+        usdt_fx.setdefault("exit_gap_krw", 15)
+        usdt_fx.setdefault("exit_convergence_pct", 90)
+        _sync_usdt_strategy_params(usdt_fx)
         if usdt_fx.get("fx_refresh_minutes", 60) != USDT_FX_REFRESH_MINUTES:
             usdt_fx["fx_refresh_minutes"] = USDT_FX_REFRESH_MINUTES
             _sync_usdt_strategy_params(usdt_fx)
         tactics = usdt_cfg.get("tactics", {})
+        for reg in ("BULL", "BEAR", "RANGE"):
+            tactic = tactics.get(reg)
+            if not isinstance(tactic, dict):
+                continue
+            if tactic.get("risk", {}).get("type") == "StopLoss":
+                tactic["risk"] = {"type": "None"}
         uses_legacy = all(
             any(s.get("name") == "ReversePremium" for s in tactics.get(reg, {}).get("strategies", []))
             and not any(s.get("name") == "UsdtFxBollinger" for s in tactics.get(reg, {}).get("strategies", []))
@@ -1094,6 +1167,40 @@ def update_configs_and_apply_to_engine():
                 worker.current_regime = curr_reg
         print("[Engine] 최적화 파라미터가 구동 중인 엔진 워커들에 핫스왑 적용되었습니다.")
 
+
+_usdt_daily_tuning_running = False
+
+
+def run_usdt_daily_tune_and_apply() -> bool:
+    """USDT 목표 이율·진입 gap — 역사 데이터 경량 학습 후 설정·엔진 반영."""
+    global _usdt_daily_tuning_running
+    if not BACKTEST_AVAILABLE or _usdt_daily_tuning_running or _optimizer_running:
+        return False
+    _usdt_daily_tuning_running = True
+    try:
+        tuned = run_usdt_daily_tuning()
+        if not tuned:
+            return False
+        update_configs_with_optimized_params()
+        if engine_instance:
+            for ticker in STABLECOIN_TICKERS:
+                if ticker not in engine_instance._workers:
+                    continue
+                worker = engine_instance._workers[ticker]
+                worker.config = active_ticker_configs[ticker]
+                worker.switch_regime("RANGE", log_to_ui=True)
+                worker.current_regime = "RANGE"
+        print(
+            f"[USDT Daily] 목표 {tuned.get('min_target_profit_pct')}% · "
+            f"gap {tuned.get('min_consider_gap_krw')}원 적용"
+        )
+        return True
+    except Exception as e:
+        print(f"[USDT Daily] 튜닝 오류: {e}")
+        return False
+    finally:
+        _usdt_daily_tuning_running = False
+
 # 초기 구동 시 저장된 설정 로드 적용
 load_persisted_configs()
 update_configs_with_optimized_params()
@@ -1222,7 +1329,7 @@ class BithumbUsdtReversePremiumStrategy(BaseStrategy):
     """
     NAME = "ReversePremium"
     PARAMS = {
-        "min_target_profit_pct": 0.2,
+        "min_target_profit_pct": USDT_MIN_TARGET_PROFIT_PCT,
         "sell_premium_pct": 0.15,
         "reference_krw": 0,
         "fx_refresh_minutes": USDT_FX_REFRESH_MINUTES,
@@ -1242,7 +1349,7 @@ class BithumbUsdtReversePremiumStrategy(BaseStrategy):
         prem = fx["premium_pct"]
 
         fee_one_way = float(self.params.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
-        min_profit_pct = float(self.params.get("min_target_profit_pct", 0.2))
+        min_profit_pct = float(self.params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT))
         sell_thr = float(self.params.get("sell_premium_pct", 0.15))
 
         edge = calc_usdt_fee_aware_edge(fair, tick, fee_one_way, min_profit_pct)
@@ -1275,21 +1382,18 @@ class BithumbUsdtReversePremiumStrategy(BaseStrategy):
                 return "BUY"
         else:
             avg = float(data.get("avg_price") or tick)
-            net_pnl = calc_net_pnl_pct(avg, tick)
-            min_profit_dec = min_profit_pct / 100.0
-            if net_pnl >= min_profit_dec:
-                return "SELL"
-            if prem >= sell_thr and net_pnl > 0:
+            entry_fair = float(data.get("entry_fair_krw") or fair)
+            exit_info = _usdt_fx_should_exit(avg, entry_fair, tick, fair, self.params)
+            if exit_info.get("allowed"):
                 return "SELL"
         return "HOLD"
 
 
 class BithumbUsdtFxBollingerStrategy(BaseStrategy):
     """
-    USDT 융합 전략:
-    1차 — 기준환율 대비 gap >= min_consider_gap_krw 일 때만 매수 '검토' 시작
-    2차 — 검토 구역 + 수수료·목표 충족 + 볼린저 하단 터치 시 매수
-    청산 — 순수익 목표 / 밴드 중심·상단 / 프리미엄
+    USDT 환율 수렴 모델:
+    진입 — 과거·현재 fair_krw 대비 역프 gap + BB 하단
+    탈출 — 매수 시 환율 대비 할인이 수렴(기준환율 근접) + 순이익 (순손실 홀딩)
     """
     NAME = "UsdtFxBollinger"
     PARAMS = _usdt_fx_bollinger_params()
@@ -1329,7 +1433,7 @@ class BithumbUsdtFxBollingerStrategy(BaseStrategy):
         gap_krw = fx["gap_krw"]
 
         fee_one_way = float(self.params.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
-        min_profit_pct = float(self.params.get("min_target_profit_pct", 0.2))
+        min_profit_pct = float(self.params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT))
         sell_thr = float(self.params.get("sell_premium_pct", 0.15))
         min_consider = float(self.params.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW))
 
@@ -1388,12 +1492,22 @@ class BithumbUsdtFxBollingerStrategy(BaseStrategy):
                 return "BUY"
         else:
             avg = float(data.get("avg_price") or tick)
-            net_pnl = calc_net_pnl_pct(avg, tick)
-            min_profit_dec = min_profit_pct / 100.0
-            if net_pnl >= min_profit_dec:
+            entry_fair = float(data.get("entry_fair_krw") or fair)
+            exit_info = _usdt_fx_should_exit(avg, entry_fair, tick, fair, self.params)
+            data["usdt_fx_status"]["exit_model"] = exit_info
+            data["usdt_fx_status"]["entry_fair_krw"] = entry_fair
+            if exit_info.get("allowed"):
+                data["usdt_fx_val"] = (
+                    f"탈출: {exit_info.get('reason', '')} | "
+                    f"수렴 {exit_info.get('convergence_pct', 0):.0f}% | "
+                    f"기준:{fair:,.1f}원 | 현재:{tick:,.2f}원"
+                )
                 return "SELL"
-            if prem >= sell_thr and net_pnl >= min_profit_dec:
-                return "SELL"
+            data["usdt_fx_val"] = (
+                f"홀딩: {exit_info.get('reason', '')} | "
+                f"수렴 {exit_info.get('convergence_pct', 0):.0f}% | "
+                f"잔여gap {exit_info.get('current_gap_krw', 0):.0f}원"
+            )
         return "HOLD"
 
 
@@ -1858,7 +1972,9 @@ class UITickerWorker(TickerWorker):
         # 리스크 매니저 재생성
         risk_cfg = t_cfg.get("risk", {"type": "None"})
         r_type = risk_cfg.get("type", "None")
-        if r_type == "BearScalp":
+        if self.ticker in STABLECOIN_TICKERS:
+            self.risk_manager = AllowAllRiskManager()
+        elif r_type == "BearScalp":
             self.risk_manager = BearScalpRiskManager(
                 stop_loss_pct=risk_cfg.get("stop_loss_pct", BEAR_LIVE_STOP_LOSS),
                 take_profit_pct=risk_cfg.get("take_profit_pct", BEAR_RISK_FALLBACK["take_profit_pct"]),
@@ -2014,6 +2130,12 @@ class UITickerWorker(TickerWorker):
 
             if should_refresh:
                 self.last_usdt_strategy_check_date = current_date_str
+                threading.Thread(
+                    target=run_usdt_daily_tune_and_apply,
+                    daemon=True,
+                    name="UsdtDailyTune",
+                ).start()
+                self.config = active_ticker_configs.get(self.ticker, self.config)
                 self.switch_regime("RANGE", log_to_ui=True)
                 self.current_regime = "RANGE"
 
@@ -2029,6 +2151,13 @@ class UITickerWorker(TickerWorker):
         # 3. 갱신된 전략 세팅으로 시그널 도출
         data["position_qty"] = self.position.quantity
         data["avg_price"] = self.position.avg_price
+        if self.ticker in STABLECOIN_TICKERS:
+            meta = self.config.get("usdt_position_meta") or {}
+            data["entry_fair_krw"] = (
+                getattr(self, "usdt_entry_fair", 0)
+                or meta.get("entry_fair_krw")
+                or 0
+            )
         final_signal = self.strategy.generate_signal(data)
         composite_details = data.get("composite_details", {
             "logic": "UNKNOWN", "sub_signals": {}, "indicators": {}, "final": final_signal
@@ -2087,6 +2216,10 @@ class UITickerWorker(TickerWorker):
             
         if risk_signal != "HOLD":
             if risk_signal.startswith("FORCE_SELL"):
+                if self.ticker in STABLECOIN_TICKERS and not _usdt_profit_sell_allowed(
+                    self.position.avg_price, self.position.current_price
+                ):
+                    return
                 print(f"[Risk Engine] {self.ticker} 강제 청산 집행: {risk_signal}")
                 self.order_queue.put({
                     "ticker": self.ticker,
@@ -2117,6 +2250,15 @@ class UITickerWorker(TickerWorker):
         if final_signal == "BUY":
             if self.ticker in STABLECOIN_TICKERS and not _usdt_live_fx_allows_buy(self.config, self.position.current_price):
                 return
+
+            if self.ticker in STABLECOIN_TICKERS:
+                fair_krw = (data.get("usdt_fx_status") or {}).get("fair_krw")
+                if fair_krw:
+                    self.usdt_entry_fair = float(fair_krw)
+                    meta = self.config.setdefault("usdt_position_meta", {})
+                    meta["entry_fair_krw"] = float(fair_krw)
+                    if self.ticker in active_ticker_configs:
+                        active_ticker_configs[self.ticker]["usdt_position_meta"] = dict(meta)
 
             if self.current_regime == "BEAR" and self.ticker not in STABLECOIN_TICKERS:
                 tactic = getattr(self, "_live_tactic", None) or self.config.get("tactics", {}).get("BEAR", {})
@@ -2152,6 +2294,11 @@ class UITickerWorker(TickerWorker):
         elif final_signal == "SELL":
             # ★ 포지션 없으면 매도 불필요
             if self.position.quantity <= 0:
+                return
+
+            if self.ticker in STABLECOIN_TICKERS and not _usdt_profit_sell_allowed(
+                self.position.avg_price, self.position.current_price
+            ):
                 return
 
             tactic = getattr(self, "_live_tactic", None) if self.current_regime == "BEAR" else None
@@ -2531,6 +2678,12 @@ class MultiTickerUIEngine(TradingEngine):
                     total_cost = (pos.quantity * pos.avg_price) + (buy_qty * price)
                     pos.quantity += buy_qty
                     pos.avg_price = total_cost / pos.quantity
+                    if ticker in STABLECOIN_TICKERS and getattr(worker, "usdt_entry_fair", 0) <= 0:
+                        try:
+                            fair, _ = get_usd_krw_rate(cache_ttl_sec=USDT_FX_REFRESH_MINUTES * 60)
+                            worker.usdt_entry_fair = fair
+                        except Exception:
+                            pass
                     print(f"[SIMULATION ORDER] BUY {ticker} | {buy_qty:.4f} @ {price:,.0f}")
                 elif signal == "SELL":
                     if risk_reason and risk_reason.startswith("FORCE_SELL"):
@@ -2543,6 +2696,11 @@ class MultiTickerUIEngine(TradingEngine):
                         self.account.release(sell_qty * price)
                         if pos.quantity == 0:
                             pos.avg_price = 0.0
+                            if ticker in STABLECOIN_TICKERS:
+                                worker.usdt_entry_fair = 0.0
+                                cfg = active_ticker_configs.get(ticker, {})
+                                if cfg.get("usdt_position_meta"):
+                                    cfg["usdt_position_meta"] = {}
                             if hasattr(worker.risk_manager, "peak_price"):
                                 worker.risk_manager.peak_price = 0.0
                             if hasattr(worker.risk_manager, "add_count"):
@@ -2920,7 +3078,7 @@ def usdt_fx_status():
     fair, source = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
     fx = calc_reverse_premium_pct(price, fair) if price > 0 else calc_reverse_premium_pct(0, fair)
     fee_one_way = float(fx_cfg.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
-    min_profit_pct = float(fx_cfg.get("min_target_profit_pct", 0.2))
+    min_profit_pct = float(fx_cfg.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT))
     min_consider = float(fx_cfg.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW))
     edge = calc_usdt_fee_aware_edge(fair, price, fee_one_way, min_profit_pct) if price > 0 else calc_usdt_fee_aware_edge(fair, fair, fee_one_way, min_profit_pct)
     phase_info = calc_usdt_consideration_phase(fx.get("gap_krw", 0), min_consider, edge)
@@ -2968,6 +3126,7 @@ def _sync_usdt_strategy_params(fx: dict) -> None:
     """usdt_fx 설정을 USDT 전술 파라미터에 반영."""
     param_keys = (
         "reference_krw", "min_consider_gap_krw", "min_target_profit_pct",
+        "exit_gap_krw", "exit_convergence_pct",
         "sell_premium_pct", "fx_refresh_minutes", "fee_one_way_pct",
         "bb_period", "bb_std_dev",
     )
@@ -2987,6 +3146,7 @@ def usdt_fx_config(payload: dict):
     fx = active_ticker_configs["USDT"].setdefault("usdt_fx", {})
     for key in (
         "reference_krw", "min_consider_gap_krw", "min_target_profit_pct",
+        "exit_gap_krw", "exit_convergence_pct",
         "sell_premium_pct", "fx_refresh_minutes", "fee_one_way_pct",
         "bb_period", "bb_std_dev",
     ):
@@ -4180,7 +4340,7 @@ HTML_CONTENT = """
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; font-size:10px;">
                         <label>검토 시작 ≥ <input type="number" id="usdt-min-gap" step="1" min="0" max="200" style="width:44px; margin:0 4px;"> 원
                         </label>
-                        <label>목표 수익 <input type="number" id="usdt-min-profit" step="0.05" min="0" max="3" style="width:48px; margin:0 4px;"> %
+                        <label>목표 수익 <input type="number" id="usdt-min-profit" step="0.1" min="2" max="5" style="width:48px; margin:0 4px;"> %
                         </label>
                         <label>매도 프리미엄 ≥ <input type="number" id="usdt-sell-premium" step="0.05" min="0" max="3" style="width:48px; margin:0 4px;"> %
                         </label>
@@ -4189,6 +4349,8 @@ HTML_CONTENT = """
                         <label>수동 환율(0=자동) <input type="number" id="usdt-ref-krw" step="1" min="0" style="width:64px; margin-left:4px;"> 원
                         </label>
                     </div>
+                    <div style="font-size:9px; color:#94a3b8; margin-top:6px;">※ 환율 수렴 모델: 매수 시 할인→기준환율 근접 시 탈출 · 순손실 매도 없음 · 매일 학습</div>
+                    <div id="usdt-daily-tuning-hint" style="font-size:9px; color:#a5b4fc; margin-top:4px;">-</div>
                     <div style="margin-top:10px; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px; border:1px solid rgba(255,255,255,0.06);">
                         <div style="font-size:11px; font-weight:700; color:#fff; margin-bottom:6px;">전략 비교 · 매일 자동 선택</div>
                         <div id="usdt-strategy-auto-card" onclick="selectUsdtStrategy('auto')" style="background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.35); border-radius:8px; padding:8px; margin-bottom:6px; cursor:pointer;">
@@ -5337,7 +5499,7 @@ HTML_CONTENT = """
                 const feeEl = document.getElementById('usdt-fee-oneway');
                 const refEl = document.getElementById('usdt-ref-krw');
                 if (gapEl) gapEl.value = fx.min_consider_gap_krw ?? USDT_DEFAULT_GAP;
-                if (minEl) minEl.value = fx.min_target_profit_pct ?? 0.2;
+                if (minEl) minEl.value = fx.min_target_profit_pct ?? 2.0;
                 if (sellEl) sellEl.value = fx.sell_premium_pct ?? 0.15;
                 if (feeEl) feeEl.value = fx.fee_one_way_pct ?? 0.25;
                 if (refEl) refEl.value = fx.reference_krw ?? 0;
@@ -5364,6 +5526,13 @@ HTML_CONTENT = """
                 reasonEl.innerText = cfg.usdt_auto_pick_reason
                     ? `선택 근거: ${cfg.usdt_auto_pick_reason}`
                     : '최적화 실행 후 자동 비교됩니다.';
+            }
+            const tuneEl = document.getElementById('usdt-daily-tuning-hint');
+            const tuning = cfg.usdt_daily_tuning;
+            if (tuneEl) {
+                tuneEl.innerText = tuning
+                    ? `오늘 학습: 진입 gap ${tuning.min_consider_gap_krw}원 · 탈출 gap≤${tuning.exit_gap_krw ?? '-'}원 / 수렴≥${tuning.exit_convergence_pct ?? '-'}% (${(tuning.tuned_at || '').slice(0, 10)})`
+                    : '일일 환율 학습 대기 — 매일 새벽 이후 자동 갱신';
             }
             const selected = cfg.selected_usdt_strategy || 'auto';
             const resolved = cfg.resolved_usdt_strategy || 'fixed_fusion';
@@ -5502,7 +5671,7 @@ HTML_CONTENT = """
         async function saveUsdtFxConfig() {
             const payload = {
                 min_consider_gap_krw: parseFloat(document.getElementById('usdt-min-gap')?.value || USDT_DEFAULT_GAP),
-                min_target_profit_pct: parseFloat(document.getElementById('usdt-min-profit')?.value || 0.2),
+                min_target_profit_pct: Math.max(2, parseFloat(document.getElementById('usdt-min-profit')?.value || 2)),
                 sell_premium_pct: parseFloat(document.getElementById('usdt-sell-premium')?.value || 0.15),
                 fee_one_way_pct: parseFloat(document.getElementById('usdt-fee-oneway')?.value || 0.25),
                 reference_krw: parseFloat(document.getElementById('usdt-ref-krw')?.value || 0),
@@ -7478,6 +7647,22 @@ def startup_event():
         sched_thread = threading.Thread(target=_daily_optimizer_scheduler, daemon=True, name="DailyOptimizerScheduler")
         sched_thread.start()
         print("[DailyOptimizer] 일일 스케줄러 가동 완료 (매일 02:00 KST)")
+        def _startup_usdt_tune_if_needed():
+            try:
+                if ensure_fx_history:
+                    stats = fx_cache_stats(ensure_fx_history())
+                    print(
+                        f"[USDT FX] 환율 캐시 {stats['days']}일 "
+                        f"({stats['start']} ~ {stats['end']})"
+                    )
+                results = get_latest_results() or {}
+                tuning = results.get("usdt_daily_tuning") or {}
+                today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
+                if (tuning.get("tuned_at") or "")[:10] != today:
+                    run_usdt_daily_tune_and_apply()
+            except Exception as e:
+                print(f"[USDT Daily] 시작 시 튜닝 스킵: {e}")
+        threading.Thread(target=_startup_usdt_tune_if_needed, daemon=True, name="UsdtStartupTune").start()
 
 if __name__ == "__main__":
     import uvicorn
