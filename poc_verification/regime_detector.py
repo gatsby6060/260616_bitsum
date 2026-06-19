@@ -10,6 +10,10 @@ TICKER_CYCLE_PROFILE = {
         "peak_lookback_days": 1095,
         "bear_drawdown_pct": 25.0,
         "bottoming_anchor_band_pct": 15.0,
+        "bear_monthly_peak_lookback": 5,
+        "bear_monthly_peak_gap": 3,
+        "bear_max_episodes": 10,
+        "bear_min_drawdown_mult": 0.6,
     },
     "ETH": {
         "regression_days": 400,
@@ -18,6 +22,10 @@ TICKER_CYCLE_PROFILE = {
         "peak_lookback_days": 730,
         "bear_drawdown_pct": 25.0,
         "bottoming_anchor_band_pct": 12.0,
+        "bear_monthly_peak_lookback": 4,
+        "bear_monthly_peak_gap": 3,
+        "bear_max_episodes": 8,
+        "bear_min_drawdown_mult": 0.55,
     },
     "XRP": {
         "regression_days": 400,
@@ -26,6 +34,10 @@ TICKER_CYCLE_PROFILE = {
         "peak_lookback_days": 1460,
         "bear_drawdown_pct": 30.0,
         "bottoming_anchor_band_pct": 15.0,
+        "bear_monthly_peak_lookback": 4,
+        "bear_monthly_peak_gap": 4,
+        "bear_max_episodes": 8,
+        "bear_min_drawdown_mult": 0.5,
     },
     # KRW-USDT: 원화 환율 연동 스테이블코인 (1 USDT ≒ 1 USD) — 400일 회귀·사이클
     "USDT": {
@@ -135,6 +147,394 @@ def _detect_historical_bull_cycles(prices: list, min_rise_pct: float = 20.0, min
         )
 
     return cycles[-8:]
+
+
+def detect_historical_bear_episodes(
+    prices: list,
+    dates: list = None,
+    min_drawdown_pct: float = 20.0,
+    min_duration_days: int = 30,
+    peak_lookback: int = 120,
+    recovery_ratio: float = 0.382,
+    min_peak_gap_days: int = 90,
+    max_episodes: int = 10,
+    min_data_points: int = 365,
+) -> list:
+    """
+    일봉 종가에서 고점→저점 하락 레그를 추출합니다.
+    BTC 월봉 차트의 역사적 하락 화살표(약 8회)에 대응하는 구간을 BEAR 학습·비교에 사용합니다.
+    """
+    n = len(prices)
+    if n < min_data_points:
+        return []
+
+    forward_window = min(60, max(12, n // 8))
+    min_future_len = min(15, max(3, forward_window // 4))
+    tail_guard = max(3, min(20, forward_window // 4))
+
+    peaks = []
+    for i in range(peak_lookback, n - tail_guard):
+        window = prices[i - peak_lookback : i + 1]
+        if prices[i] != max(window):
+            continue
+        future = prices[i : min(i + forward_window, n)]
+        if len(future) < min_future_len:
+            continue
+        trough_future = min(future)
+        if trough_future <= 0 or prices[i] <= 0:
+            continue
+        prelim_dd = (prices[i] - trough_future) / prices[i] * 100
+        if prelim_dd < min_drawdown_pct * 0.45:
+            continue
+        if peaks and i - peaks[-1] < min_peak_gap_days:
+            if prices[i] > prices[peaks[-1]]:
+                peaks[-1] = i
+            continue
+        peaks.append(i)
+
+    episodes = []
+    for pi, peak_idx in enumerate(peaks):
+        seg = prices[peak_idx:]
+        if len(seg) < min_duration_days:
+            continue
+        trough_rel = int(np.argmin(seg))
+        trough_idx = peak_idx + trough_rel
+        peak_p = float(prices[peak_idx])
+        trough_p = float(prices[trough_idx])
+        if peak_p <= 0:
+            continue
+        dd = (peak_p - trough_p) / peak_p * 100
+        if dd < min_drawdown_pct:
+            continue
+
+        recovery_target = trough_p + (peak_p - trough_p) * recovery_ratio
+        end_idx = trough_idx
+        next_peak = peaks[pi + 1] if pi + 1 < len(peaks) else n - 1
+        limit = min(next_peak, peak_idx + 800, n - 1)
+        for j in range(trough_idx + 1, limit + 1):
+            end_idx = j
+            if prices[j] >= recovery_target:
+                break
+
+        if end_idx - peak_idx < min_duration_days:
+            continue
+
+        start_date = dates[peak_idx] if dates else str(peak_idx)
+        end_date = dates[end_idx] if dates else str(end_idx)
+        episodes.append(
+            {
+                "episode_number": len(episodes) + 1,
+                "start_date": start_date,
+                "end_date": end_date,
+                "peak_date": start_date,
+                "trough_date": dates[trough_idx] if dates else str(trough_idx),
+                "peak_price": round(peak_p, 2),
+                "trough_price": round(trough_p, 2),
+                "drawdown_pct": round(dd, 1),
+                "duration_days": int(end_idx - peak_idx),
+            }
+        )
+
+    episodes.sort(key=lambda e: e["start_date"])
+    major = [e for e in episodes if e["drawdown_pct"] >= min_drawdown_pct]
+    if len(major) >= 3:
+        episodes = major
+
+    if len(episodes) > max_episodes:
+        by_dd = sorted(episodes, key=lambda e: e["drawdown_pct"], reverse=True)[:max_episodes]
+        episodes = sorted(by_dd, key=lambda e: e["start_date"])
+
+    for i, ep in enumerate(episodes):
+        ep["episode_number"] = i + 1
+
+    return episodes
+
+
+def get_bear_pattern_params(ticker: str) -> dict:
+    """코인별 월봉 하락 패턴 감지·학습 파라미터."""
+    profile = TICKER_CYCLE_PROFILE.get(ticker, TICKER_CYCLE_PROFILE["BTC"])
+    mult = float(profile.get("bear_min_drawdown_mult", 0.6))
+    return {
+        "min_drawdown_pct": max(10.0, float(profile["bear_drawdown_pct"]) * mult),
+        "peak_lookback": int(profile.get("bear_monthly_peak_lookback", 5)),
+        "min_peak_gap_days": int(profile.get("bear_monthly_peak_gap", 3)),
+        "max_episodes": int(profile.get("bear_max_episodes", 10)),
+        "bottoming_band_pct": float(profile.get("bottoming_anchor_band_pct", 15.0)),
+        "bear_drawdown_pct": float(profile["bear_drawdown_pct"]),
+    }
+
+
+def _monthly_slope_pct(m_prices: list, months: int = 3) -> float:
+    """월봉 종가 기준 N개월 변화율(%)."""
+    n = len(m_prices)
+    lb = min(months, n - 1)
+    if lb < 1:
+        return 0.0
+    old = float(m_prices[-lb - 1])
+    now = float(m_prices[-1])
+    if old <= 0:
+        return 0.0
+    return (now - old) / old * 100
+
+
+def detect_active_monthly_bear_pattern(m_prices: list, ticker: str = "BTC") -> dict:
+    """
+    현재 월봉이 고점→하락 패턴 중인지 판별.
+    과거에 표시한 화살표와 동일 규칙으로 이후에도 유사 패턴이면 BEAR로 본다.
+    """
+    params = get_bear_pattern_params(ticker)
+    min_dd = params["min_drawdown_pct"]
+    n = len(m_prices)
+    if n < 8:
+        return {
+            "active": False,
+            "months_since_peak": 0,
+            "drawdown_from_peak_pct": 0.0,
+            "slope_3m_pct": 0.0,
+            "peak_price": 0.0,
+            "peak_date_idx": -1,
+        }
+
+    lookback = min(24, n)
+    window = m_prices[-lookback:]
+    peak = float(max(window))
+    peak_idx_rel = window.index(peak)
+    peak_idx = n - lookback + peak_idx_rel
+    months_since_peak = lookback - 1 - peak_idx_rel
+    price_now = float(m_prices[-1])
+    dd = (price_now - peak) / peak * 100 if peak > 0 else 0.0
+    slope_3m = _monthly_slope_pct(m_prices, 3)
+
+    still_falling = slope_3m < -3.0 or dd <= -min_dd * 0.45
+    active = (
+        months_since_peak <= 14
+        and dd <= -min_dd * 0.35
+        and still_falling
+    )
+
+    return {
+        "active": active,
+        "months_since_peak": int(months_since_peak),
+        "drawdown_from_peak_pct": round(dd, 1),
+        "slope_3m_pct": round(slope_3m, 2),
+        "peak_price": peak,
+        "peak_date_idx": int(peak_idx),
+    }
+
+
+def _estimate_rising_bottom_price(episodes: list) -> Optional[float]:
+    """역사 하락 에피소드 저점(바닥선) 추세로 현재 예상 지지가 추정."""
+    troughs = [float(ep["trough_price"]) for ep in (episodes or []) if ep.get("trough_price")]
+    if not troughs:
+        return None
+    if len(troughs) == 1:
+        return troughs[0]
+    recent = troughs[-3:]
+    x = np.arange(len(recent))
+    slope, intercept = np.polyfit(x, recent, 1)
+    projected = float(slope * len(recent) + intercept)
+    return max(projected, recent[-1] * 0.85)
+
+
+def _count_recent_episode_peaks(episodes: list, month_keys: list, trailing: int = 12) -> int:
+    if not episodes or not month_keys:
+        return 0
+    cutoff = str(month_keys[-trailing])[:7] if len(month_keys) >= trailing else str(month_keys[0])[:7]
+    return sum(1 for e in episodes if str(e.get("peak_date", ""))[:7] >= cutoff)
+
+
+def assess_bear_entry_timing(
+    m_prices: list,
+    episodes: list,
+    ticker: str = "BTC",
+    month_keys: list = None,
+) -> dict:
+    """
+    월봉 하락 패턴 대비 진입 적합도.
+    - BTC: 고점 하락 중 → 단타(빠른 익절) 구간
+    - ETH: 바닥선 도달 → 스윙 진입 유리
+    - XRP: 바닥 접근 중 → 1~2개월 후 진입 유리
+    """
+    profile = TICKER_CYCLE_PROFILE.get(ticker, TICKER_CYCLE_PROFILE["BTC"])
+    band = float(profile.get("bottoming_anchor_band_pct", 15.0))
+    active = detect_active_monthly_bear_pattern(m_prices, ticker)
+    price_now = float(m_prices[-1]) if m_prices else 0.0
+
+    projected_bottom = _estimate_rising_bottom_price(episodes)
+    dist_to_bottom_pct = None
+    if projected_bottom and projected_bottom > 0:
+        dist_to_bottom_pct = (price_now - projected_bottom) / projected_bottom * 100
+
+    slope_3m = active["slope_3m_pct"]
+    dd = active["drawdown_from_peak_pct"]
+    bear_dd_thresh = float(profile["bear_drawdown_pct"])
+    timeline = month_keys or [str(i) for i in range(len(m_prices))]
+    recent_peak_count = _count_recent_episode_peaks(episodes, timeline, trailing=12)
+    at_bottom_line = dist_to_bottom_pct is not None and abs(dist_to_bottom_pct) <= band
+
+    phase = "transition"
+    entry_style = "cautious_swing"
+    entry_score = 40.0
+    summary = "월봉 하락 패턴 분석 중"
+
+    # 바닥선 부근 + 최근 복수 고점 연쇄 하락 → 단타 (BTC형 2025 연속 고점)
+    if at_bottom_line and recent_peak_count >= 2 and active["months_since_peak"] <= 10:
+        phase = "active_decline"
+        entry_style = "scalp_fast"
+        entry_score = max(18.0, 42.0 - abs(dd) * 0.25)
+        summary = (
+            f"바닥선 부근이나 최근 고점 {recent_peak_count}회 연쇄 하락 — "
+            f"단타·빠른 익절 구간(BTC형)"
+        )
+    # 바닥선 도달 → 스윙 진입 (ETH형)
+    elif at_bottom_line:
+        phase = "bottom_zone"
+        entry_style = "swing_bottom"
+        entry_score = 82.0 if slope_3m >= -5.0 else 68.0
+        summary = f"예상 바닥선({projected_bottom:,.0f}원) 부근 — ETH형 바닥 진입 구간"
+    elif not active["active"] and (dist_to_bottom_pct is None or dist_to_bottom_pct <= band * 1.5):
+        phase = "bottom_zone"
+        entry_style = "swing_bottom"
+        entry_score = 78.0
+        summary = "하락 레그 종료·바닥권 — 스윙 진입 유리"
+    # 고점 하락 진행 중 → 단타 우선 (BTC형)
+    elif active["active"] and dd <= -bear_dd_thresh * 0.35 and slope_3m < -3.0:
+        phase = "active_decline"
+        entry_style = "scalp_fast"
+        entry_score = max(15.0, 45.0 - abs(dd) * 0.3)
+        summary = f"월봉 고점 대비 {dd:.1f}% 하락 중 — 단타·빠른 익절 구간(BTC형)"
+    elif dist_to_bottom_pct is not None and dist_to_bottom_pct <= band * 2.5 and slope_3m > -8.0:
+        phase = "approaching_bottom"
+        entry_style = "cautious_swing"
+        eta_months = max(1, int(dist_to_bottom_pct / max(band, 5)))
+        entry_score = max(35.0, 70.0 - dist_to_bottom_pct * 1.2)
+        summary = f"바닥선 접근 중(괴리 {dist_to_bottom_pct:+.1f}%) — 약 {eta_months}개월 후 진입 유리(XRP형)"
+    elif dist_to_bottom_pct is not None and dist_to_bottom_pct > band * 2.5 and slope_3m < -2.0:
+        phase = "far_from_bottom"
+        entry_style = "wait"
+        entry_score = max(8.0, 25.0 - dist_to_bottom_pct * 0.2)
+        summary = f"바닥선 대비 {dist_to_bottom_pct:+.1f}% 위 — 하락 여지, 진입 대기"
+    elif active["active"]:
+        phase = "early_decline"
+        entry_style = "scalp_fast"
+        entry_score = 35.0
+        summary = f"월봉 하락 초기(고점 대비 {dd:.1f}%) — 보수적 단타"
+
+    return {
+        "phase": phase,
+        "entry_style": entry_style,
+        "entry_score": round(entry_score, 1),
+        "bottom_proximity_pct": round(max(0.0, 100.0 - abs(dist_to_bottom_pct or 50.0)), 1),
+        "projected_bottom_price": projected_bottom,
+        "dist_to_bottom_pct": round(dist_to_bottom_pct, 1) if dist_to_bottom_pct is not None else None,
+        "pattern_active": active["active"],
+        "drawdown_from_peak_pct": dd,
+        "summary": summary,
+    }
+
+
+def build_current_bear_episode(
+    m_prices: list,
+    month_dates: list,
+    ticker: str = "BTC",
+) -> Optional[dict]:
+    """진행 중인 월봉 하락 레그를 학습용 에피소드로 생성."""
+    active = detect_active_monthly_bear_pattern(m_prices, ticker)
+    if not active["active"] or active["peak_date_idx"] < 0:
+        return None
+
+    peak_idx = active["peak_date_idx"]
+    seg = m_prices[peak_idx:]
+    if len(seg) < 2:
+        return None
+    trough_rel = int(np.argmin(seg))
+    trough_idx = peak_idx + trough_rel
+    peak_p = float(m_prices[peak_idx])
+    trough_p = float(m_prices[trough_idx])
+    price_now = float(m_prices[-1])
+    dd = (peak_p - trough_p) / peak_p * 100 if peak_p > 0 else 0.0
+
+    start_date = month_dates[peak_idx] if month_dates else str(peak_idx)
+    end_date = month_dates[-1] if month_dates else str(len(m_prices) - 1)
+
+    return {
+        "episode_number": 0,
+        "start_date": start_date,
+        "end_date": end_date,
+        "peak_date": start_date,
+        "trough_date": month_dates[trough_idx] if month_dates else str(trough_idx),
+        "peak_price": round(peak_p, 2),
+        "trough_price": round(trough_p, 2),
+        "drawdown_pct": round(dd, 1),
+        "duration_days": len(seg) - 1,
+        "ongoing": True,
+        "current_price": round(price_now, 2),
+    }
+
+
+def analyze_bear_pattern_context(
+    m_prices: list,
+    ticker: str = "BTC",
+    month_dates: list = None,
+) -> dict:
+    """
+    역사적 하락 에피소드 + 현재 월봉 패턴 + 진입 적합도 통합 분석.
+    백테스트 학습·실시간 BEAR 판정·진입 게이트에 공통 사용.
+    """
+    params = get_bear_pattern_params(ticker)
+    if month_dates is None:
+        month_dates = [str(i) for i in range(len(m_prices))]
+
+    episodes = detect_historical_bear_episodes(
+        m_prices,
+        month_dates,
+        min_drawdown_pct=params["min_drawdown_pct"],
+        min_duration_days=2,
+        peak_lookback=params["peak_lookback"],
+        min_peak_gap_days=params["min_peak_gap_days"],
+        min_data_points=24,
+        max_episodes=params["max_episodes"],
+    )
+
+    current_ep = build_current_bear_episode(m_prices, month_dates, ticker)
+    if current_ep:
+        peak_ym = current_ep["peak_date"][:7]
+        if not any(ep.get("peak_date", "")[:7] == peak_ym for ep in episodes):
+            current_ep["episode_number"] = len(episodes) + 1
+            episodes.append(current_ep)
+
+    active = detect_active_monthly_bear_pattern(m_prices, ticker)
+    entry_timing = assess_bear_entry_timing(m_prices, episodes, ticker, month_dates)
+
+    matched = None
+    if episodes and active["active"]:
+        dd_now = abs(active["drawdown_from_peak_pct"])
+        best = min(episodes, key=lambda e: abs(e["drawdown_pct"] - dd_now))
+        diff = abs(best["drawdown_pct"] - dd_now)
+        similarity = max(0.0, min(100.0, 100.0 - diff * 2.5))
+        matched = {
+            "matched_episode_number": best["episode_number"],
+            "total_episodes": len(episodes),
+            "similarity_pct": round(similarity, 1),
+            "matched_drawdown_pct": best["drawdown_pct"],
+            "summary": (
+                f"현재 월봉 하락 {dd_now:.1f}% → 과거 #{best['episode_number']}번 패턴"
+                f"({best['drawdown_pct']:.1f}%, 유사도 {similarity:.0f}%)"
+            ),
+        }
+
+    return {
+        "pattern_active": active["active"] or entry_timing["phase"] in (
+            "active_decline", "early_decline", "approaching_bottom"
+        ),
+        "historical_episodes": episodes,
+        "episode_count": len(episodes),
+        "current_episode": current_ep,
+        "active_pattern": active,
+        "entry_timing": entry_timing,
+        "pattern_match": matched,
+        "pattern_summary": entry_timing["summary"],
+    }
 
 
 def _match_current_to_historical_cycles(cycles: list, current_angle_pct_per_month: float) -> Optional[dict]:
@@ -342,9 +742,16 @@ class MarketRegimeDetector:
         }
 
     def detect_regime_detailed(self) -> dict:
-        prices = self.candle_manager.get_prices("D")
-        w_prices = self.candle_manager.get_prices("W")
-        m_prices = self.candle_manager.get_prices("M")
+        regime_series = {}
+        if hasattr(self.candle_manager, "get_regime_series"):
+            regime_series = self.candle_manager.get_regime_series() or {}
+
+        prices = regime_series.get("daily_prices") or self.candle_manager.get_prices("D")
+        w_prices = regime_series.get("weekly_prices") or self.candle_manager.get_prices("W")
+        m_prices = regime_series.get("monthly_prices") or self.candle_manager.get_prices("M")
+        m_month_dates = list(regime_series.get("month_dates") or [])
+        if not m_month_dates and m_prices:
+            m_month_dates = [str(i) for i in range(len(m_prices))]
         n = len(prices)
 
         if self.ticker in STABLECOIN_TICKERS:
@@ -389,6 +796,8 @@ class MarketRegimeDetector:
         bottoming = self._is_bottoming(slope_rate_90, slope_rate_30, w_prices)
         at_anchor_zone = abs(anchor_dev_pct) <= self.bottoming_anchor_band_pct
 
+        bear_ctx = analyze_bear_pattern_context(m_prices, self.ticker, m_month_dates)
+
         final_regime = "BEAR"
         reason = ""
 
@@ -428,15 +837,18 @@ class MarketRegimeDetector:
             drawdown_pct <= -self.bear_drawdown_pct
             or weekly_dd <= -self.bear_drawdown_pct * 0.8
             or monthly["phase"] == "decline"
+            or bear_ctx["pattern_active"]
             or (anchor_dev_pct < -self.bottoming_anchor_band_pct and slope_rate_90 < -0.03)
             or (price_now < cycle_anchor_price * 0.90 and slope_rate_30 < 0)
         ):
             final_regime = "BEAR"
+            timing = bear_ctx.get("entry_timing", {})
             reason = (
                 f"고점({peak_price:,.0f}) 대비 {drawdown_pct:.1f}% 하락, "
                 f"{self.cycle_anchor_days}일 회기가 {cycle_anchor_price:,.0f}원 "
                 f"(현재 괴리 {anchor_dev_pct:+.1f}%). "
-                f"월봉 {monthly['phase']}, 주봉 {weekly_dd:.1f}% - 하락장(BEAR) 유지."
+                f"월봉 {monthly['phase']}, 역사 하락패턴 {bear_ctx['episode_count']}회 — "
+                f"{timing.get('summary', '하락장(BEAR)')}"
             )
 
         # 4) 약한 하락/조정 — 회귀선·기울기 종합
@@ -470,12 +882,15 @@ class MarketRegimeDetector:
 
         if cycle_match:
             reason = f"{reason} | {cycle_match['summary']}"
+        if bear_ctx.get("pattern_match"):
+            reason = f"{reason} | {bear_ctx['pattern_match']['summary']}"
 
         print(
             f"[RegimeDetector] {self.ticker} | 가격: {price_now:,.0f} | "
             f"회귀{self.regression_days}d: {fair_value:,.0f} ({dev_pct:+.1f}%) | "
             f"앵커{self.cycle_anchor_days}d: {cycle_anchor_price:,.0f} ({anchor_dev_pct:+.1f}%) | "
             f"고점대비: {drawdown_pct:.1f}% | 월봉: {monthly['phase']} | "
+            f"하락패턴: {bear_ctx['episode_count']}회, 진입점수 {bear_ctx['entry_timing']['entry_score']:.0f} | "
             f"판정: {final_regime} - {reason}"
         )
 
@@ -483,6 +898,7 @@ class MarketRegimeDetector:
             "regime": final_regime,
             "reason": reason,
             "cycle_match": cycle_match,
+            "bear_pattern": bear_ctx,
             "metrics": {
                 "days_since_peak": int(days_since_peak),
                 "deviation_pct": float(dev_pct),
@@ -504,6 +920,10 @@ class MarketRegimeDetector:
                 "current_angle_pct_per_month": float(current_angle_monthly),
                 "cycle_match": cycle_match,
                 "historical_cycles": cycle_match.get("historical_cycles", []) if cycle_match else [],
+                "bear_episode_count": int(bear_ctx["episode_count"]),
+                "bear_entry_score": float(bear_ctx["entry_timing"]["entry_score"]),
+                "bear_entry_style": bear_ctx["entry_timing"]["entry_style"],
+                "bear_entry_phase": bear_ctx["entry_timing"]["phase"],
             },
         }
 

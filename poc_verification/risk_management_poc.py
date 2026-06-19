@@ -321,6 +321,21 @@ BEAR_HORIZON_LABELS = {
     "1m": "1개월", "3m": "3개월", "6m": "6개월",
 }
 
+# 하락장 실거래 프로필 — 칼날 잡기 차단 + 수수료 후 순이익 청산
+BEAR_LIVE_RSI_OVERSOLD = 18          # RSI 매수: 더 깊은 과매도
+BEAR_LIVE_RSI_OVERBOUGHT = 62        # RSI 매도: 반등 초기 청산
+BEAR_LIVE_BB_STD_DEV = 3.5           # BB: 하단 이탈 폭 확대
+BEAR_LIVE_STOP_LOSS = 0.03
+BEAR_LIVE_MIN_NET_PROFIT = 0.005     # 수수료(0.5%) 후 최소 순이익 바닥 — 학습값이 이보다 낮으면만 상향
+BEAR_RISK_FALLBACK = {
+    "take_profit_pct": 0.012,
+    "trail_pct": 0.004,
+    "trail_activate_profit_pct": 0.006,
+    "min_strategy_sell_profit_pct": 0.005,
+}
+BEAR_LIVE_BUY_DROP_PCT = 0.045
+BEAR_LIVE_BUY_VOL_RATIO = 2.8
+
 # USDT: 고정 융합 vs 학습 3대지표 — 단기(최대 3주) 예상 수익 비교
 USDT_COMPARE_HORIZONS = ["1d", "3d", "1w", "3w"]
 USDT_HORIZON_LABELS = {"1d": "1일", "3d": "3일", "1w": "1주", "3w": "3주"}
@@ -515,6 +530,214 @@ def _compute_bear_auto_pick(bear_opt_reg: dict, cycle_match: dict = None) -> tup
             return "mixed", "전 기간·Sharpe·MDD 동률 → 사이클 각도 완만 구간 (Mixed)"
     return "mixed", "전 기간 동률 → 기본 Mixed"
 
+
+def _bear_floor_profit(val: float) -> float:
+    """학습 청산 비율의 최소 바닥(수수료 후 순이익)만 적용."""
+    v = float(val or 0)
+    return max(v, BEAR_LIVE_MIN_NET_PROFIT) if v > 0 else BEAR_LIVE_MIN_NET_PROFIT
+
+
+def _bear_risk_live_from_learned(risk: dict) -> dict:
+    """백테스트가 찾은 BEAR 청산 비율을 실거래 BearScalp로 변환 (0.5%는 바닥만)."""
+    learned = dict(risk or {})
+    r_type = learned.get("type", "StopLoss")
+
+    stop_loss = float(learned.get("stop_loss_pct", BEAR_LIVE_STOP_LOSS))
+    take_profit = float(learned.get("take_profit_pct", 0) or BEAR_RISK_FALLBACK["take_profit_pct"])
+    trail_pct = float(learned.get("trail_pct", 0) or BEAR_RISK_FALLBACK["trail_pct"])
+    trail_activate = float(learned.get("trail_activate_profit_pct", 0))
+    min_sell = float(learned.get("min_strategy_sell_profit_pct", 0) or BEAR_RISK_FALLBACK["min_strategy_sell_profit_pct"])
+
+    if r_type == "TrailingStop":
+        if take_profit <= 0 or take_profit >= 0.2:
+            take_profit = BEAR_RISK_FALLBACK["take_profit_pct"]
+        if trail_activate <= 0:
+            trail_activate = BEAR_RISK_FALLBACK["trail_activate_profit_pct"]
+    elif r_type == "StopLoss":
+        if trail_pct <= 0:
+            trail_pct = BEAR_RISK_FALLBACK["trail_pct"]
+        if trail_activate <= 0:
+            trail_activate = BEAR_RISK_FALLBACK["trail_activate_profit_pct"]
+    # BearScalp: 학습된 4종 수치 그대로 사용
+
+    return {
+        "type": "BearScalp",
+        "stop_loss_pct": stop_loss,
+        "take_profit_pct": _bear_floor_profit(take_profit),
+        "trail_pct": trail_pct,
+        "trail_activate_profit_pct": _bear_floor_profit(trail_activate),
+        "min_strategy_sell_profit_pct": _bear_floor_profit(min_sell),
+        "min_net_profit_pct": BEAR_LIVE_MIN_NET_PROFIT,
+        "learned_risk_type": r_type,
+    }
+
+
+def _apply_bear_live_profile(t_cfg: dict) -> dict:
+    """하락장 실거래: 칼날 잡기 차단 + 수수료 후 순이익만 청산."""
+    import copy
+    cfg = copy.deepcopy(t_cfg)
+
+    if cfg.get("logic") == "CUSTOM_BEAR":
+        for s in cfg.get("strategies", []):
+            if s.get("name") == "CustomBear":
+                p = s.setdefault("params", {})
+                if p.get("take_profit"):
+                    p["take_profit"] = _bear_floor_profit(p["take_profit"])
+                p["drop_pct"] = max(p.get("drop_pct", 0.03), BEAR_LIVE_BUY_DROP_PCT)
+                p["volume_ratio"] = max(p.get("volume_ratio", 2.0), BEAR_LIVE_BUY_VOL_RATIO)
+                p["require_bounce"] = True
+    else:
+        cfg["logic"] = cfg.get("logic", "AND")
+        cfg["sell_logic"] = "OR"
+        for s in cfg.get("strategies", []):
+            if s.get("name") == "RSI":
+                p = s.setdefault("params", {})
+                p["oversold"] = min(p.get("oversold", 25), BEAR_LIVE_RSI_OVERSOLD)
+                p["overbought"] = min(p.get("overbought", 75), BEAR_LIVE_RSI_OVERBOUGHT)
+                p["require_reversal"] = True
+            elif s.get("name") == "Bollinger":
+                p = s.setdefault("params", {})
+                p["std_dev"] = max(p.get("std_dev", 2.5), BEAR_LIVE_BB_STD_DEV)
+                p["bounce_buy"] = True
+
+    cfg["risk"] = _bear_risk_live_from_learned(cfg.get("risk", {}))
+    return cfg
+
+
+def _bear_buy_entry_allowed(
+    candle_manager,
+    timeframe: str,
+    price: float,
+    tactic: dict,
+    bear_timing: dict = None,
+) -> tuple:
+    """하락장 매수 최종 게이트 — 월봉 패턴별 진입 적합도 반영."""
+    timing = bear_timing or {}
+    entry_style = timing.get("entry_style", "cautious_swing")
+
+    if entry_style == "wait":
+        return False, timing.get("summary", "바닥선 미도달 — 진입 대기")
+
+    candles = candle_manager.get_candles(timeframe)
+    if not candles or len(candles) < 8:
+        return False, "캔들 부족 — 진입 보류"
+
+    enabled = {s["name"]: s for s in tactic.get("strategies", []) if s.get("enabled")}
+    closes = [c["close"] for c in candles]
+    c_prev2, c_prev = candles[-3], candles[-2]
+
+    # 연속 음봉 하락 중 + 저점 미회복 → 진입 거부 (칼날 잡기)
+    if entry_style in ("scalp_fast", "cautious_swing") and (
+        c_prev2["close"] < c_prev2["open"]
+        and c_prev["close"] < c_prev["open"]
+        and price <= c_prev["close"] * 1.001
+    ):
+        return False, "연속 하락 중 — 바닥 미확인"
+
+    if entry_style != "swing_bottom" and price < c_prev["low"] * 1.002:
+        return False, "직전 봉 저점 미회복"
+
+    rsi_relax = 4.0 if entry_style == "swing_bottom" else (2.0 if entry_style == "cautious_swing" else 0.0)
+
+    rsi_cfg = enabled.get("RSI", {}).get("params", {})
+    if "RSI" in enabled:
+        period = int(rsi_cfg.get("period", 10))
+        if len(closes) <= period + 1:
+            return False, "RSI 데이터 부족"
+        delta = pd.Series(closes).diff()
+        gain = delta.clip(lower=0).rolling(window=period).mean()
+        loss = (-delta.clip(upper=0)).rolling(window=period).mean()
+        rsi = 100 - (100 / (1 + gain / (loss + 1e-10)))
+        curr_rsi, prev_rsi = float(rsi.iloc[-1]), float(rsi.iloc[-2])
+        oversold = float(rsi_cfg.get("oversold", BEAR_LIVE_RSI_OVERSOLD)) + rsi_relax
+        if entry_style == "swing_bottom":
+            if not (prev_rsi < oversold + 4 and curr_rsi >= prev_rsi - 1.5):
+                return False, f"바닥권 RSI 확인 미흡 ({prev_rsi:.1f}→{curr_rsi:.1f})"
+        elif not (prev_rsi < oversold + 2 and curr_rsi > prev_rsi):
+            return False, f"RSI 반등 미확인 ({prev_rsi:.1f}→{curr_rsi:.1f})"
+
+    bb_cfg = enabled.get("Bollinger", {}).get("params", {})
+    if "Bollinger" in enabled:
+        bb_period = int(bb_cfg.get("period", 15))
+        std_dev = float(bb_cfg.get("std_dev", BEAR_LIVE_BB_STD_DEV))
+        if entry_style == "swing_bottom":
+            std_dev = max(2.5, std_dev - 0.3)
+        if len(closes) <= bb_period + 1:
+            return False, "BB 데이터 부족"
+        df = pd.Series(closes)
+        ma = df.rolling(window=bb_period).mean()
+        std = df.rolling(window=bb_period).std()
+        lower = ma - std_dev * std
+        if entry_style == "swing_bottom":
+            if not (closes[-2] <= lower.iloc[-2] * 1.01 and price >= lower.iloc[-1] * 0.995):
+                return False, "BB 하단권 미확인"
+        elif not (closes[-2] < lower.iloc[-2] and price >= lower.iloc[-1]):
+            return False, "BB 하단 재진입(바운스) 미확인"
+
+    if "MACD" in enabled and "RSI" not in enabled:
+        macd_cfg = enabled["MACD"].get("params", {})
+        slow = int(macd_cfg.get("slow", 26))
+        if len(closes) <= slow:
+            return False, "MACD 데이터 부족"
+        df = pd.Series(closes)
+        ema_fast = df.ewm(span=macd_cfg.get("fast", 12), adjust=False).mean()
+        ema_slow = df.ewm(span=slow, adjust=False).mean()
+        macd = ema_fast - ema_slow
+        macd_sig = macd.ewm(span=macd_cfg.get("signal_period", 9), adjust=False).mean()
+        diff = float(macd.iloc[-1] - macd_sig.iloc[-1])
+        prev_diff = float(macd.iloc[-2] - macd_sig.iloc[-2])
+        if not (prev_diff <= 0 and diff > 0):
+            return False, "MACD 상향 전환 미확인"
+
+    style_note = {
+        "scalp_fast": "단타(빠른 익절)",
+        "swing_bottom": "바닥권 스윙",
+        "cautious_swing": "바닥 접근 보수 진입",
+    }.get(entry_style, "하락장 진입")
+    return True, f"{style_note} — {timing.get('summary', '반등·바닥 확인')}"
+
+
+def _bear_min_net_profit(tactic: dict) -> float:
+    risk = tactic.get("risk", {})
+    return float(risk.get("min_net_profit_pct", BEAR_LIVE_MIN_NET_PROFIT))
+
+
+bear_entry_ranking = {}
+
+
+def _update_bear_entry_ranking():
+    """하락장 코인 간 진입 유리 순위 (ETH 바닥 > XRP 접근 > BTC 단타)."""
+    global bear_entry_ranking
+    scores = {}
+    details = {}
+    for ticker in ("BTC", "ETH", "XRP"):
+        cfg = active_ticker_configs.get(ticker, {})
+        if cfg.get("current_regime") != "BEAR":
+            continue
+        bp = cfg.get("bear_pattern_analysis", {})
+        timing = bp.get("entry_timing", {})
+        scores[ticker] = float(timing.get("entry_score", 0))
+        details[ticker] = {
+            "entry_score": timing.get("entry_score", 0),
+            "entry_style": timing.get("entry_style"),
+            "phase": timing.get("phase"),
+            "summary": timing.get("summary"),
+            "episode_count": bp.get("episode_count", 0),
+        }
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    bear_entry_ranking = {
+        "ranked": [t for t, _ in ranked],
+        "scores": scores,
+        "details": details,
+        "top_pick": ranked[0][0] if ranked else None,
+        "summary": (
+            "하락장 진입 유리 순위: " + " > ".join(f"{t}({s:.0f})" for t, s in ranked)
+            if ranked else ""
+        ),
+    }
+    return bear_entry_ranking
+
+
 def _resolve_bear_strategy(ticker: str) -> str:
     """selected_bear_strategy(auto/custom_bear/mixed)를 실제 적용 키로 해석."""
     if ticker not in active_ticker_configs:
@@ -681,6 +904,11 @@ def _summarize_opt_reg_for_ui(opt_reg: dict, bear_variant: str = None) -> dict:
             sell_note = f"트레일 +{round(act * 100, 1)}% 후 -{round(risk.get('trail_pct', 0) * 100, 1)}%"
         else:
             sell_note = f"트레일 -{round(risk.get('trail_pct', 0) * 100, 1)}%"
+    elif risk.get("type") == "BearScalp":
+        tp = risk.get("take_profit_pct", 0)
+        act = risk.get("trail_activate_profit_pct", 0)
+        trail = risk.get("trail_pct", 0)
+        sell_note = f"BEAR학습 TP {_bear_floor_profit(tp)*100:.2f}%·트레일 +{act*100:.2f}%/-{trail*100:.1f}%"
     elif risk.get("type") == "StopLoss":
         sell_note = f"TP {round(risk.get('take_profit_pct', 0) * 100, 1)}%"
     if min_sell:
@@ -901,7 +1129,12 @@ class BithumbRsiStrategy(BaseStrategy):
 
         data["rsi_val"] = f"{curr_rsi:.1f}"
 
-        if curr_rsi < self.params["oversold"]: return "BUY"
+        if self.params.get("require_reversal") and len(rsi) >= 2:
+            prev_rsi = float(rsi.iloc[-2])
+            if curr_rsi < self.params["oversold"] and curr_rsi > prev_rsi:
+                return "BUY"
+        elif curr_rsi < self.params["oversold"]:
+            return "BUY"
         if curr_rsi > self.params["overbought"]: return "SELL"
         return "HOLD"
 
@@ -969,7 +1202,11 @@ class BithumbBollingerStrategy(BaseStrategy):
 
         data["bb_val"] = f"U:{curr_upper:.1f}/L:{curr_lower:.1f}"
 
-        if price < curr_lower: return "BUY"
+        if self.params.get("bounce_buy") and len(prices) >= 2 and len(lower) >= 2:
+            if prices[-2] < lower.iloc[-2] and price >= curr_lower:
+                return "BUY"
+        elif price < curr_lower:
+            return "BUY"
         if price > curr_upper: return "SELL"
         return "HOLD"
 
@@ -1196,8 +1433,12 @@ class BithumbCustomBearStrategy(BaseStrategy):
             curr_vol = volumes[-1]
             
             is_bullish = tick_price > opens[-1]
-            
+            bounced = tick_price > closes[-2] if len(closes) >= 2 else is_bullish
+            require_bounce = self.params.get("require_bounce", False)
+
             buy = (drop >= self.params["drop_pct"]) and (curr_vol >= avg_vol * self.params["volume_ratio"]) and is_bullish
+            if require_bounce:
+                buy = buy and bounced and (len(closes) >= 3 and closes[-2] <= closes[-3])
             
             # 실시간 지표 상태 기록
             data["custom_bear_val"] = f"낙폭:{drop*100:.1f}%(기준:{self.params['drop_pct']*100:.1f}%) / 거래량비율:{curr_vol/avg_vol:.1f}배(기준:{self.params['volume_ratio']:.1f}배)"
@@ -1222,8 +1463,10 @@ class BithumbCustomBearStrategy(BaseStrategy):
                 
             pnl = (curr_price - self.entry_price) / self.entry_price
             drawdown = (self.peak_price - curr_price) / self.peak_price
-            
-            exit_ts = drawdown >= self.params["trail_pct"]
+            avg = float(data.get("avg_price") or self.entry_price)
+            net_pnl = calc_net_pnl_pct(avg, curr_price)
+
+            exit_ts = drawdown >= self.params["trail_pct"] and net_pnl >= BEAR_LIVE_MIN_NET_PROFIT
             exit_sl = pnl <= -self.params["stop_loss"]
             
             exit_tc = False
@@ -1246,49 +1489,56 @@ class BithumbCustomBearStrategy(BaseStrategy):
 
 
 class VerboseCompositeStrategy(CompositeStrategy):
-    def __init__(self, strategies=None, logic="AND", weights=None, threshold=0.5):
+    def __init__(self, strategies=None, logic="AND", weights=None, threshold=0.5, sell_logic=None):
         super().__init__(strategies, logic)
         self.weights = weights or {}
         self.threshold = threshold
+        self.sell_logic = sell_logic
+
+    @staticmethod
+    def _resolve_side(signals: dict, logic: str, weights: dict, threshold: float) -> tuple:
+        sig_list = list(signals.values())
+        n = len(sig_list)
+        if n == 0:
+            return False, False
+        if logic == "AND":
+            return all(s == "BUY" for s in sig_list), all(s == "SELL" for s in sig_list)
+        if logic == "OR":
+            return any(s == "BUY" for s in sig_list), any(s == "SELL" for s in sig_list)
+        if logic == "VOTE":
+            majority = n // 2 + 1
+            return sig_list.count("BUY") >= majority, sig_list.count("SELL") >= majority
+        if logic == "WEIGHTED_VOTE":
+            buy_weight = sell_weight = total_weight = 0.0
+            for name, sig in signals.items():
+                w = weights.get(name, 1.0)
+                total_weight += w
+                if sig == "BUY":
+                    buy_weight += w
+                elif sig == "SELL":
+                    sell_weight += w
+            if total_weight <= 0:
+                return False, False
+            return buy_weight / total_weight >= threshold, sell_weight / total_weight >= threshold
+        return any(s == "BUY" for s in sig_list), any(s == "SELL" for s in sig_list)
 
     def generate_signal(self, data: Dict[str, Any]) -> str:
         signals = {}
         for s in self.strategies:
             sig = s.generate_signal(data)
             signals[s.NAME] = sig
-            
-        final_signal = "HOLD"
-        sig_list = list(signals.values())
 
-        if self.logic == "AND":
-            if all(s == "BUY" for s in sig_list): final_signal = "BUY"
-            elif all(s == "SELL" for s in sig_list): final_signal = "SELL"
-        elif self.logic == "OR":
-            if any(s == "BUY" for s in sig_list): final_signal = "BUY"
-            elif any(s == "SELL" for s in sig_list): final_signal = "SELL"
-        elif self.logic == "VOTE":
-            majority = len(sig_list) // 2 + 1
-            if sig_list.count("BUY") >= majority: final_signal = "BUY"
-            elif sig_list.count("SELL") >= majority: final_signal = "SELL"
-        elif self.logic == "WEIGHTED_VOTE":
-            buy_weight = 0.0
-            sell_weight = 0.0
-            total_weight = 0.0
-            for s in self.strategies:
-                w = self.weights.get(s.NAME, 1.0)
-                total_weight += w
-                if signals[s.NAME] == "BUY":
-                    buy_weight += w
-                elif signals[s.NAME] == "SELL":
-                    sell_weight += w
-            
-            if total_weight > 0:
-                buy_ratio = buy_weight / total_weight
-                sell_ratio = sell_weight / total_weight
-                if buy_ratio >= self.threshold:
-                    final_signal = "BUY"
-                elif sell_ratio >= self.threshold:
-                    final_signal = "SELL"
+        sell_logic = self.sell_logic or self.logic
+        buy_ok, _ = self._resolve_side(signals, self.logic, self.weights, self.threshold)
+        _, sell_ok = self._resolve_side(signals, sell_logic, self.weights, self.threshold)
+
+        has_position = float(data.get("position_qty", 0) or 0) > 0
+        if has_position and sell_ok:
+            final_signal = "SELL"
+        elif buy_ok:
+            final_signal = "BUY"
+        else:
+            final_signal = "HOLD"
 
         indicators = {}
         for s in self.strategies:
@@ -1308,6 +1558,7 @@ class VerboseCompositeStrategy(CompositeStrategy):
 
         data["composite_details"] = {
             "logic": self.logic,
+            "sell_logic": sell_logic,
             "sub_signals": signals,
             "indicators": indicators,
             "weights": self.weights,
@@ -1372,6 +1623,53 @@ class TrailingStopRiskManager(BaseRiskManager):
             
         drawdown_pct = (self.peak_price - curr_price) / self.peak_price if self.peak_price > 0 else 0.0
         if drawdown_pct >= self.trail_pct:
+            return "FORCE_SELL_TRAILING_STOP"
+        return "HOLD"
+
+
+class BearScalpRiskManager(BaseRiskManager):
+    """하락장 실거래: 손절 + 낮은 익절 + 고점 트레일링 복합 청산."""
+
+    def __init__(
+        self,
+        stop_loss_pct: float = 0.03,
+        take_profit_pct: float = 0.006,
+        trail_pct: float = 0.005,
+        trail_activate_profit_pct: float = 0.0,
+    ):
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
+        self.trail_pct = trail_pct
+        self.trail_activate_profit_pct = trail_activate_profit_pct
+        self.peak_price = 0.0
+
+    def is_allowed(self, signal: str, position: dict) -> bool:
+        return True
+
+    def check_risk_signal(self, position: dict) -> str:
+        qty = position.get("quantity", 0.0)
+        if qty <= 0:
+            self.peak_price = 0.0
+            return "HOLD"
+
+        curr_price = position.get("current_price", 0.0)
+        pnl_pct = position.get("pnl_pct", 0.0)
+
+        if pnl_pct <= -self.stop_loss_pct:
+            return "FORCE_SELL_STOP_LOSS"
+        if pnl_pct >= self.take_profit_pct:
+            return "FORCE_SELL_TAKE_PROFIT"
+
+        if self.peak_price == 0.0:
+            self.peak_price = curr_price
+        else:
+            self.peak_price = max(self.peak_price, curr_price)
+
+        if self.trail_activate_profit_pct > 0 and pnl_pct < self.trail_activate_profit_pct:
+            return "HOLD"
+
+        drawdown_pct = (self.peak_price - curr_price) / self.peak_price if self.peak_price > 0 else 0.0
+        if drawdown_pct >= self.trail_pct and pnl_pct >= BEAR_LIVE_MIN_NET_PROFIT:
             return "FORCE_SELL_TRAILING_STOP"
         return "HOLD"
 
@@ -1507,6 +1805,11 @@ class UITickerWorker(TickerWorker):
             print(f"[Worker-{self.ticker}] 장세 {regime}에 대응하는 작전 설정이 존재하지 않습니다.")
             return
 
+        if regime == "BEAR" and self.ticker not in STABLECOIN_TICKERS:
+            t_cfg = _apply_bear_live_profile(t_cfg)
+
+        self._live_tactic = t_cfg
+
         # 전략 오브젝트 재생성
         strategies = []
         weights = {}
@@ -1537,19 +1840,28 @@ class UITickerWorker(TickerWorker):
                 strategies.append(BithumbUsdtFxBollingerStrategy(self.candle_manager, timeframe=tf, params=merged))
 
         logic = t_cfg.get("logic", "AND")
+        sell_logic = t_cfg.get("sell_logic")
         threshold = t_cfg.get("threshold", 0.5)
 
         self.strategy = VerboseCompositeStrategy(
             strategies=strategies,
             logic=logic,
             weights=weights,
-            threshold=threshold
+            threshold=threshold,
+            sell_logic=sell_logic,
         )
 
         # 리스크 매니저 재생성
         risk_cfg = t_cfg.get("risk", {"type": "None"})
         r_type = risk_cfg.get("type", "None")
-        if r_type == "StopLoss":
+        if r_type == "BearScalp":
+            self.risk_manager = BearScalpRiskManager(
+                stop_loss_pct=risk_cfg.get("stop_loss_pct", BEAR_LIVE_STOP_LOSS),
+                take_profit_pct=risk_cfg.get("take_profit_pct", BEAR_RISK_FALLBACK["take_profit_pct"]),
+                trail_pct=risk_cfg.get("trail_pct", BEAR_RISK_FALLBACK["trail_pct"]),
+                trail_activate_profit_pct=risk_cfg.get("trail_activate_profit_pct", BEAR_RISK_FALLBACK["trail_activate_profit_pct"]),
+            )
+        elif r_type == "StopLoss":
             self.risk_manager = StopLossRiskManager(
                 stop_loss_pct=risk_cfg.get("stop_loss_pct", 0.03),
                 take_profit_pct=risk_cfg.get("take_profit_pct", 0.06)
@@ -1586,7 +1898,7 @@ class UITickerWorker(TickerWorker):
                 }
             }
             ui_event_queue.put(ui_event)
-            print(f"[Worker-{self.ticker}] 시장 국면 변경 감지 -> {regime} 작전으로 스위칭 완료! (전략: {logic}, 리스크: {r_type})")
+            print(f"[Worker-{self.ticker}] 시장 국면 변경 감지 -> {regime} 작전으로 스위칭 완료! (전략: {logic}" + (f"/매도:{sell_logic}" if sell_logic else "") + f", 리스크: {r_type})")
 
     def _process(self, data: dict) -> None:
         # 1. 틱 정보로 CandleManager 실시간 캔들 업데이트
@@ -1635,14 +1947,28 @@ class UITickerWorker(TickerWorker):
             detected_regime = detailed["regime"]
             regime_reason = detailed["reason"]
             cycle_match = detailed.get("cycle_match")
-            if cycle_match and override == "AUTO":
-                self.config["cycle_analysis"] = cycle_match
+            bear_pattern = detailed.get("bear_pattern")
+            if override == "AUTO":
+                if cycle_match:
+                    self.config["cycle_analysis"] = cycle_match
+                if bear_pattern:
+                    self.config["bear_pattern_analysis"] = bear_pattern
                 if self.ticker in active_ticker_configs:
-                    active_ticker_configs[self.ticker]["cycle_analysis"] = cycle_match
+                    if cycle_match:
+                        active_ticker_configs[self.ticker]["cycle_analysis"] = cycle_match
+                    if bear_pattern:
+                        active_ticker_configs[self.ticker]["bear_pattern_analysis"] = bear_pattern
                     od = active_ticker_configs[self.ticker].get("optimized_default")
-                    if od:
+                    if od and cycle_match:
                         od["cycle_match_cycle"] = cycle_match.get("matched_cycle_number")
                         od["cycle_similarity_pct"] = cycle_match.get("similarity_pct")
+                    if od and bear_pattern:
+                        timing = bear_pattern.get("entry_timing", {})
+                        od["bear_entry_score"] = timing.get("entry_score")
+                        od["bear_entry_style"] = timing.get("entry_style")
+                        od["bear_episode_count"] = bear_pattern.get("episode_count")
+                    if detected_regime == "BEAR":
+                        _update_bear_entry_ranking()
             
             if override != "AUTO":
                 detected_regime = override
@@ -1720,6 +2046,8 @@ class UITickerWorker(TickerWorker):
                 "regime_reason": regime_reason,
                 "regime_override": override,
                 "cycle_match": cycle_match,
+                "bear_pattern": self.config.get("bear_pattern_analysis") if self.ticker not in STABLECOIN_TICKERS else None,
+                "bear_entry_ranking": bear_entry_ranking if self.ticker not in STABLECOIN_TICKERS else None,
                 "optimized_default": active_ticker_configs.get(self.ticker, {}).get("optimized_default"),
                 "usdt_fx_status": data.get("usdt_fx_status") if self.ticker in STABLECOIN_TICKERS else None,
                 "resolved_usdt_strategy": self.config.get("resolved_usdt_strategy") if self.ticker in STABLECOIN_TICKERS else None,
@@ -1786,6 +2114,24 @@ class UITickerWorker(TickerWorker):
             if self.ticker in STABLECOIN_TICKERS and not _usdt_live_fx_allows_buy(self.config, self.position.current_price):
                 return
 
+            if self.current_regime == "BEAR" and self.ticker not in STABLECOIN_TICKERS:
+                tactic = getattr(self, "_live_tactic", None) or self.config.get("tactics", {}).get("BEAR", {})
+                tf = OPTIM_BACKTEST_TIMEFRAME
+                for s in tactic.get("strategies", []):
+                    if s.get("enabled") and s.get("timeframe"):
+                        tf = s["timeframe"]
+                        break
+                ok, block_reason = _bear_buy_entry_allowed(
+                    self.candle_manager,
+                    tf,
+                    self.position.current_price,
+                    tactic,
+                    bear_timing=(self.config.get("bear_pattern_analysis") or {}).get("entry_timing"),
+                )
+                if not ok:
+                    print(f"[Bear Entry Gate] {self.ticker} 매수 차단: {block_reason}")
+                    return
+
             buy_amount = self.compute_strategy_buy_amount()
             if buy_amount <= 0:
                 return
@@ -1804,18 +2150,21 @@ class UITickerWorker(TickerWorker):
             if self.position.quantity <= 0:
                 return
 
-            tactic = self.config.get("tactics", {}).get(self.current_regime, {})
-            min_sell = _get_min_strategy_sell_profit_pct(tactic)
-            if pnl_pct > 0 and min_sell > 0 and pnl_pct < min_sell:
-                return  # 학습된 최소 순익 미달 — 보유 유지 (손절은 리스크 엔진)
-
-            # ★ 지표 매도: 수수료 포함 순이익이 있을 때만 허용 (손절은 리스크 엔진·손절선에서 선처리)
-            if pnl_pct <= 0:
-                gross_pnl = self.position.pnl_pct
+            tactic = getattr(self, "_live_tactic", None) if self.current_regime == "BEAR" else None
+            if not tactic:
                 tactic = self.config.get("tactics", {}).get(self.current_regime, {})
+            min_sell = _get_min_strategy_sell_profit_pct(tactic)
+            if self.current_regime == "BEAR" and self.ticker not in STABLECOIN_TICKERS:
+                min_sell = max(min_sell, _bear_min_net_profit(tactic))
+            if min_sell > 0 and pnl_pct < min_sell:
+                return  # 순이익(수수료 포함) 미달 — 손절만 리스크 엔진
+
+            # 지표 매도: 손절선 외에는 순손실 구간에서 매도 불가
+            if pnl_pct < (min_sell if min_sell > 0 else 0):
+                gross_pnl = self.position.pnl_pct
                 risk_cfg = tactic.get("risk", {})
                 sl_thresh = None
-                if risk_cfg.get("type") == "StopLoss":
+                if risk_cfg.get("type") in ("StopLoss", "BearScalp"):
                     sl_thresh = risk_cfg.get("stop_loss_pct", 0.03)
                 elif tactic.get("logic") == "CUSTOM_BEAR":
                     for s in tactic.get("strategies", []):
@@ -2285,7 +2634,8 @@ class MultiTickerUIEngine(TradingEngine):
 
 
 # ══════════════════════════════════════════════════════════════
-# 5. REST API: 빗썸 과거 캔들 조회 및 포맷 정규화
+# 5. REST API: 빗썸 과거 캔들 조회 (UI 차트 전용 — 빗썸 API 직통, 빠른 표시)
+#    백테스트·장세분석은 15분 캐시 집계 경로와 별개
 # ══════════════════════════════════════════════════════════════
 @app.get("/api/candles")
 def get_historical_candles(
@@ -3732,6 +4082,7 @@ HTML_CONTENT = """
                 <div id="assets-summary" style="display:flex; align-items:center; gap:10px; font-size:12px; font-weight:700; color:var(--text-secondary); background:rgba(255,255,255,0.03); border:1px solid var(--border-color); padding:6px 14px; border-radius:9999px; font-family:'JetBrains Mono', monospace;">
                     보유 코인 조회 중...
                 </div>
+                <div id="kst-clock" style="font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:700; color:var(--text-secondary); background:rgba(255,255,255,0.03); border:1px solid var(--border-color); padding:6px 12px; border-radius:9999px;">KST --:--:--</div>
                 <div class="status-badge" id="ws-status">
                     <span class="status-dot"></span>
                     <span id="ws-status-text">소켓 연결 중...</span>
@@ -4489,6 +4840,69 @@ HTML_CONTENT = """
         };
 
         // ══════════════════════════════════════════════════════════════
+        // 한국 표준시(KST) 표시 — 빗썸 거래내역·차트와 동일 기준
+        // ══════════════════════════════════════════════════════════════
+        const KST_TIMEZONE = 'Asia/Seoul';
+        const KST_OFFSET_SEC = 9 * 3600;
+
+        function _toEpochMs(input) {
+            if (input == null) return Date.now();
+            if (typeof input === 'number') return input < 1e12 ? input * 1000 : input;
+            const parsed = Date.parse(input);
+            return Number.isNaN(parsed) ? Date.now() : parsed;
+        }
+
+        function formatKstTime(input) {
+            return new Date(_toEpochMs(input)).toLocaleTimeString('ko-KR', {
+                timeZone: KST_TIMEZONE,
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+        }
+
+        function formatKstDateTime(input) {
+            return new Date(_toEpochMs(input)).toLocaleString('ko-KR', {
+                timeZone: KST_TIMEZONE,
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+        }
+
+        function formatKstChartLabel(unixSec) {
+            const d = new Date(unixSec * 1000);
+            const datePart = d.toLocaleDateString('ko-KR', {
+                timeZone: KST_TIMEZONE,
+                month: 'numeric',
+                day: 'numeric'
+            });
+            const timePart = d.toLocaleTimeString('ko-KR', {
+                timeZone: KST_TIMEZONE,
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            });
+            return `${datePart} ${timePart}`;
+        }
+
+        function alignCandleTimeKst(timestampSec, intervalSec) {
+            return Math.floor((timestampSec + KST_OFFSET_SEC) / intervalSec) * intervalSec - KST_OFFSET_SEC;
+        }
+
+        function updateKstClock() {
+            const el = document.getElementById('kst-clock');
+            if (el) el.innerText = `KST ${formatKstTime()}`;
+        }
+        updateKstClock();
+        setInterval(updateKstClock, 1000);
+
+        // ══════════════════════════════════════════════════════════════
         // 로그 출력 헬퍼
         // ══════════════════════════════════════════════════════════════
         let activeLogTab = 'all';
@@ -4546,7 +4960,7 @@ HTML_CONTENT = """
 
         function clearLogs() {
             logContainer.innerHTML = '';
-            addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', '로그 콘솔이 초기화되었습니다.');
+            addLog(formatKstTime(), null, 'SYSTEM', '로그 콘솔이 초기화되었습니다.');
         }
 
         // ══════════════════════════════════════════════════════════════
@@ -4570,6 +4984,15 @@ HTML_CONTENT = """
                     grid: {
                         vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
                         horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
+                    },
+                    localization: {
+                        locale: 'ko-KR',
+                        timeFormatter: (time) => {
+                            if (typeof time === 'object' && time.year) {
+                                return `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
+                            }
+                            return formatKstChartLabel(time);
+                        },
                     },
                     timeScale: {
                         timeVisible: true,
@@ -4615,20 +5038,20 @@ HTML_CONTENT = """
                 const data = await response.json();
                 
                 if (data.error) {
-                    addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `캔들 로드 실패: ${data.error}`);
+                    addLog(formatKstTime(), null, 'SYSTEM', `캔들 로드 실패: ${data.error}`);
                     chartLoaderEl.style.display = 'none';
                     return;
                 }
 
                 if (!Array.isArray(data) || data.length === 0) {
-                    addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `${ticker} ${timeframe} 캔들 데이터가 비어 있습니다.`);
+                    addLog(formatKstTime(), null, 'SYSTEM', `${ticker} ${timeframe} 캔들 데이터가 비어 있습니다.`);
                     chartLoaderEl.style.display = 'none';
                     return;
                 }
 
                 const validData = data.filter(c => c.time > 0 && c.open > 0 && c.close > 0);
                 if (validData.length === 0) {
-                    addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `${ticker} ${timeframe} 유효한 캔들이 없습니다.`);
+                    addLog(formatKstTime(), null, 'SYSTEM', `${ticker} ${timeframe} 유효한 캔들이 없습니다.`);
                     chartLoaderEl.style.display = 'none';
                     return;
                 }
@@ -4638,11 +5061,11 @@ HTML_CONTENT = """
                 if (ticker === activeTicker && timeframe === activeTimeframe && candlestickSeries) {
                     candlestickSeries.setData(validData);
                     chart.timeScale().fitContent();
-                    addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `${ticker}의 ${timeframe} 과거 캔들 ${validData.length}개 렌더링 완료.`);
+                    addLog(formatKstTime(), null, 'SYSTEM', `${ticker}의 ${timeframe} 과거 캔들 ${validData.length}개 렌더링 완료.`);
                 }
             } catch (e) {
                 console.error("Historical candles fetch error:", e);
-                addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `${ticker} ${timeframe} 과거 캔들 연동에 실패했습니다.`);
+                addLog(formatKstTime(), null, 'SYSTEM', `${ticker} ${timeframe} 과거 캔들 연동에 실패했습니다.`);
             } finally {
                 chartLoaderEl.style.display = 'none';
             }
@@ -4683,7 +5106,7 @@ HTML_CONTENT = """
             } else {
                 const interval = timeframeIntervals[activeTimeframe] || 60;
                 const timestampSec = Math.floor(timestampMs / 1000);
-                candleTime = Math.floor(timestampSec / interval) * interval;
+                candleTime = alignCandleTimeKst(timestampSec, interval);
             }
             
             const lastCandle = cache[cache.length - 1];
@@ -4705,7 +5128,7 @@ HTML_CONTENT = """
                 cache.push(newCandle);
                 if (cache.length > 300) cache.shift();
                 targetCandle = newCandle;
-                addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', `${activeTimeframe} 신규 봉 형성 완료. (${new Date(candleTime * 1000).toLocaleString()})`);
+                addLog(formatKstTime(), ticker, 'SYSTEM', `${activeTimeframe} 신규 봉 형성 완료. (${formatKstDateTime(candleTime * 1000)})`);
             }
             
             if (ticker === activeTicker && candlestickSeries) {
@@ -4823,6 +5246,9 @@ HTML_CONTENT = """
                 </div>
                 <div id="cycle-match-${ticker}" class="sidebar-info-block sidebar-info-block--cycle">
                     ${ticker === 'USDT' ? '400일 페그 회귀·사이클 각도 분석 대기 중...' : '사이클 회귀각 분석 대기 중...'}
+                </div>
+                <div id="bear-pattern-${ticker}" class="sidebar-info-block sidebar-info-block--bear" style="display:${ticker === 'USDT' ? 'none' : 'block'};">
+                    월봉 하락 패턴·바닥선 분석 대기 중...
                 </div>
                 <div id="optimized-default-${ticker}" class="sidebar-info-block sidebar-info-block--opt">
                     일일 최적화 디폴트 전략 대기 중...
@@ -5134,7 +5560,7 @@ HTML_CONTENT = """
 
         function updateChartInfo() {
             const tfText = document.getElementById(`tf-${activeTimeframe}`).innerText;
-            chartTitleEl.innerText = `${activeTicker}/KRW 실시간 ${tfText} 차트`;
+            chartTitleEl.innerText = `${activeTicker}/KRW 실시간 ${tfText} 차트 (KST)`;
         }
 
         // ══════════════════════════════════════════════════════════════
@@ -5285,7 +5711,7 @@ HTML_CONTENT = """
                 durationEl.style.display = (regime === 'AUTO') ? 'none' : 'inline-block';
             }
             
-            addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', `장세 강제 고정 요청 -> ${regime} (기간: ${durationDays}일)`);
+            addLog(formatKstTime(), ticker, 'SYSTEM', `장세 강제 고정 요청 -> ${regime} (기간: ${durationDays}일)`);
             try {
                 const response = await fetch('/api/tickers/regime-override', {
                     method: 'POST',
@@ -5301,7 +5727,7 @@ HTML_CONTENT = """
                     if (tickerConfigs[ticker]) {
                         tickerConfigs[ticker].regime_override = regime;
                     }
-                    addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', `장세가 ${regime}(으)로 성공적으로 반영되었습니다.`);
+                    addLog(formatKstTime(), ticker, 'SYSTEM', `장세가 ${regime}(으)로 성공적으로 반영되었습니다.`);
                     await loadAllConfigs();
                 } else {
                     alert("장세 변경 실패: " + res.error);
@@ -5339,7 +5765,7 @@ HTML_CONTENT = """
                 });
                 const res = await response.json();
                 if (res.success) {
-                    addLog(new Date().toLocaleTimeString(), ticker, side, `[수동 주문 성공] 사용자가 직접 발송한 ${side} 즉시 주문이 정상 접수되었습니다.`);
+                    addLog(formatKstTime(), ticker, side, `[수동 주문 성공] 사용자가 직접 발송한 ${side} 즉시 주문이 정상 접수되었습니다.`);
                 } else {
                     alert("수동 주문 실패: " + res.error);
                 }
@@ -5362,6 +5788,34 @@ HTML_CONTENT = """
                 .map(c => `#${c.cycle_number} ${c.angle_pct_per_month >= 0 ? '+' : ''}${c.angle_pct_per_month}%/월`)
                 .join('<br>');
             el.innerHTML = `🔄 ${cycleMatch.summary}<br><span style="opacity:0.75; font-size:9px; display:block; margin-top:4px;">과거 사이클 각도:<br>${hist || '-'}</span>`;
+        }
+
+        function updateBearPatternPanel(ticker, bearPattern, ranking) {
+            const el = document.getElementById(`bear-pattern-${ticker}`);
+            if (!el || ticker === 'USDT') return;
+            if (!bearPattern || !bearPattern.entry_timing) {
+                el.innerText = '월봉 하락 패턴·바닥선 분석 대기 중...';
+                return;
+            }
+            const t = bearPattern.entry_timing;
+            const styleLabel = {
+                scalp_fast: '단타(빠른 익절)',
+                swing_bottom: '바닥권 스윙',
+                cautious_swing: '바닥 접근 보수',
+                wait: '진입 대기',
+            }[t.entry_style] || t.entry_style;
+            const eps = (bearPattern.historical_episodes || [])
+                .slice(-4)
+                .map(e => `#${e.episode_number} ${(e.peak_date || '').slice(0, 7)} -${e.drawdown_pct}%`)
+                .join(', ');
+            let rankHtml = '';
+            if (ranking && ranking.summary) {
+                rankHtml = `<br><span style="opacity:0.8; font-size:9px;">📊 ${ranking.summary}</span>`;
+            }
+            el.innerHTML = `📉 월봉 하락 ${bearPattern.episode_count || 0}회 · 진입점수 <b>${t.entry_score}</b> (${styleLabel})<br>`
+                + `<span style="opacity:0.85; font-size:9px;">${t.summary}</span>`
+                + (eps ? `<br><span style="opacity:0.7; font-size:9px;">역사 패턴: ${eps}</span>` : '')
+                + rankHtml;
         }
 
         function formatProfitPct(val) {
@@ -5414,7 +5868,7 @@ HTML_CONTENT = """
             const cycleNote = od.cycle_match_cycle
                 ? ` · ${od.cycle_match_cycle}번째 사이클 참고(${od.cycle_similarity_pct || 0}%)`
                 : '';
-            const applied = od.applied_at ? od.applied_at.replace('T', ' ').slice(0, 16) : '-';
+            const applied = od.applied_at ? formatKstDateTime(od.applied_at) : '-';
             const sellInfo = active.sell_strategy || active.risk_type || '-';
             const holdInfo = active.avg_hold_days ? ` · 평균보유 ${active.avg_hold_days}일` : '';
             el.innerHTML = `✅ <b>디폴트 적용</b> ${regime}: ${active.logic || '-'} ${strats}${bearNote}<br>`
@@ -5878,7 +6332,7 @@ HTML_CONTENT = """
 
             // 엔진에 적용 및 로그 기록
             applySettingsToEngine();
-            addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', '전략 UI 및 엔진 설정이 검증된 기본 설정으로 복구되었습니다.');
+            addLog(formatKstTime(), activeTicker, 'SYSTEM', '전략 UI 및 엔진 설정이 검증된 기본 설정으로 복구되었습니다.');
         }
 
         async function applySettingsToEngine() {
@@ -6001,15 +6455,15 @@ HTML_CONTENT = """
                     syncRiskPanelForTactic(tickerConfigs[activeTicker].tactics[currentRegime]);
                     const badgeEl = document.getElementById(`badge-text-${activeTicker}`);
                     if (badgeEl) badgeEl.innerText = formatStrategyBadge(effectiveLogic);
-                    addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `복합 전략 설정이 런타임 엔진에 실시간 적용되었습니다. (${effectiveLogic})`);
+                    addLog(formatKstTime(), activeTicker, 'SYSTEM', `복합 전략 설정이 런타임 엔진에 실시간 적용되었습니다. (${effectiveLogic})`);
                     updateStrategyDetailsTable(activeTicker, tickerConfigs[activeTicker]);
                     updateConfigStatusBadge();
                 } else {
-                    addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `설정 적용 실패: ${res.error}`);
+                    addLog(formatKstTime(), activeTicker, 'SYSTEM', `설정 적용 실패: ${res.error}`);
                 }
             } catch (e) {
                 console.error("Apply settings error:", e);
-                addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `설정 적용 요청 실패.`);
+                addLog(formatKstTime(), activeTicker, 'SYSTEM', `설정 적용 요청 실패.`);
             }
         }
 
@@ -6023,7 +6477,7 @@ HTML_CONTENT = """
                 return;
             }
             
-            addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `KRW-${ticker} 종목 추가 요청 중...`);
+            addLog(formatKstTime(), null, 'SYSTEM', `KRW-${ticker} 종목 추가 요청 중...`);
             
             try {
                 const response = await fetch('/api/tickers', {
@@ -6033,15 +6487,15 @@ HTML_CONTENT = """
                 });
                 const res = await response.json();
                 if (res.success) {
-                    addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', `종목이 성공적으로 추가되었습니다. 웹소켓 구독을 갱신합니다.`);
+                    addLog(formatKstTime(), ticker, 'SYSTEM', `종목이 성공적으로 추가되었습니다. 웹소켓 구독을 갱신합니다.`);
                     await loadAllConfigs();
                     selectTicker(ticker);
                 } else {
-                    addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `종목 추가 실패: ${res.error}`);
+                    addLog(formatKstTime(), null, 'SYSTEM', `종목 추가 실패: ${res.error}`);
                 }
             } catch (e) {
                 console.error("Add ticker error:", e);
-                addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', `종목 추가 요청 중 네트워크 에러 발생.`);
+                addLog(formatKstTime(), null, 'SYSTEM', `종목 추가 요청 중 네트워크 에러 발생.`);
             }
         }
 
@@ -6069,7 +6523,7 @@ HTML_CONTENT = """
                 }
             } catch (e) {
                 console.error("Failed to load trade history:", e);
-                addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', '빗썸 과거 거래 내역을 불러오는데 실패했습니다.');
+                addLog(formatKstTime(), null, 'SYSTEM', '빗썸 과거 거래 내역을 불러오는데 실패했습니다.');
             }
         }
 
@@ -6082,7 +6536,7 @@ HTML_CONTENT = """
             ws.onopen = () => {
                 wsStatusEl.className = 'status-badge connected';
                 wsStatusText.innerText = '연결됨';
-                addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', '다중 타임프레임 PoC 웹소켓 브로커에 접속 성공.');
+                addLog(formatKstTime(), null, 'SYSTEM', '다중 타임프레임 PoC 웹소켓 브로커에 접속 성공.');
                 
                 // 엔진 설정을 조회하여 UI와 동기화
                 loadAllConfigs();
@@ -6101,7 +6555,7 @@ HTML_CONTENT = """
                 const msg = jsonParseSafe(event.data);
                 if (!msg) return;
                 
-                const timeStr = new Date(msg.data.timestamp).toLocaleTimeString();
+                const timeStr = formatKstTime(msg.data.timestamp);
                 const ticker = msg.data.ticker;
                 
                 if (msg.type === 'regime_change') {
@@ -6181,6 +6635,12 @@ HTML_CONTENT = """
                             tickerConfigs[ticker].cycle_analysis = msg.data.cycle_match;
                         }
                         updateCycleMatchPanel(ticker, msg.data.cycle_match);
+                    }
+                    if (msg.data.bear_pattern) {
+                        if (tickerConfigs[ticker]) {
+                            tickerConfigs[ticker].bear_pattern_analysis = msg.data.bear_pattern;
+                        }
+                        updateBearPatternPanel(ticker, msg.data.bear_pattern, msg.data.bear_entry_ranking);
                     }
                     if (msg.data.optimized_default) {
                         if (tickerConfigs[ticker]) {
@@ -6341,7 +6801,7 @@ HTML_CONTENT = """
             ws.onclose = () => {
                 wsStatusEl.className = 'status-badge';
                 wsStatusText.innerText = '연결 끊김';
-                addLog(new Date().toLocaleTimeString(), null, 'SYSTEM', '브로커 연결 종료. 3초 후 재연결 시도...');
+                addLog(formatKstTime(), null, 'SYSTEM', '브로커 연결 종료. 3초 후 재연결 시도...');
                 setTimeout(connectWebSocket, 3000);
             };
 
@@ -6367,10 +6827,10 @@ HTML_CONTENT = """
                     const ind = document.getElementById(`status-ind-${ticker}`);
                     if (isStarting) {
                         ind.classList.add('active');
-                        addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', '자동매매 가동 시작.');
+                        addLog(formatKstTime(), ticker, 'SYSTEM', '자동매매 가동 시작.');
                     } else {
                         ind.classList.remove('active');
-                        addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', '자동매매 일시정지.');
+                        addLog(formatKstTime(), ticker, 'SYSTEM', '자동매매 일시정지.');
                     }
                     if (tickerConfigs[ticker]) {
                         tickerConfigs[ticker].active = isStarting;
@@ -6394,7 +6854,7 @@ HTML_CONTENT = """
                 });
                 const res = await response.json();
                 if (res.success) {
-                    addLog(new Date().toLocaleTimeString(), ticker, 'SYSTEM', '종목이 완전히 삭제되었습니다.');
+                    addLog(formatKstTime(), ticker, 'SYSTEM', '종목이 완전히 삭제되었습니다.');
                     const card = document.getElementById(`card-${ticker}`);
                     if (card) card.remove();
                     
@@ -6725,7 +7185,7 @@ HTML_CONTENT = """
                     syncBearStrategyUI(activeTicker);
                     loadConfigForTicker(activeTicker);
                     const labels = { auto: 'AI 자동', custom_bear: 'CustomBear', mixed: 'Mixed(3대지표)' };
-                    addLog(new Date().toLocaleTimeString(), activeTicker, 'SYSTEM', `${activeTicker} 하락장 전략을 ${labels[strategy] || strategy}으로 변경 적용했습니다.`);
+                    addLog(formatKstTime(), activeTicker, 'SYSTEM', `${activeTicker} 하락장 전략을 ${labels[strategy] || strategy}으로 변경 적용했습니다.`);
                 } else {
                     alert("전략 변경 실패: " + data.error);
                 }

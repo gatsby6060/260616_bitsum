@@ -1,8 +1,8 @@
 """
 backtester.py — 9년 실 데이터 기반 자동 파라미터 최적화 모듈
 =====================================================================
-■ 데이터:    빗썸 15분봉 캔들, 하루 96개 포인트 (매시 0·15·30·45분 KST)
-■ 최초 수집: 9년치 전체, 이후 매일 96개만 추가(증분)
+■ 데이터:    빗썸 15분봉만 수집·캐시 → 일/주/월은 집계로 파생 (별도 일·주·월 API 없음)
+■ 최초 수집: 9년치 15분봉 전체, 이후 매일 96개만 추가(증분)
 ■ 최적화:   BULL/BEAR/RANGE × 지표 7조합 × Logic 4종 × 리스크 기법/비율 그리드
 ■ 기준:     총수익·보유기간 우선 profit_score + MDD ≤ 50% 필터
 ■ 수수료:   빗썸 실측 편도 0.25% (왕복 0.50%)
@@ -13,6 +13,7 @@ import json
 import time
 import math
 import logging
+import calendar
 import requests
 import sys
 import io
@@ -37,6 +38,18 @@ except ImportError:
     HAS_NUMPY = False
 
 try:
+    from regime_detector import (
+        analyze_bear_pattern_context,
+        detect_historical_bear_episodes,
+        get_bear_pattern_params,
+        TICKER_CYCLE_PROFILE,
+    )
+    HAS_REGIME_DETECTOR = True
+except ImportError:
+    HAS_REGIME_DETECTOR = False
+    TICKER_CYCLE_PROFILE = {"BTC": {"bear_drawdown_pct": 25.0, "peak_lookback_days": 1095}}
+
+try:
     from usdt_fx_historical import (
         enrich_bars_with_historical_fx,
         ensure_daily_fx_for_bars,
@@ -54,6 +67,11 @@ USDT_FX_GRID = {
 
 # 지표 매도 최소 순수익 (왕복 수수료 이후) — 조기 소액 익절 억제
 SELL_MIN_PROFIT_GRID = [0, 0.005, 0.008, 0.012, 0.018, 0.025]
+
+# 하락장 청산 학습: 수수료 후 순이익 바닥 (실거래 BEAR_LIVE_MIN_NET_PROFIT 과 동일)
+BEAR_MIN_NET_PROFIT_FLOOR = 0.005
+# BEAR 최적화: 월봉 고점→하락 레그(코인별 역사 패턴 + 진행 중 패턴)만 시뮬레이션·기대수익 비교
+BEAR_OPTIM_MAX_TAKE_PROFIT_PCT = 0.025  # 하락장 익절 상한 — 5% 익절은 그리드에서 제외
 
 USDT_FUSION_BB_GRID = {
     "bb_period": [10, 15, 20],
@@ -117,7 +135,7 @@ DEFAULT_WEIGHTED_THRESHOLD = 0.5
 
 MDD_LIMIT = 0.50  # MDD 허용 한계 50%
 
-# 병렬 최적화: 물리 코어 6개 사용 (12 스레드 중 절반만 — 나머지는 OS·실시간 매매용 여유)
+# 병렬 최적화: 7 워커 (i5-12400F 6코어/12스레드 — 물리코어+1 여유)
 OPTIMIZER_MAX_WORKERS = 7
 # Windows 프로세스 spawn 비용(~5초) 때문에 소량 배치는 순차 실행
 PARALLEL_MIN_BATCH = 80
@@ -140,7 +158,36 @@ def _iter_trailing_stop_grid():
             yield cfg
 
 
-# 리스크 관리 그리드 (장세·코인별 최적화 대상 — 익절·트레일링 확대)
+def _iter_bear_scalp_grid():
+    """하락장 BearScalp 그리드 — 익절 상한 BEAR_OPTIM_MAX_TAKE_PROFIT_PCT."""
+    tp_levels = [0.006, 0.008, 0.01, 0.012, 0.015, 0.018, 0.022, BEAR_OPTIM_MAX_TAKE_PROFIT_PCT]
+    for sl in (0.02, 0.025, 0.03):
+        for tp in tp_levels:
+            for act in (0.005, 0.006, 0.008, 0.01, 0.012, 0.018):
+                for trail in (0.003, 0.004, 0.005, 0.006, 0.008):
+                    if act > tp or tp < BEAR_MIN_NET_PROFIT_FLOOR or tp > BEAR_OPTIM_MAX_TAKE_PROFIT_PCT:
+                        continue
+                    yield {
+                        "risk_type": "BearScalp",
+                        "stop_loss_pct": sl,
+                        "take_profit_pct": max(tp, BEAR_MIN_NET_PROFIT_FLOOR),
+                        "trail_activate_profit_pct": max(act, BEAR_MIN_NET_PROFIT_FLOOR),
+                        "trail_pct": trail,
+                    }
+
+
+RISK_GRID_RANGE = [
+    *_iter_bear_scalp_grid(),
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.03},
+    {"risk_type": "TrailingStop", "trail_activate_profit_pct": 0.008, "trail_pct": 0.005},
+    *_iter_trailing_stop_grid(),
+]
+
+RISK_GRID_BEAR = [
+    *_iter_bear_scalp_grid(),
+    {"risk_type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.02},
+    {"risk_type": "TrailingStop", "trail_activate_profit_pct": 0.006, "trail_pct": 0.004},
+]
 RISK_GRID_BULL = [
     {"risk_type": "None"},
     {"risk_type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.04},
@@ -150,14 +197,7 @@ RISK_GRID_BULL = [
     *_iter_trailing_stop_grid(),
 ]
 
-RISK_GRID_BEAR_RANGE = [
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.015, "take_profit_pct": 0.03},
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.02, "take_profit_pct": 0.04},
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.025, "take_profit_pct": 0.05},
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.03, "take_profit_pct": 0.06},
-    {"risk_type": "StopLoss", "stop_loss_pct": 0.035, "take_profit_pct": 0.08},
-    *_iter_trailing_stop_grid(),
-]
+RISK_GRID_BEAR_RANGE = RISK_GRID_RANGE  # 하위 호환 별칭
 
 
 def _active_indicator_count(combo: dict) -> int:
@@ -197,8 +237,10 @@ def _iter_risk_configs(target_regime: str):
     """장세별 리스크 기법·비율 조합."""
     if target_regime == "BULL":
         yield from RISK_GRID_BULL
+    elif target_regime == "BEAR":
+        yield from RISK_GRID_BEAR
     else:
-        yield from RISK_GRID_BEAR_RANGE
+        yield from RISK_GRID_RANGE
 
 
 def _iter_risk_with_sell_min(target_regime: str):
@@ -206,6 +248,107 @@ def _iter_risk_with_sell_min(target_regime: str):
     for risk_cfg in _iter_risk_configs(target_regime):
         for min_s in SELL_MIN_PROFIT_GRID:
             yield {**risk_cfg, "min_strategy_sell_profit_pct": min_s}
+
+
+def _parse_bar_ts(ts_str: str) -> datetime:
+    s = ts_str.replace("Z", "+00:00")
+    if "+" not in s[10:] and "T" in s:
+        s = s + "+09:00"
+    return datetime.fromisoformat(s)
+
+
+def _filter_regime_recent_bars(regime_data: list, recent_days: int) -> list:
+    """장세 필터된 봉 중 최근 recent_days 일만 반환."""
+    if not regime_data or recent_days <= 0:
+        return regime_data
+    try:
+        last_ts = _parse_bar_ts(regime_data[-1]["ts"])
+        cutoff = last_ts - timedelta(days=recent_days)
+        return [d for d in regime_data if _parse_bar_ts(d["ts"]) >= cutoff]
+    except Exception:
+        return regime_data
+
+
+from timeframe_aggregate import (
+    bar_date_str as _bar_date_str,
+    monthly_closes_from_bars as _monthly_closes_from_bars,
+    daily_closes_from_bars as _daily_closes_from_bars,
+)
+
+
+def _month_end_date(ym: str) -> str:
+    year, month = int(ym[:4]), int(ym[5:7])
+    last_day = calendar.monthrange(year, month)[1]
+    return f"{year}-{month:02d}-{last_day}"
+
+
+def _expand_episode_date_range(ep: dict) -> dict:
+    """월봉 기준 에피소드를 15m 봉 필터용 일자 구간으로 확장."""
+    start_ym = ep["start_date"][:7]
+    end_ym = ep["end_date"][:7]
+    return {
+        **ep,
+        "start_date": f"{start_ym}-01",
+        "end_date": _month_end_date(end_ym),
+    }
+
+
+
+def _detect_bear_episodes_from_data(data: list, market: str) -> list:
+    """코인별 월봉 고점→하락 레그 + 진행 중 패턴 (이후 유사 패턴도 동일 규칙으로 학습)."""
+    if not data or not HAS_REGIME_DETECTOR:
+        return []
+    ticker = market.replace("KRW-", "")
+    months, m_prices = _monthly_closes_from_bars(data)
+    m_dates = [f"{m}-01" for m in months]
+
+    ctx = analyze_bear_pattern_context(m_prices, ticker, m_dates)
+    episodes = list(ctx.get("historical_episodes") or [])
+
+    if len(episodes) < 2:
+        params = get_bear_pattern_params(ticker)
+        dates, prices = _daily_closes_from_bars(data)
+        peak_lb = min(180, int(TICKER_CYCLE_PROFILE.get(ticker, {}).get("peak_lookback_days", 365)) // 6)
+        episodes = detect_historical_bear_episodes(
+            prices,
+            dates,
+            min_drawdown_pct=params["min_drawdown_pct"],
+            peak_lookback=max(90, peak_lb),
+            min_duration_days=30,
+            min_peak_gap_days=90,
+            max_episodes=params["max_episodes"],
+        )
+
+    episodes = [_expand_episode_date_range(ep) for ep in episodes]
+    return episodes
+
+
+def _filter_bear_episode_bars(data: list, episodes: list) -> list:
+    if not episodes:
+        return []
+    return [
+        d for d in data
+        if any(ep["start_date"] <= _bar_date_str(d) <= ep["end_date"] for ep in episodes)
+    ]
+
+
+def _with_bear_optim_context(params: dict, regime: str, bear_episodes: list = None) -> dict:
+    if regime != "BEAR":
+        return params
+    out = dict(params)
+    out["bear_optim_use_episodes"] = True
+    if bear_episodes:
+        out["bear_episodes"] = bear_episodes
+    return out
+
+
+def _bear_profit_basis(regime_data: list, full_data: list = None, episodes: list = None) -> list:
+    """BEAR 기대수익·비교용 데이터 — 역사적 하락 패턴 구간 봉 우선."""
+    if episodes and full_data:
+        basis = _filter_bear_episode_bars(full_data, episodes)
+        if len(basis) >= 30:
+            return basis
+    return regime_data
 
 
 def _optimizer_profit_score(result: dict) -> float:
@@ -271,6 +414,14 @@ def _build_risk_output(params: dict) -> dict:
         act = params.get("trail_activate_profit_pct", 0)
         if act:
             out["trail_activate_profit_pct"] = act
+    elif rt == "BearScalp":
+        out = {
+            "type": "BearScalp",
+            "stop_loss_pct": params.get("stop_loss_pct", 0.025),
+            "take_profit_pct": params.get("take_profit_pct", 0.012),
+            "trail_pct": params.get("trail_pct", 0.004),
+            "trail_activate_profit_pct": params.get("trail_activate_profit_pct", 0.006),
+        }
     else:
         out = {"type": "None"}
     if min_sell:
@@ -293,7 +444,22 @@ def _should_risk_exit(params: dict, pnl_pct: float, peak_price: float, price: fl
         if activate > 0 and pnl_pct < activate:
             return False
         drawdown = (peak_price - price) / peak_price
-        return drawdown >= trail
+        return drawdown >= trail and pnl_pct >= BEAR_MIN_NET_PROFIT_FLOOR
+    if rt == "BearScalp":
+        sl = float(params.get("stop_loss_pct", 0.025))
+        tp = float(params.get("take_profit_pct", 0.012))
+        trail = float(params.get("trail_pct", 0.004))
+        activate = float(params.get("trail_activate_profit_pct", 0.006))
+        if pnl_pct <= -sl:
+            return True
+        if pnl_pct >= max(tp, BEAR_MIN_NET_PROFIT_FLOOR):
+            return True
+        if peak_price <= 0:
+            return False
+        if activate > 0 and pnl_pct < activate:
+            return False
+        drawdown = (peak_price - price) / peak_price
+        return drawdown >= trail and pnl_pct >= BEAR_MIN_NET_PROFIT_FLOOR
     return False
 
 
@@ -743,7 +909,20 @@ class StrategySimulator:
         }
         """
         target = params["target_regime"]
-        regime_data = [d for d in data if d["regime"] == target]
+        episodes = params.get("bear_episodes") or []
+        if target == "BEAR" and params.get("bear_optim_use_episodes") and episodes:
+            episode_bars = _filter_bear_episode_bars(data, episodes)
+            if len(episode_bars) >= 30:
+                regime_data = episode_bars
+            else:
+                regime_data = [d for d in data if d["regime"] == target]
+        else:
+            regime_data = [d for d in data if d["regime"] == target]
+            recent_days = params.get("bear_optim_recent_days")
+            if target == "BEAR" and recent_days:
+                sliced = _filter_regime_recent_bars(regime_data, int(recent_days))
+                if len(sliced) >= 30:
+                    regime_data = sliced
 
         if len(regime_data) < 30:
             return {"sharpe": -999, "mdd": 1.0, "total_return": 0, "win_rate": 0, "trades": 0, **_hold_stats([])}
@@ -1309,9 +1488,24 @@ class GridSearchOptimizer:
         BEAR 장세는 믹스 전략과 CustomBear 전략을 각각 돌려 비교 결과 출력.
         """
         regime_data = [d for d in data if d["regime"] == regime]
-        
+        episodes = _detect_bear_episodes_from_data(data, market) if regime == "BEAR" else []
+        profit_basis = (
+            _bear_profit_basis(regime_data, data, episodes) if regime == "BEAR" else regime_data
+        )
+
         def get_profits(ret_pct):
-            return _calculate_expected_profits(ret_pct, regime_data)
+            return _calculate_expected_profits(ret_pct, profit_basis)
+
+        if regime == "BEAR":
+            ep_summary = ", ".join(
+                f"#{ep['episode_number']} {ep['peak_date'][:7]} -{ep['drawdown_pct']:.0f}%"
+                for ep in episodes[:6]
+            )
+            logger.info(
+                f"[Optimizer] {market}/BEAR: 역사적 하락 패턴 {len(episodes)}개 "
+                f"({ep_summary}) → {len(profit_basis)}봉 비교 "
+                f"(익절 상한 {BEAR_OPTIM_MAX_TAKE_PROFIT_PCT * 100:.1f}%)"
+            )
 
         if regime != "BEAR":
             # BULL, RANGE는 기존 믹스 전략만 수행
@@ -1324,8 +1518,12 @@ class GridSearchOptimizer:
             mixed_span = span_pct * 0.5
             custom_span = span_pct * 0.5
             
-            mixed_params, mixed_result = self._optimize_mixed(data, regime, market, base_pct, mixed_span)
-            custom_params, custom_result = self._optimize_custom_bear(data, regime, market, base_pct + mixed_span, custom_span)
+            mixed_params, mixed_result = self._optimize_mixed(
+                data, regime, market, base_pct, mixed_span, bear_episodes=episodes
+            )
+            custom_params, custom_result = self._optimize_custom_bear(
+                data, regime, market, base_pct + mixed_span, custom_span, bear_episodes=episodes
+            )
             
             if mixed_params is None:
                 mixed_out = _default_regime_params(regime)
@@ -1346,7 +1544,15 @@ class GridSearchOptimizer:
                 **mixed_out  # 하위 호환 병합
             }
 
-    def _optimize_mixed(self, data: list, regime: str, market: str, base_pct: float, span_pct: float):
+    def _optimize_mixed(
+        self,
+        data: list,
+        regime: str,
+        market: str,
+        base_pct: float,
+        span_pct: float,
+        bear_episodes: list = None,
+    ):
         best_score = -9999.0
         best_result = None
         best_params = None
@@ -1367,7 +1573,9 @@ class GridSearchOptimizer:
 
         # 1단계: 전략 파라미터 그리드 (기본 리스크 1종으로 후보 추림)
         phase1_params = [
-            {**base, **default_risk, "target_regime": regime}
+            _with_bear_optim_context(
+                {**base, **default_risk, "target_regime": regime}, regime, bear_episodes
+            )
             for base in strategy_combos
         ]
 
@@ -1397,7 +1605,9 @@ class GridSearchOptimizer:
 
         # 2단계: 상위 전략 × 리스크 그리드
         phase2_params = [
-            {**base, **risk_cfg, "target_regime": regime}
+            _with_bear_optim_context(
+                {**base, **risk_cfg, "target_regime": regime}, regime, bear_episodes
+            )
             for base in top_bases
             for risk_cfg in risk_combos
         ]
@@ -1438,7 +1648,15 @@ class GridSearchOptimizer:
         _save_progress("optimizing", base_pct + span_pct, f"{market} {regime} 믹스전략 최적화 완료")
         return best_params, best_result
 
-    def _optimize_custom_bear(self, data: list, regime: str, market: str, base_pct: float, span_pct: float):
+    def _optimize_custom_bear(
+        self,
+        data: list,
+        regime: str,
+        market: str,
+        base_pct: float,
+        span_pct: float,
+        bear_episodes: list = None,
+    ):
         best_score = -9999.0
         best_result = None
         best_params = None
@@ -1455,7 +1673,7 @@ class GridSearchOptimizer:
         for params in self._iter_custom_bear_params():
             p = dict(params)
             p["target_regime"] = regime
-            custom_params_list.append(p)
+            custom_params_list.append(_with_bear_optim_context(p, regime, bear_episodes))
 
         def _on_custom(done, total):
             nonlocal last_update_time
