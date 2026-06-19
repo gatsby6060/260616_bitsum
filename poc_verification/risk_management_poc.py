@@ -129,6 +129,7 @@ except ImportError:
 
 # 글로벌 설정 및 엔진 인스턴스 홀더
 USDT_DEFAULT_MIN_CONSIDER_GAP_KRW = 40
+USDT_FX_REFRESH_MINUTES = 10  # USD/KRW 기준환율 API 갱신 주기 — USDT 체결가는 WebSocket 실시간
 
 def _usdt_fx_bollinger_params() -> dict:
     return {
@@ -136,7 +137,7 @@ def _usdt_fx_bollinger_params() -> dict:
         "min_target_profit_pct": 0.2,
         "sell_premium_pct": 0.15,
         "reference_krw": 0,
-        "fx_refresh_minutes": 60,
+        "fx_refresh_minutes": USDT_FX_REFRESH_MINUTES,
         "fee_one_way_pct": 0.25,
         "bb_period": 20,
         "bb_std_dev": 2.0,
@@ -165,7 +166,7 @@ def _build_default_usdt_config() -> dict:
             "min_consider_gap_krw": USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
             "min_target_profit_pct": 0.2,
             "sell_premium_pct": 0.15,
-            "fx_refresh_minutes": 60,
+            "fx_refresh_minutes": USDT_FX_REFRESH_MINUTES,
             "fee_one_way_pct": 0.25,
             "bb_period": 20,
             "bb_std_dev": 2.0,
@@ -469,7 +470,7 @@ def _usdt_live_fx_allows_buy(config: dict, price: float) -> bool:
         return True
     fx_cfg = config.get("usdt_fx", {})
     manual = float(fx_cfg.get("reference_krw") or 0)
-    ttl = int(fx_cfg.get("fx_refresh_minutes", 60)) * 60
+    ttl = int(fx_cfg.get("fx_refresh_minutes", USDT_FX_REFRESH_MINUTES)) * 60
     fair, _ = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
     fee = float(fx_cfg.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
     return usdt_fx_buy_allowed(
@@ -858,6 +859,9 @@ def load_persisted_configs():
         if usdt_fx.get("min_consider_gap_krw", 30) < USDT_DEFAULT_MIN_CONSIDER_GAP_KRW:
             usdt_fx["min_consider_gap_krw"] = USDT_DEFAULT_MIN_CONSIDER_GAP_KRW
             _sync_usdt_strategy_params(usdt_fx)
+        if usdt_fx.get("fx_refresh_minutes", 60) != USDT_FX_REFRESH_MINUTES:
+            usdt_fx["fx_refresh_minutes"] = USDT_FX_REFRESH_MINUTES
+            _sync_usdt_strategy_params(usdt_fx)
         tactics = usdt_cfg.get("tactics", {})
         uses_legacy = all(
             any(s.get("name") == "ReversePremium" for s in tactics.get(reg, {}).get("strategies", []))
@@ -1221,7 +1225,7 @@ class BithumbUsdtReversePremiumStrategy(BaseStrategy):
         "min_target_profit_pct": 0.2,
         "sell_premium_pct": 0.15,
         "reference_krw": 0,
-        "fx_refresh_minutes": 60,
+        "fx_refresh_minutes": USDT_FX_REFRESH_MINUTES,
         "fee_one_way_pct": 0.25,
     }
 
@@ -1231,7 +1235,7 @@ class BithumbUsdtReversePremiumStrategy(BaseStrategy):
             return "HOLD"
 
         manual = float(self.params.get("reference_krw") or 0)
-        ttl = int(self.params.get("fx_refresh_minutes", 60)) * 60
+        ttl = int(self.params.get("fx_refresh_minutes", USDT_FX_REFRESH_MINUTES)) * 60
         fair, source = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
         fx = calc_reverse_premium_pct(tick, fair)
         rev = fx["reverse_premium_pct"]
@@ -1317,7 +1321,7 @@ class BithumbUsdtFxBollingerStrategy(BaseStrategy):
             return "HOLD"
 
         manual = float(self.params.get("reference_krw") or 0)
-        ttl = int(self.params.get("fx_refresh_minutes", 60)) * 60
+        ttl = int(self.params.get("fx_refresh_minutes", USDT_FX_REFRESH_MINUTES)) * 60
         fair, source = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
         fx = calc_reverse_premium_pct(tick, fair)
         rev = fx["reverse_premium_pct"]
@@ -2912,7 +2916,7 @@ def usdt_fx_status():
         worker = engine_instance._workers["USDT"]
         price = worker.position.current_price
     manual = float(fx_cfg.get("reference_krw") or 0)
-    ttl = int(fx_cfg.get("fx_refresh_minutes", 60)) * 60
+    ttl = int(fx_cfg.get("fx_refresh_minutes", USDT_FX_REFRESH_MINUTES)) * 60
     fair, source = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
     fx = calc_reverse_premium_pct(price, fair) if price > 0 else calc_reverse_premium_pct(0, fair)
     fee_one_way = float(fx_cfg.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
@@ -2957,6 +2961,7 @@ def usdt_fx_status():
         "sell_premium_pct": fx_cfg.get("sell_premium_pct", 0.15),
         "fee_one_way_pct": fee_one_way * 100,
         "reference_krw_manual": manual,
+        "fx_refresh_minutes": int(fx_cfg.get("fx_refresh_minutes", USDT_FX_REFRESH_MINUTES)),
     }
 
 def _sync_usdt_strategy_params(fx: dict) -> None:
@@ -4137,7 +4142,8 @@ HTML_CONTENT = """
                         USDT 환율+볼린저 융합 (역프 할인 · BB 타점)
                     </h2>
                     <p style="font-size:10px; color:var(--text-secondary); margin:0 0 10px 0; line-height:1.5;">
-                        <strong>1차</strong> 기준환율과 차이 ≥ 검토 gap → <strong>2차</strong> 수수료·목표 + 15m BB 하단 → 매수
+                        <strong>기준환율</strong> 10분마다 API 갱신 · <strong>빗썸 USDT</strong> WebSocket 실시간 비교<br>
+                        <strong>1차</strong> 환율차 ≥ 검토 gap(기본 40원) → <strong>2차</strong> 수수료·목표 + 15m BB 하단 → 매수
                     </p>
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:10px; font-size:11px;">
                         <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
@@ -4901,6 +4907,8 @@ HTML_CONTENT = """
         }
         updateKstClock();
         setInterval(updateKstClock, 1000);
+        const USDT_FX_REFRESH_MS = 10 * 60 * 1000;
+        setInterval(refreshUsdtFxStatus, USDT_FX_REFRESH_MS);
 
         // ══════════════════════════════════════════════════════════════
         // 로그 출력 헬퍼
@@ -5437,7 +5445,12 @@ HTML_CONTENT = """
             const hintEl = document.getElementById('usdt-signal-hint');
             const srcEl = document.getElementById('usdt-fair-source');
             if (fairEl) fairEl.innerText = d.fair_krw ? `${d.fair_krw.toLocaleString()}원` : '-';
-            if (srcEl) srcEl.innerText = d.fair_source === 'manual' ? '수동 입력' : (d.fair_source === 'api' ? '실시간 API' : '기본값');
+            if (srcEl) {
+                const mins = d.fx_refresh_minutes || 10;
+                if (d.fair_source === 'manual') srcEl.innerText = '수동 입력';
+                else if (d.fair_source === 'api' || (d.fair_source || '').includes('api')) srcEl.innerText = `${mins}분마다 API 갱신`;
+                else srcEl.innerText = '기본값';
+            }
             if (mktEl) mktEl.innerText = d.usdt_krw ? `${d.usdt_krw.toLocaleString()}원` : '-';
             if (revEl) {
                 const gap = d.gap_krw ?? 0;

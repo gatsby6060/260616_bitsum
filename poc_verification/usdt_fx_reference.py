@@ -10,7 +10,7 @@ logger = logging.getLogger("UsdtFxReference")
 
 FX_API_URL = "https://open.er-api.com/v6/latest/USD"
 DEFAULT_KRW = 1400.0
-CACHE_TTL_SEC = 3600
+CACHE_TTL_SEC = 600  # 기본 10분 (USDT_FX_REFRESH_MINUTES와 동일)
 
 _cache = {"krw": 0.0, "updated_at": 0.0, "source": "default"}
 
@@ -18,7 +18,7 @@ _cache = {"krw": 0.0, "updated_at": 0.0, "source": "default"}
 def get_usd_krw_rate(manual_krw: float = 0.0, cache_ttl_sec: int = CACHE_TTL_SEC) -> tuple:
     """
     USD 1달러당 KRW 기준환율 반환.
-    manual_krw > 0 이면 수동값 우선, 아니면 API 캐시(1시간) → 실패 시 DEFAULT_KRW.
+    manual_krw > 0 이면 수동값 우선, 아니면 API 캐시(기본 10분) → 실패 시 DEFAULT_KRW.
     Returns: (rate, source_label)
     """
     if manual_krw and manual_krw > 0:
