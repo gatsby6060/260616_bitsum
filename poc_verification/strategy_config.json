@@ -59,7 +59,8 @@
                     {
                         "name": "RSI",
                         "enabled": true,
-                        "weight": 1,
+                        "weight": 1.0,
+                        "timeframe": "15m",
                         "params": {
                             "period": 10,
                             "oversold": 25,
@@ -69,7 +70,8 @@
                     {
                         "name": "Bollinger",
                         "enabled": true,
-                        "weight": 1,
+                        "weight": 1.0,
+                        "timeframe": "15m",
                         "params": {
                             "period": 15,
                             "std_dev": 2.5
@@ -78,31 +80,24 @@
                     {
                         "name": "MACD",
                         "enabled": false,
-                        "weight": 1,
+                        "weight": 1.0,
+                        "timeframe": "15m",
                         "params": {
                             "fast": 12,
                             "slow": 26,
-                            "signal_period": 3
-                        }
-                    },
-                    {
-                        "name": "CustomBear",
-                        "enabled": true,
-                        "weight": 1,
-                        "params": {
-                            "lookback": 16,
-                            "drop_pct": 0.08,
-                            "volume_ratio": 3,
-                            "trail_pct": 0.04,
-                            "stop_loss": 0.01,
-                            "time_cut": 36
+                            "signal_period": 9
                         }
                     }
                 ],
                 "risk": {
                     "type": "StopLoss",
                     "stop_loss_pct": 0.03,
-                    "take_profit_pct": 0.01
+                    "take_profit_pct": 0.05
+                },
+                "backtest_meta": {
+                    "avg_hold_hours": 46.9,
+                    "median_hold_hours": 27.2,
+                    "avg_hold_days": 1.95
                 }
             },
             "RANGE": {
@@ -253,8 +248,8 @@
             "resolved_usdt_strategy": null,
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
-            "cycle_match_cycle": 11,
-            "cycle_similarity_pct": 71.1,
+            "cycle_match_cycle": 8,
+            "cycle_similarity_pct": 71.3,
             "regimes": {
                 "BULL": {
                     "logic": "AND",
@@ -307,67 +302,67 @@
             }
         },
         "cycle_analysis": {
-            "matched_cycle_number": 11,
+            "matched_cycle_number": 8,
             "total_cycles": 8,
-            "similarity_pct": 71.1,
-            "current_angle_pct_per_month": -0.21,
-            "current_angle_pct_per_day": -0.0071,
+            "similarity_pct": 71.3,
+            "current_angle_pct_per_month": -0.2,
+            "current_angle_pct_per_day": -0.0066,
             "matched_angle_pct_per_month": 3.38,
             "matched_rise_pct": 54.0,
             "matched_duration_days": 183,
-            "summary": "현재 회귀각 -0.2%/월 → 과거 11번째 상승 사이클(+3.4%/월, 유사도 71%)과 가장 유사",
+            "summary": "현재 회귀각 -0.2%/월 → 과거 8번째 상승 사이클(+3.4%/월, 유사도 71%)과 가장 유사",
             "historical_cycles": [
                 {
-                    "cycle_number": 5,
+                    "cycle_number": 2,
                     "angle_pct_per_month": 5.5,
                     "angle_pct_per_day": 0.1834,
                     "rise_pct": 1158.3,
                     "duration_days": 394
                 },
                 {
-                    "cycle_number": 6,
+                    "cycle_number": 3,
                     "angle_pct_per_month": 11.25,
                     "angle_pct_per_day": 0.3749,
                     "rise_pct": 132.1,
                     "duration_days": 113
                 },
                 {
-                    "cycle_number": 7,
+                    "cycle_number": 4,
                     "angle_pct_per_month": 4.38,
                     "angle_pct_per_day": 0.1459,
                     "rise_pct": 39.0,
                     "duration_days": 64
                 },
                 {
-                    "cycle_number": 8,
+                    "cycle_number": 5,
                     "angle_pct_per_month": 11.77,
                     "angle_pct_per_day": 0.3923,
                     "rise_pct": 92.9,
                     "duration_days": 104
                 },
                 {
-                    "cycle_number": 9,
+                    "cycle_number": 6,
                     "angle_pct_per_month": 4.79,
                     "angle_pct_per_day": 0.1597,
                     "rise_pct": 214.4,
                     "duration_days": 272
                 },
                 {
-                    "cycle_number": 10,
+                    "cycle_number": 7,
                     "angle_pct_per_month": 12.44,
                     "angle_pct_per_day": 0.4147,
                     "rise_pct": 118.2,
                     "duration_days": 134
                 },
                 {
-                    "cycle_number": 11,
+                    "cycle_number": 8,
                     "angle_pct_per_month": 3.38,
                     "angle_pct_per_day": 0.1126,
                     "rise_pct": 54.0,
                     "duration_days": 183
                 },
                 {
-                    "cycle_number": 12,
+                    "cycle_number": 9,
                     "angle_pct_per_month": 6.74,
                     "angle_pct_per_day": 0.2247,
                     "rise_pct": 29.3,
@@ -375,7 +370,130 @@
                 }
             ]
         },
-        "bear_auto_pick_reason": "1일 예상 수익 우세 (Mixed +0.08% > Custom +0.00%)"
+        "bear_auto_pick_reason": "1일 예상 수익 우세 (Mixed +0.08% > Custom +0.00%)",
+        "bear_pattern_analysis": {
+            "pattern_active": true,
+            "historical_episodes": [
+                {
+                    "episode_number": 1,
+                    "start_date": "2017-11-01",
+                    "end_date": "2019-04-01",
+                    "peak_date": "2017-11-01",
+                    "trough_date": "2018-12-01",
+                    "peak_price": 18657000.0,
+                    "trough_price": 3808000.0,
+                    "drawdown_pct": 79.6,
+                    "duration_days": 17
+                },
+                {
+                    "episode_number": 2,
+                    "start_date": "2019-05-01",
+                    "end_date": "2020-03-01",
+                    "peak_date": "2019-05-01",
+                    "trough_date": "2020-02-01",
+                    "peak_price": 12532000.0,
+                    "trough_price": 7630000.0,
+                    "drawdown_pct": 39.1,
+                    "duration_days": 10
+                },
+                {
+                    "episode_number": 3,
+                    "start_date": "2021-02-01",
+                    "end_date": "2022-11-01",
+                    "peak_date": "2021-02-01",
+                    "trough_date": "2022-11-01",
+                    "peak_price": 72067000.0,
+                    "trough_price": 21086000.0,
+                    "drawdown_pct": 70.7,
+                    "duration_days": 21
+                },
+                {
+                    "episode_number": 4,
+                    "start_date": "2021-09-01",
+                    "end_date": "2023-05-01",
+                    "peak_date": "2021-09-01",
+                    "trough_date": "2022-11-01",
+                    "peak_price": 73073000.0,
+                    "trough_price": 21086000.0,
+                    "drawdown_pct": 71.1,
+                    "duration_days": 20
+                },
+                {
+                    "episode_number": 5,
+                    "start_date": "2024-02-01",
+                    "end_date": "2024-09-01",
+                    "peak_date": "2024-02-01",
+                    "trough_date": "2024-07-01",
+                    "peak_price": 99205000.0,
+                    "trough_price": 78910000.0,
+                    "drawdown_pct": 20.5,
+                    "duration_days": 7
+                },
+                {
+                    "episode_number": 6,
+                    "start_date": "2024-12-01",
+                    "end_date": "2026-05-01",
+                    "peak_date": "2024-12-01",
+                    "trough_date": "2026-05-01",
+                    "peak_price": 156972000.0,
+                    "trough_price": 94809000.0,
+                    "drawdown_pct": 39.6,
+                    "duration_days": 17
+                },
+                {
+                    "episode_number": 7,
+                    "start_date": "2025-08-01",
+                    "end_date": "2026-05-01",
+                    "peak_date": "2025-08-01",
+                    "trough_date": "2026-05-01",
+                    "peak_price": 166311000.0,
+                    "trough_price": 94809000.0,
+                    "drawdown_pct": 43.0,
+                    "duration_days": 9
+                }
+            ],
+            "episode_count": 7,
+            "current_episode": {
+                "episode_number": 0,
+                "start_date": "2025-08-01",
+                "end_date": "2026-05-01",
+                "peak_date": "2025-08-01",
+                "trough_date": "2026-05-01",
+                "peak_price": 166311000.0,
+                "trough_price": 94809000.0,
+                "drawdown_pct": 43.0,
+                "duration_days": 9,
+                "ongoing": true,
+                "current_price": 94809000.0
+            },
+            "active_pattern": {
+                "active": true,
+                "months_since_peak": 9,
+                "drawdown_from_peak_pct": -43.0,
+                "slope_3m_pct": -8.42,
+                "peak_price": 166311000.0,
+                "peak_date_idx": 99
+            },
+            "entry_timing": {
+                "phase": "bottom_zone",
+                "entry_style": "swing_bottom",
+                "entry_score": 68.0,
+                "bottom_proximity_pct": 89.9,
+                "projected_bottom_price": 105408333.33333333,
+                "dist_to_bottom_pct": -10.1,
+                "pattern_active": true,
+                "drawdown_from_peak_pct": -43.0,
+                "summary": "예상 바닥선(105,408,333원) 부근 — ETH형 바닥 진입 구간"
+            },
+            "pattern_match": {
+                "matched_episode_number": 7,
+                "total_episodes": 7,
+                "similarity_pct": 100.0,
+                "matched_drawdown_pct": 43.0,
+                "summary": "현재 월봉 하락 43.0% → 과거 #7번 패턴(43.0%, 유사도 100%)"
+            },
+            "pattern_summary": "예상 바닥선(105,408,333원) 부근 — ETH형 바닥 진입 구간"
+        }
     },
     "ETH": {
         "active": true,
@@ -627,8 +745,8 @@
             "resolved_usdt_strategy": null,
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
-            "cycle_match_cycle": 8,
-            "cycle_similarity_pct": 80.7,
+            "cycle_match_cycle": 7,
+            "cycle_similarity_pct": 57.1,
             "regimes": {
                 "BULL": {
                     "logic": "VOTE",
@@ -681,67 +799,67 @@
             }
         },
         "cycle_analysis": {
-            "matched_cycle_number": 8,
+            "matched_cycle_number": 7,
             "total_cycles": 8,
-            "similarity_pct": 80.7,
-            "current_angle_pct_per_month": 17.27,
-            "current_angle_pct_per_day": 0.5758,
+            "similarity_pct": 57.1,
+            "current_angle_pct_per_month": 20.69,
+            "current_angle_pct_per_day": 0.6896,
             "matched_angle_pct_per_month": 14.48,
             "matched_rise_pct": 89.3,
             "matched_duration_days": 92,
-            "summary": "현재 회귀각 +17.3%/월 → 과거 8번째 상승 사이클(+14.5%/월, 유사도 81%)과 가장 유사",
+            "summary": "현재 회귀각 +20.7%/월 → 과거 7번째 상승 사이클(+14.5%/월, 유사도 57%)과 가장 유사",
             "historical_cycles": [
                 {
-                    "cycle_number": 2,
+                    "cycle_number": 1,
                     "angle_pct_per_month": 8.01,
                     "angle_pct_per_day": 0.2671,
                     "rise_pct": 339.6,
                     "duration_days": 193
                 },
                 {
-                    "cycle_number": 3,
+                    "cycle_number": 2,
                     "angle_pct_per_month": 2.87,
                     "angle_pct_per_day": 0.0957,
                     "rise_pct": 3573.8,
                     "duration_days": 511
                 },
                 {
-                    "cycle_number": 4,
+                    "cycle_number": 3,
                     "angle_pct_per_month": 11.28,
-                    "angle_pct_per_day": 0.3761,
+                    "angle_pct_per_day": 0.376,
                     "rise_pct": 181.4,
                     "duration_days": 158
                 },
                 {
-                    "cycle_number": 5,
+                    "cycle_number": 4,
                     "angle_pct_per_month": 5.91,
-                    "angle_pct_per_day": 0.1969,
+                    "angle_pct_per_day": 0.197,
                     "rise_pct": 57.4,
                     "duration_days": 69
                 },
                 {
-                    "cycle_number": 6,
+                    "cycle_number": 5,
                     "angle_pct_per_month": 8.84,
                     "angle_pct_per_day": 0.2945,
                     "rise_pct": 82.8,
                     "duration_days": 106
                 },
                 {
-                    "cycle_number": 7,
+                    "cycle_number": 6,
                     "angle_pct_per_month": 8.18,
                     "angle_pct_per_day": 0.2728,
                     "rise_pct": 168.2,
                     "duration_days": 151
                 },
                 {
-                    "cycle_number": 8,
+                    "cycle_number": 7,
                     "angle_pct_per_month": 14.48,
                     "angle_pct_per_day": 0.4826,
                     "rise_pct": 89.3,
                     "duration_days": 92
                 },
                 {
-                    "cycle_number": 9,
+                    "cycle_number": 8,
                     "angle_pct_per_month": 12.04,
                     "angle_pct_per_day": 0.4013,
                     "rise_pct": 202.2,
@@ -749,7 +867,141 @@
                 }
             ]
         },
-        "bear_auto_pick_reason": "2주 예상 수익 우세 (Mixed +0.05% > Custom +0.04%)"
+        "bear_auto_pick_reason": "2주 예상 수익 우세 (Mixed +0.05% > Custom +0.04%)",
+        "bear_pattern_analysis": {
+            "pattern_active": true,
+            "historical_episodes": [
+                {
+                    "episode_number": 1,
+                    "start_date": "2017-12-01",
+                    "end_date": "2019-05-01",
+                    "peak_date": "2017-12-01",
+                    "trough_date": "2018-12-01",
+                    "peak_price": 1235000.0,
+                    "trough_price": 117700.0,
+                    "drawdown_pct": 90.5,
+                    "duration_days": 17
+                },
+                {
+                    "episode_number": 2,
+                    "start_date": "2019-05-01",
+                    "end_date": "2020-01-01",
+                    "peak_date": "2019-05-01",
+                    "trough_date": "2019-11-01",
+                    "peak_price": 343900.0,
+                    "trough_price": 152200.0,
+                    "drawdown_pct": 55.7,
+                    "duration_days": 8
+                },
+                {
+                    "episode_number": 3,
+                    "start_date": "2020-01-01",
+                    "end_date": "2020-03-01",
+                    "peak_date": "2020-01-01",
+                    "trough_date": "2020-02-01",
+                    "peak_price": 267000.0,
+                    "trough_price": 160700.0,
+                    "drawdown_pct": 39.8,
+                    "duration_days": 2
+                },
+                {
+                    "episode_number": 4,
+                    "start_date": "2021-03-01",
+                    "end_date": "2022-05-01",
+                    "peak_date": "2021-03-01",
+                    "trough_date": "2022-05-01",
+                    "peak_price": 3413000.0,
+                    "trough_price": 1398000.0,
+                    "drawdown_pct": 59.0,
+                    "duration_days": 14
+                },
+                {
+                    "episode_number": 5,
+                    "start_date": "2021-10-01",
+                    "end_date": "2023-05-01",
+                    "peak_date": "2021-10-01",
+                    "trough_date": "2022-05-01",
+                    "peak_price": 5845000.0,
+                    "trough_price": 1398000.0,
+                    "drawdown_pct": 76.1,
+                    "duration_days": 19
+                },
+                {
+                    "episode_number": 6,
+                    "start_date": "2024-04-01",
+                    "end_date": "2026-05-01",
+                    "peak_date": "2024-04-01",
+                    "trough_date": "2026-05-01",
+                    "peak_price": 5326000.0,
+                    "trough_price": 2567000.0,
+                    "drawdown_pct": 51.8,
+                    "duration_days": 25
+                },
+                {
+                    "episode_number": 7,
+                    "start_date": "2024-10-01",
+                    "end_date": "2026-05-01",
+                    "peak_date": "2024-10-01",
+                    "trough_date": "2026-05-01",
+                    "peak_price": 5149000.0,
+                    "trough_price": 2567000.0,
+                    "drawdown_pct": 50.1,
+                    "duration_days": 19
+                },
+                {
+                    "episode_number": 8,
+                    "start_date": "2025-08-01",
+                    "end_date": "2026-05-01",
+                    "peak_date": "2025-08-01",
+                    "trough_date": "2026-05-01",
+                    "peak_price": 6129000.0,
+                    "trough_price": 2567000.0,
+                    "drawdown_pct": 58.1,
+                    "duration_days": 9
+                }
+            ],
+            "episode_count": 8,
+            "current_episode": {
+                "episode_number": 0,
+                "start_date": "2025-08-01",
+                "end_date": "2026-05-01",
+                "peak_date": "2025-08-01",
+                "trough_date": "2026-05-01",
+                "peak_price": 6129000.0,
+                "trough_price": 2567000.0,
+                "drawdown_pct": 58.1,
+                "duration_days": 9,
+                "ongoing": true,
+                "current_price": 2567000.0
+            },
+            "active_pattern": {
+                "active": true,
+                "months_since_peak": 9,
+                "drawdown_from_peak_pct": -58.1,
+                "slope_3m_pct": -20.01,
+                "peak_price": 6129000.0,
+                "peak_date_idx": 99
+            },
+            "entry_timing": {
+                "phase": "bottom_zone",
+                "entry_style": "swing_bottom",
+                "entry_score": 68.0,
+                "bottom_proximity_pct": 100.0,
+                "projected_bottom_price": 2566999.9999999995,
+                "dist_to_bottom_pct": 0.0,
+                "pattern_active": true,
+                "drawdown_from_peak_pct": -58.1,
+                "summary": "예상 바닥선(2,567,000원) 부근 — ETH형 바닥 진입 구간"
+            },
+            "pattern_match": {
+                "matched_episode_number": 8,
+                "total_episodes": 8,
+                "similarity_pct": 100.0,
+                "matched_drawdown_pct": 58.1,
+                "summary": "현재 월봉 하락 58.1% → 과거 #8번 패턴(58.1%, 유사도 100%)"
+            },
+            "pattern_summary": "예상 바닥선(2,567,000원) 부근 — ETH형 바닥 진입 구간"
+        }
     },
     "XRP": {
         "active": true,
@@ -981,7 +1233,7 @@
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
             "cycle_match_cycle": 3,
-            "cycle_similarity_pct": 96.1,
+            "cycle_similarity_pct": 97.1,
             "regimes": {
                 "BULL": {
                     "logic": "VOTE",
@@ -1035,13 +1287,13 @@
         "cycle_analysis": {
             "matched_cycle_number": 3,
             "total_cycles": 7,
-            "similarity_pct": 96.1,
-            "current_angle_pct_per_month": 9.82,
-            "current_angle_pct_per_day": 0.3272,
+            "similarity_pct": 97.1,
+            "current_angle_pct_per_month": 11.71,
+            "current_angle_pct_per_day": 0.3902,
             "matched_angle_pct_per_month": 10.91,
             "matched_rise_pct": 897.7,
             "matched_duration_days": 105,
-            "summary": "현재 회귀각 +9.8%/월 → 과거 3번째 상승 사이클(+10.9%/월, 유사도 96%)과 가장 유사",
+            "summary": "현재 회귀각 +11.7%/월 → 과거 3번째 상승 사이클(+10.9%/월, 유사도 97%)과 가장 유사",
             "historical_cycles": [
                 {
                     "cycle_number": 1,
@@ -1094,7 +1346,123 @@
                 }
             ]
         },
-        "bear_auto_pick_reason": "1일 예상 수익 우세 (Custom +0.01% > Mixed +0.00%)"
+        "bear_auto_pick_reason": "1일 예상 수익 우세 (Custom +0.01% > Mixed +0.00%)",
+        "bear_pattern_analysis": {
+            "pattern_active": false,
+            "historical_episodes": [
+                {
+                    "episode_number": 1,
+                    "start_date": "2017-11-01",
+                    "end_date": "2020-02-01",
+                    "peak_date": "2017-11-01",
+                    "trough_date": "2020-02-01",
+                    "peak_price": 2685.0,
+                    "trough_price": 210.6,
+                    "drawdown_pct": 92.2,
+                    "duration_days": 27
+                },
+                {
+                    "episode_number": 2,
+                    "start_date": "2019-04-01",
+                    "end_date": "2020-07-01",
+                    "peak_date": "2019-04-01",
+                    "trough_date": "2020-02-01",
+                    "peak_price": 516.0,
+                    "trough_price": 210.6,
+                    "drawdown_pct": 59.2,
+                    "duration_days": 15
+                },
+                {
+                    "episode_number": 3,
+                    "start_date": "2020-10-01",
+                    "end_date": "2020-12-01",
+                    "peak_date": "2020-10-01",
+                    "trough_date": "2020-11-01",
+                    "peak_price": 708.1,
+                    "trough_price": 260.6,
+                    "drawdown_pct": 63.2,
+                    "duration_days": 2
+                },
+                {
+                    "episode_number": 4,
+                    "start_date": "2021-03-01",
+                    "end_date": "2022-08-01",
+                    "peak_date": "2021-03-01",
+                    "trough_date": "2022-05-01",
+                    "peak_price": 1860.0,
+                    "trough_price": 413.5,
+                    "drawdown_pct": 77.8,
+                    "duration_days": 17
+                },
+                {
+                    "episode_number": 5,
+                    "start_date": "2022-08-01",
+                    "end_date": "2023-02-01",
+                    "peak_date": "2022-08-01",
+                    "trough_date": "2022-11-01",
+                    "peak_price": 687.5,
+                    "trough_price": 430.5,
+                    "drawdown_pct": 37.4,
+                    "duration_days": 6
+                },
+                {
+                    "episode_number": 6,
+                    "start_date": "2023-06-01",
+                    "end_date": "2024-05-01",
+                    "peak_date": "2023-06-01",
+                    "trough_date": "2024-05-01",
+                    "peak_price": 903.2,
+                    "trough_price": 674.0,
+                    "drawdown_pct": 25.4,
+                    "duration_days": 11
+                },
+                {
+                    "episode_number": 7,
+                    "start_date": "2024-12-01",
+                    "end_date": "2026-05-01",
+                    "peak_date": "2024-12-01",
+                    "trough_date": "2026-05-01",
+                    "peak_price": 4568.0,
+                    "trough_price": 1718.0,
+                    "drawdown_pct": 62.4,
+                    "duration_days": 17
+                },
+                {
+                    "episode_number": 8,
+                    "start_date": "2025-06-01",
+                    "end_date": "2026-05-01",
+                    "peak_date": "2025-06-01",
+                    "trough_date": "2026-05-01",
+                    "peak_price": 4231.0,
+                    "trough_price": 1718.0,
+                    "drawdown_pct": 59.4,
+                    "duration_days": 11
+                }
+            ],
+            "episode_count": 8,
+            "current_episode": null,
+            "active_pattern": {
+                "active": false,
+                "months_since_peak": 17,
+                "drawdown_from_peak_pct": -62.4,
+                "slope_3m_pct": -16.03,
+                "peak_price": 4568.0,
+                "peak_date_idx": 91
+            },
+            "entry_timing": {
+                "phase": "bottom_zone",
+                "entry_style": "swing_bottom",
+                "entry_score": 78.0,
+                "bottom_proximity_pct": 71.2,
+                "projected_bottom_price": 2414.0000000000005,
+                "dist_to_bottom_pct": -28.8,
+                "pattern_active": false,
+                "drawdown_from_peak_pct": -62.4,
+                "summary": "하락 레그 종료·바닥권 — 스윙 진입 유리"
+            },
+            "pattern_match": null,
+            "pattern_summary": "하락 레그 종료·바닥권 — 스윙 진입 유리"
+        }
     },
     "USDT": {
         "active": true,
@@ -1105,12 +1473,14 @@
         "usdt_fx": {
             "reference_krw": 0,
             "min_consider_gap_krw": 40,
-            "min_target_profit_pct": 0.2,
+            "min_target_profit_pct": 2.0,
             "sell_premium_pct": 0.15,
             "fx_refresh_minutes": 10,
             "fee_one_way_pct": 0.25,
             "bb_period": 20,
-            "bb_std_dev": 2.0
+            "bb_std_dev": 2.0,
+            "exit_gap_krw": 15,
+            "exit_convergence_pct": 90
         },
         "tactics": {
             "BULL": {
@@ -1124,20 +1494,20 @@
                         "timeframe": "15m",
                         "params": {
                             "min_consider_gap_krw": 40,
-                            "min_target_profit_pct": 0.2,
+                            "min_target_profit_pct": 2.0,
                             "sell_premium_pct": 0.15,
                             "reference_krw": 0,
                             "fx_refresh_minutes": 10,
                             "fee_one_way_pct": 0.25,
                             "bb_period": 20,
-                            "bb_std_dev": 2.0
+                            "bb_std_dev": 2.0,
+                            "exit_gap_krw": 15,
+                            "exit_convergence_pct": 90
                         }
                     }
                 ],
                 "risk": {
-                    "type": "StopLoss",
-                    "stop_loss_pct": 0.01,
-                    "take_profit_pct": 0.025
+                    "type": "None"
                 }
             },
             "BEAR": {
@@ -1151,20 +1521,20 @@
                         "timeframe": "15m",
                         "params": {
                             "min_consider_gap_krw": 40,
-                            "min_target_profit_pct": 0.2,
+                            "min_target_profit_pct": 2.0,
                             "sell_premium_pct": 0.15,
                             "reference_krw": 0,
                             "fx_refresh_minutes": 10,
                             "fee_one_way_pct": 0.25,
                             "bb_period": 20,
-                            "bb_std_dev": 2.0
+                            "bb_std_dev": 2.0,
+                            "exit_gap_krw": 15,
+                            "exit_convergence_pct": 90
                         }
                     }
                 ],
                 "risk": {
-                    "type": "StopLoss",
-                    "stop_loss_pct": 0.01,
-                    "take_profit_pct": 0.025
+                    "type": "None"
                 }
             },
             "RANGE": {
@@ -1178,20 +1548,20 @@
                         "timeframe": "15m",
                         "params": {
                             "min_consider_gap_krw": 40,
-                            "min_target_profit_pct": 0.2,
+                            "min_target_profit_pct": 2.0,
                             "sell_premium_pct": 0.15,
                             "reference_krw": 0,
                             "fx_refresh_minutes": 10,
                             "fee_one_way_pct": 0.25,
                             "bb_period": 20,
-                            "bb_std_dev": 2.0
+                            "bb_std_dev": 2.0,
+                            "exit_gap_krw": 15,
+                            "exit_convergence_pct": 90
                         }
                     }
                 ],
                 "risk": {
-                    "type": "StopLoss",
-                    "stop_loss_pct": 0.01,
-                    "take_profit_pct": 0.025
+                    "type": "None"
                 }
             }
         },

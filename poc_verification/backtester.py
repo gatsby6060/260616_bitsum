@@ -63,9 +63,10 @@ except ImportError:
     HAS_USDT_FX_HIST = False
 
 USDT_MIN_TARGET_PROFIT_PCT = 2.0  # 진입 시 최소 기대 스프레드(수수료+이율) 하한
+USDT_MIN_CONSIDER_GAP_FLOOR = 40  # 환율차 검토·매수 하한 (원) — 그리드·실매매 공통
 USDT_FX_GRID = {
-    "min_consider_gap_krw": [40, 50, 60, 70, 80],
-    "min_target_profit_pct": [2.0, 2.5, 3.0],  # 진입(매수) 검증용
+    "min_consider_gap_krw": [40, 45, 50, 55, 60, 65],
+    "min_target_profit_pct": [2.0, 2.25, 2.5, 2.75, 3.0],
     "exit_gap_krw": [5, 10, 15, 20, 30],       # 탈출: 기준환율과 잔여 gap
     "exit_convergence_pct": [80, 85, 90, 95, 100],  # 탈출: 매수 시 할인 수렴 %
 }
@@ -363,6 +364,9 @@ def _usdt_optimizer_score(result: dict, params: dict) -> float:
         return -9999.0
     tgt = float(params.get("min_target_profit_pct", 0))
     if tgt < USDT_MIN_TARGET_PROFIT_PCT:
+        return -9999.0
+    gap = float(params.get("min_consider_gap_krw", 0))
+    if gap < USDT_MIN_CONSIDER_GAP_FLOOR:
         return -9999.0
     mdd = float(result.get("mdd", 1.0))
     if mdd > MDD_LIMIT:
@@ -1825,10 +1829,15 @@ class GridSearchOptimizer:
                 float(best_params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
                 USDT_MIN_TARGET_PROFIT_PCT,
             )
+            best_params["min_consider_gap_krw"] = max(
+                int(best_params.get("min_consider_gap_krw", USDT_MIN_CONSIDER_GAP_FLOOR)),
+                USDT_MIN_CONSIDER_GAP_FLOOR,
+            )
 
         logger.info(
             f"[Optimizer] {market} UsdtFusion: {total}조합, "
             f"최적 usdt_score={best_score:.4f}, "
+            f"gap={best_params.get('min_consider_gap_krw') if best_params else None}원, "
             f"목표={best_params.get('min_target_profit_pct') if best_params else None}%"
         )
         _save_progress("optimizing", base_pct + span_pct, f"{market} 고정 융합 최적화 완료")
@@ -1938,7 +1947,7 @@ def _default_usdt_fusion_sim_params(regime: str = "RANGE") -> dict:
         "usdt_fusion": True,
         "use_all_regimes": True,
         "target_regime": regime,
-        "min_consider_gap_krw": 50,
+        "min_consider_gap_krw": 40,
         "min_target_profit_pct": USDT_MIN_TARGET_PROFIT_PCT,
         "exit_gap_krw": 15,
         "exit_convergence_pct": 90,
@@ -1958,7 +1967,7 @@ def _build_usdt_fusion_output(params: dict, result: dict, expected_profits: dict
                 "enabled": True,
                 "weight": 1.0,
                 "timeframe": "15m",
-                "min_consider_gap_krw": params.get("min_consider_gap_krw", 30),
+                "min_consider_gap_krw": params.get("min_consider_gap_krw", USDT_MIN_CONSIDER_GAP_FLOOR),
                 "min_target_profit_pct": params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT),
                 "exit_gap_krw": params.get("exit_gap_krw", 15),
                 "exit_convergence_pct": params.get("exit_convergence_pct", 90),
@@ -1967,7 +1976,7 @@ def _build_usdt_fusion_output(params: dict, result: dict, expected_profits: dict
             }
         },
         "usdt_fx_filter": {
-            "min_consider_gap_krw": params.get("min_consider_gap_krw", 50),
+            "min_consider_gap_krw": params.get("min_consider_gap_krw", 40),
             "min_target_profit_pct": params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT),
             "exit_gap_krw": params.get("exit_gap_krw", 15),
             "exit_convergence_pct": params.get("exit_convergence_pct", 90),
@@ -2177,6 +2186,10 @@ def run_usdt_daily_tuning() -> Optional[dict]:
     fixed_params["min_target_profit_pct"] = max(
         float(fixed_params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
         USDT_MIN_TARGET_PROFIT_PCT,
+    )
+    fixed_params["min_consider_gap_krw"] = max(
+        int(fixed_params.get("min_consider_gap_krw", USDT_MIN_CONSIDER_GAP_FLOOR)),
+        USDT_MIN_CONSIDER_GAP_FLOOR,
     )
 
     def get_profits(ret_pct):

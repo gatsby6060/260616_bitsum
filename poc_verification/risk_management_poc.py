@@ -140,7 +140,7 @@ except ImportError:
     fx_cache_stats = None
 
 # 글로벌 설정 및 엔진 인스턴스 홀더
-USDT_DEFAULT_MIN_CONSIDER_GAP_KRW = 50
+USDT_DEFAULT_MIN_CONSIDER_GAP_KRW = 40  # 실매매·설정 기본값 (백테스트 최적 gap 하한과 동일)
 USDT_MIN_TARGET_PROFIT_PCT = 2.0  # 과거 데이터 학습 하한 — 일 1회 갱신
 USDT_FX_REFRESH_MINUTES = 10  # USD/KRW 기준환율 API 갱신 주기 — USDT 체결가는 WebSocket 실시간
 
@@ -484,7 +484,7 @@ def _apply_usdt_optimization_results(market_results: dict, ticker: str) -> bool:
     fixed = opt_reg["fixed_fusion_strategy"]
     learned = opt_reg["learned_mixed_strategy"]
     cfg["usdt_tactics_cache"] = {
-        "fixed_fusion": _build_usdt_fixed_fusion_tactics(),
+        "fixed_fusion": _build_tactics_from_opt_reg(fixed),
         "learned_mixed": _build_tactics_from_opt_reg(learned),
     }
     pick, reason = _compute_usdt_auto_pick(opt_reg)
@@ -597,6 +597,35 @@ def _bear_floor_profit(val: float) -> float:
     """학습 청산 비율의 최소 바닥(수수료 후 순이익)만 적용."""
     v = float(val or 0)
     return max(v, BEAR_LIVE_MIN_NET_PROFIT) if v > 0 else BEAR_LIVE_MIN_NET_PROFIT
+
+
+def _format_risk_live_status(live_tactic: dict, pnl_pct_net: float, qty: float) -> str:
+    """좌측 사이드바 — 리스크 엔진 적용 상태 한 줄."""
+    if qty <= 0:
+        return "미보유 · 리스크 엔진 대기"
+    tactic = live_tactic or {}
+    risk = tactic.get("risk") or {}
+    r_type = risk.get("type", "None")
+    pnl_str = f"순손익 {pnl_pct_net * 100:+.2f}%"
+    if r_type == "StopLoss":
+        sl = (risk.get("stop_loss_pct", 0.03) or 0.03) * 100
+        tp = (risk.get("take_profit_pct", 0.06) or 0.06) * 100
+        return f"{pnl_str} · SL -{sl:.1f}% / TP +{tp:.1f}%"
+    if r_type == "BearScalp":
+        sl = (risk.get("stop_loss_pct", 0.02) or 0.02) * 100
+        tp = (risk.get("take_profit_pct", 0.006) or 0.006) * 100
+        trail = (risk.get("trail_pct", 0.005) or 0.005) * 100
+        return f"{pnl_str} · SL -{sl:.1f}% / TP +{tp:.1f}% / TS {trail:.1f}%"
+    if r_type == "TrailingStop":
+        trail = (risk.get("trail_pct", 0.02) or 0.02) * 100
+        return f"{pnl_str} · TS {trail:.1f}%"
+    if r_type == "AveragingDown":
+        drop = (risk.get("drop_trigger_pct", 0.04) or 0.04) * 100
+        mx = risk.get("max_add_count", 1)
+        return f"{pnl_str} · 물타기 -{drop:.1f}% (최대 {mx}회)"
+    if r_type == "None":
+        return f"{pnl_str} · 리스크엔진 미적용"
+    return f"{pnl_str} · {r_type}"
 
 
 def _bear_risk_live_from_learned(risk: dict) -> dict:
@@ -833,6 +862,31 @@ def _build_tactics_from_opt_reg(opt_reg: dict) -> dict:
                 "stop_loss": s_data.get("stop_loss", 0.015),
                 "time_cut": s_data.get("time_cut", 24)
             }
+        elif s_name in ("UsdtFxBollinger", "ReversePremium"):
+            tf = s_data.get("timeframe", "15m")
+            fx_f = opt_reg.get("usdt_fx_filter") or {}
+            params = _usdt_fx_bollinger_params()
+            for src in (s_data, fx_f):
+                for k in (
+                    "min_consider_gap_krw", "min_target_profit_pct", "exit_gap_krw",
+                    "exit_convergence_pct", "bb_period", "sell_premium_pct",
+                    "reference_krw", "fx_refresh_minutes", "fee_one_way_pct",
+                ):
+                    if k in src and src[k] is not None:
+                        params[k] = src[k]
+                if "bb_std_dev" in src:
+                    params["bb_std_dev"] = src["bb_std_dev"]
+                elif "bb_std" in src:
+                    params["bb_std_dev"] = src["bb_std"]
+            params["min_consider_gap_krw"] = max(
+                int(params.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW)),
+                USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
+            )
+            params["min_target_profit_pct"] = max(
+                float(params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
+                USDT_MIN_TARGET_PROFIT_PCT,
+            )
+            s_name = "UsdtFxBollinger"
         else:
             continue
 
@@ -871,6 +925,25 @@ def _apply_bear_strategy_selection(ticker: str) -> bool:
         active_ticker_configs[ticker]["tactics"]["BEAR"] = cache[resolved]
         return True
     return False
+
+def _sync_usdt_strategy_params(fx: dict) -> None:
+    """usdt_fx 설정을 USDT 전술 파라미터에 반영."""
+    if "USDT" not in active_ticker_configs:
+        return
+    param_keys = (
+        "reference_krw", "min_consider_gap_krw", "min_target_profit_pct",
+        "exit_gap_krw", "exit_convergence_pct",
+        "sell_premium_pct", "fx_refresh_minutes", "fee_one_way_pct",
+        "bb_period", "bb_std_dev",
+    )
+    synced = {k: fx[k] for k in param_keys if k in fx}
+    for regime in ("BULL", "BEAR", "RANGE"):
+        t = active_ticker_configs["USDT"].get("tactics", {}).get(regime)
+        if not isinstance(t, dict):
+            continue
+        for s in t.get("strategies", []):
+            if s.get("name") in ("ReversePremium", "UsdtFxBollinger"):
+                s["params"].update(synced)
 
 def load_persisted_configs():
     global active_ticker_configs
@@ -1559,7 +1632,10 @@ class BithumbCustomBearStrategy(BaseStrategy):
                 buy = buy and bounced and (len(closes) >= 3 and closes[-2] <= closes[-3])
             
             # 실시간 지표 상태 기록
-            data["custom_bear_val"] = f"낙폭:{drop*100:.1f}%(기준:{self.params['drop_pct']*100:.1f}%) / 거래량비율:{curr_vol/avg_vol:.1f}배(기준:{self.params['volume_ratio']:.1f}배)"
+            data["custom_bear_val"] = (
+                f"매수대기 · 낙폭 {drop*100:.1f}% (기준 {self.params['drop_pct']*100:.1f}%) / "
+                f"거래량 {curr_vol/avg_vol:.1f}배 (기준 {self.params['volume_ratio']:.1f}배)"
+            )
             
             if buy:
                 self.entry_price = curr_price
@@ -1595,7 +1671,10 @@ class BithumbCustomBearStrategy(BaseStrategy):
                     exit_tc = True
             
             # 실시간 지표 상태 기록
-            data["custom_bear_val"] = f"익절(TS):{drawdown*100:.1f}%(기준:{self.params['trail_pct']*100:.1f}%) / 손절(SL):{pnl*100:.1f}%(기준:-{self.params['stop_loss']*100:.1f}%)"
+            data["custom_bear_val"] = (
+                f"보유 · 고점되돌림 {drawdown*100:.1f}% (전략 TS {self.params['trail_pct']*100:.1f}%) / "
+                f"손익 {pnl*100:.1f}% (전략 SL -{self.params['stop_loss']*100:.1f}%)"
+            )
             
             if exit_ts or exit_sl or exit_tc:
                 self.entry_price = 0.0
@@ -1667,7 +1746,7 @@ class VerboseCompositeStrategy(CompositeStrategy):
             elif s.NAME == "Bollinger":
                 indicators["Bollinger"] = data.get("bb_val", "-")
             elif s.NAME == "CustomBear":
-                indicators["CustomBear"] = data.get("custom_bear_val", "-")
+                indicators["CustomBear·전략"] = data.get("custom_bear_val", "-")
             elif s.NAME == "ReversePremium":
                 indicators["역프리미엄"] = data.get("usdt_fx_val", "-")
             elif s.NAME == "UsdtFxBollinger":
@@ -2167,6 +2246,11 @@ class UITickerWorker(TickerWorker):
         krw_value = self.position.quantity * self.position.current_price
         pnl_pct = calc_net_pnl_pct(self.position.avg_price, self.position.current_price)
 
+        live_tactic = getattr(self, "_live_tactic", None) or {}
+        risk_live = _format_risk_live_status(
+            live_tactic, pnl_pct, self.position.quantity
+        )
+
         # 4. 실시간 UI 이벤트 데이터 전송 (국면 정보 및 상세 사유 탑재)
         ui_event = {
             "type": "trade",
@@ -2174,6 +2258,7 @@ class UITickerWorker(TickerWorker):
                 "ticker": self.ticker,
                 "price": self.position.current_price,
                 "volume": data.get("volume", 0),
+                "risk_live": risk_live,
                 "composite": composite_details,
                 "regime": self.current_regime,
                 "regime_reason": regime_reason,
@@ -3122,22 +3207,6 @@ def usdt_fx_status():
         "fx_refresh_minutes": int(fx_cfg.get("fx_refresh_minutes", USDT_FX_REFRESH_MINUTES)),
     }
 
-def _sync_usdt_strategy_params(fx: dict) -> None:
-    """usdt_fx 설정을 USDT 전술 파라미터에 반영."""
-    param_keys = (
-        "reference_krw", "min_consider_gap_krw", "min_target_profit_pct",
-        "exit_gap_krw", "exit_convergence_pct",
-        "sell_premium_pct", "fx_refresh_minutes", "fee_one_way_pct",
-        "bb_period", "bb_std_dev",
-    )
-    synced = {k: fx[k] for k in param_keys if k in fx}
-    for regime in ("BULL", "BEAR", "RANGE"):
-        t = active_ticker_configs["USDT"]["tactics"][regime]
-        for s in t.get("strategies", []):
-            if s.get("name") in ("ReversePremium", "UsdtFxBollinger"):
-                s["params"].update(synced)
-
-
 @app.post("/api/usdt/fx-config")
 def usdt_fx_config(payload: dict):
     """USDT 역프 매매 임계값·수동 기준환율 저장."""
@@ -3152,6 +3221,14 @@ def usdt_fx_config(payload: dict):
     ):
         if key in payload:
             fx[key] = payload[key]
+    fx["min_consider_gap_krw"] = max(
+        int(fx.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW)),
+        USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
+    )
+    fx["min_target_profit_pct"] = max(
+        float(fx.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
+        USDT_MIN_TARGET_PROFIT_PCT,
+    )
     _sync_usdt_strategy_params(fx)
     save_persisted_configs()
     if engine_instance:
@@ -4303,7 +4380,7 @@ HTML_CONTENT = """
                     </h2>
                     <p style="font-size:10px; color:var(--text-secondary); margin:0 0 10px 0; line-height:1.5;">
                         <strong>기준환율</strong> 10분마다 API 갱신 · <strong>빗썸 USDT</strong> WebSocket 실시간 비교<br>
-                        <strong>1차</strong> 환율차 ≥ 검토 gap(기본 40원) → <strong>2차</strong> 수수료·목표 + 15m BB 하단 → 매수
+                        <strong>1차</strong> 환율차 ≥ 검토 gap(최소 40원, 백테스트 최적값 자동 적용) → <strong>2차</strong> 수수료·목표% + 15m BB 하단 → 매수
                     </p>
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:10px; font-size:11px;">
                         <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
@@ -4324,9 +4401,14 @@ HTML_CONTENT = """
                             <div id="usdt-net-edge" style="font-weight:700; font-size:14px;">-</div>
                         </div>
                         <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
-                            <div style="color:var(--text-secondary); font-size:9px;">최적화 검토 gap</div>
-                            <div id="usdt-opt-gap-krw" style="font-weight:700; font-size:14px; color:#fbbf24;">-</div>
-                            <div id="usdt-opt-gap-source" style="font-size:8px; color:#94a3b8;">백테스트 후 갱신</div>
+                            <div style="color:var(--text-secondary); font-size:9px;">백테스트 최적 gap</div>
+                            <div id="usdt-opt-gap-krw" style="font-weight:700; font-size:14px; color:#fbbf24;">40원+</div>
+                            <div id="usdt-opt-gap-source" style="font-size:8px; color:#94a3b8;">최소 40원 · 학습 후 갱신</div>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
+                            <div style="color:var(--text-secondary); font-size:9px;">백테스트 최적 목표%</div>
+                            <div id="usdt-opt-profit-pct" style="font-weight:700; font-size:14px; color:#fbbf24;">2%+</div>
+                            <div id="usdt-opt-profit-source" style="font-size:8px; color:#94a3b8;">수수료 반영 순이익 하한</div>
                         </div>
                         <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
                             <div style="color:var(--text-secondary); font-size:9px;">볼린저 (15m)</div>
@@ -4338,7 +4420,8 @@ HTML_CONTENT = """
                         </div>
                     </div>
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; font-size:10px;">
-                        <label>검토 시작 ≥ <input type="number" id="usdt-min-gap" step="1" min="0" max="200" style="width:44px; margin:0 4px;"> 원
+                        <label>검토 시작 ≥ <input type="number" id="usdt-min-gap" step="1" min="40" max="200" style="width:44px; margin:0 4px;"> 원
+                        <span style="color:#94a3b8;">(최소 40, 백테스트 최적값 자동)</span>
                         </label>
                         <label>목표 수익 <input type="number" id="usdt-min-profit" step="0.1" min="2" max="5" style="width:48px; margin:0 4px;"> %
                         </label>
@@ -4505,8 +4588,8 @@ HTML_CONTENT = """
                             <div class="strategy-icon-title">
                                 <span class="strategy-icon icon-rsi" style="color: #ef4444; background: rgba(239, 68, 68, 0.1);">BEAR</span>
                                 <div class="strategy-label-desc">
-                                    <span class="strategy-item-name">CustomBear (나만의 하락장 전략)</span>
-                                    <span class="strategy-item-desc">급락 후 기술적 반등의 최적 순간 포착</span>
+                                    <span class="strategy-item-name">CustomBear·전략 (하락장 전용)</span>
+                                    <span class="strategy-item-desc">전략 자체 청산 규칙 — 리스크 엔진과 별도 동작</span>
                                 </div>
                             </div>
                             <label class="toggle-switch">
@@ -4585,7 +4668,7 @@ HTML_CONTENT = """
                         <!-- 일반 전략(Mixed/BULL/RANGE)용 리스크 UI -->
                         <div id="risk-standard-panel">
                             <div class="control-group">
-                                <label class="control-label-large">리스크 관리 기법</label>
+                                <label class="control-label-large">리스크 엔진 (강제 청산)</label>
                                 <select id="risk-type-select" class="logic-dropdown" onchange="toggleRiskParamsDisplay(this.value)">
                                     <option value="None">None (미적용)</option>
                                     <option value="StopLoss">StopLoss (고정 손절/익절)</option>
@@ -4670,7 +4753,12 @@ HTML_CONTENT = """
                     </div>
                 </div>
                 
-                <button class="apply-btn" onclick="applySettingsToEngine()">엔진에 변경 설정 적용</button>
+                <div style="display:flex; flex-direction:column; gap:10px; margin-top:12px;">
+                    <div id="live-apply-status" class="logic-desc" style="margin:0; color:#86efac; font-weight:600;">
+                        ✓ 엔진에 적용된 설정 (표시 = 적용 상태)
+                    </div>
+                    <button class="apply-btn" id="apply-settings-btn" onclick="applySettingsToEngine()" style="margin:0;">설정 저장 및 엔진 적용</button>
+                </div>
             </div>
         </div>
 
@@ -4682,12 +4770,13 @@ HTML_CONTENT = """
                     <span style="display:inline-block; width:6px; height:6px; background-color:#10b981; border-radius:50%; box-shadow:var(--glow-green);"></span>
                     백그라운드 백테스팅 및 최적화 현황
                 </h2>
-                <div style="display:flex; gap:16px; align-items:center;">
+                <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
                     <span style="font-size:12px; color:var(--text-secondary);">현재 진행 단계:</span>
                     <span id="bt-stage" style="font-size:12px; font-weight:bold; color:#fff; font-family:inherit;">
                         <span style="display:inline-block; width:8px; height:8px; background-color:#94a3b8; border-radius:50%; margin-right:6px;"></span>대기 중
                     </span>
                     <span id="bt-percent" style="font-size:12px; font-weight:bold; color:var(--accent-blue); font-family:'JetBrains Mono', monospace;">0.0%</span>
+                    <span id="bt-eta-inline" style="font-size:11px; color:var(--accent-green); font-weight:600; display:none;"></span>
                 </div>
             </div>
             
@@ -4698,8 +4787,13 @@ HTML_CONTENT = """
                 <button class="apply-btn" id="bt-run-btn" onclick="runBacktestNow()" style="margin:0; padding:8px 16px; border-radius:8px; font-size:12px; width:auto; height:36px; line-height:20px; font-weight:700; min-width:140px;">최적화 즉시 실행</button>
             </div>
             
-            <div style="font-size:11px; color:var(--text-secondary); margin-top:-4px;" id="bt-message">
+            <div style="font-size:11px; color:var(--text-secondary); margin-top:4px;" id="bt-message">
                 대기 상태
+            </div>
+            <div id="bt-eta-row" style="display:none; flex-wrap:wrap; gap:16px; margin-top:6px; font-size:11px;">
+                <span style="color:var(--text-secondary);">경과 시간: <strong id="bt-elapsed" style="color:#fff;">-</strong></span>
+                <span style="color:var(--text-secondary);">남은 시간: <strong id="bt-eta" style="color:#86efac;">-</strong></span>
+                <span style="color:var(--text-secondary);">예상 완료: <strong id="bt-finish-at" style="color:#a5b4fc;">-</strong></span>
             </div>
         </div>
 
@@ -5572,13 +5666,18 @@ HTML_CONTENT = """
             const resolved = cfg.resolved_usdt_strategy || cfg.usdt_auto_pick || 'fixed_fusion';
             const variant = resolved === 'learned_mixed' ? cmp.learned_mixed : cmp.fixed_fusion;
             const optGap = variant?.best_gap_krw ?? cfg.usdt_fx?.min_consider_gap_krw ?? USDT_DEFAULT_GAP;
+            const optProfit = variant?.min_target_profit_pct ?? cfg.usdt_fx?.min_target_profit_pct ?? 2;
             const hasBt = variant?.best_gap_krw != null;
             const optEl = document.getElementById('usdt-opt-gap-krw');
             const srcEl = document.getElementById('usdt-opt-gap-source');
+            const profitEl = document.getElementById('usdt-opt-profit-pct');
+            const profitSrcEl = document.getElementById('usdt-opt-profit-source');
             const sbOpt = document.getElementById('usdt-sb-optgap-USDT');
             const gapText = `${optGap}원`;
             if (optEl) optEl.innerText = gapText;
-            if (srcEl) srcEl.innerText = hasBt ? '백테스트 최적화' : '설정값 (최적화 전)';
+            if (srcEl) srcEl.innerText = hasBt ? '백테스트 최적 (≥40원 하한)' : `최소 ${USDT_DEFAULT_GAP}원 (최적화 대기)`;
+            if (profitEl) profitEl.innerText = `${optProfit}%`;
+            if (profitSrcEl) profitSrcEl.innerText = hasBt ? '백테스트 최적 목표%' : '기본 2% 하한';
             if (sbOpt) sbOpt.innerText = gapText;
         }
 
@@ -5670,7 +5769,7 @@ HTML_CONTENT = """
 
         async function saveUsdtFxConfig() {
             const payload = {
-                min_consider_gap_krw: parseFloat(document.getElementById('usdt-min-gap')?.value || USDT_DEFAULT_GAP),
+                min_consider_gap_krw: Math.max(USDT_DEFAULT_GAP, parseFloat(document.getElementById('usdt-min-gap')?.value || USDT_DEFAULT_GAP)),
                 min_target_profit_pct: Math.max(2, parseFloat(document.getElementById('usdt-min-profit')?.value || 2)),
                 sell_premium_pct: parseFloat(document.getElementById('usdt-sell-premium')?.value || 0.15),
                 fee_one_way_pct: parseFloat(document.getElementById('usdt-fee-oneway')?.value || 0.25),
@@ -5760,7 +5859,7 @@ HTML_CONTENT = """
             document.getElementById(`${tab}-tab-content`).style.display = 'flex';
         }
 
-        function toggleRiskParamsDisplay(riskType) {
+        function toggleRiskParamsDisplay(riskType, skipDirtyMark) {
             const desc = document.getElementById('risk-desc-text');
             const stoplossDiv = document.getElementById('risk-params-stoploss');
             const trailingDiv = document.getElementById('risk-params-trailing');
@@ -5771,17 +5870,18 @@ HTML_CONTENT = """
             averagingDiv.style.display = 'none';
 
             if (riskType === 'None') {
-                desc.innerText = '리스크 관리를 수행하지 않고 전략 신호만을 따릅니다.';
+                desc.innerText = '리스크 엔진 미적용 — 전략 신호만 따릅니다. 좌측 카드의 전략 청산은 그대로 동작할 수 있습니다.';
             } else if (riskType === 'StopLoss') {
-                desc.innerText = '설정한 손절선 이하 또는 익절선 이상 도달 시 강제로 포지션을 전량 매도 청산합니다.';
+                desc.innerText = '리스크 엔진: 순손익이 손절·익절선에 닿으면 강제 전량 청산. 좌측 CustomBear·전략 청산과 별도입니다.';
                 stoplossDiv.style.display = 'flex';
             } else if (riskType === 'TrailingStop') {
-                desc.innerText = '포지션 진입 후 최고가 대비 설정한 하락폭 비율만큼 가격이 밀릴 때 동적 익절/손절을 실행합니다.';
+                desc.innerText = '리스크 엔진: 최고가 대비 하락폭 초과 시 강제 청산. 전략 청산 규칙과 별도입니다.';
                 trailingDiv.style.display = 'flex';
             } else if (riskType === 'AveragingDown') {
-                desc.innerText = '평균 단가 대비 기준 하락률 이탈 시 추가 매수를 실행하여 평단을 낮춥니다. (최대 횟수 도달 전까지)';
+                desc.innerText = '리스크 엔진: 평단 대비 하락 시 추가 매수. 전략 매수 신호와 별도입니다.';
                 averagingDiv.style.display = 'flex';
             }
+            if (!skipDirtyMark) markSettingsDirty();
         }
 
         function _timeframeBarHours(tf) {
@@ -5817,14 +5917,14 @@ HTML_CONTENT = """
                 document.getElementById('risk-cb-timecut-hint').innerText = `약 ${holdHours}시간 경과 시 무조건 청산`;
                 document.getElementById('risk-cb-backup-sl-val').innerText = '-' + backupSl + '%';
 
-                desc.innerText = 'CustomBear: 급락 반등 매수 후 트레일링·손절·시간청산으로 매도합니다. 고정 익절(TP)은 사용하지 않습니다.';
+                desc.innerText = 'CustomBear·전략: 급락 반등 매수 후 전략 내 트레일링·손절·시간청산으로 매도합니다. 우측 리스크 엔진과 별도입니다.';
             } else {
                 cbPanel.style.display = 'none';
                 stdPanel.style.display = 'block';
 
                 const risk = tactic.risk || { type: 'None' };
                 document.getElementById('risk-type-select').value = risk.type;
-                toggleRiskParamsDisplay(risk.type);
+                toggleRiskParamsDisplay(risk.type, true);
 
                 if (risk.type === 'StopLoss') {
                     const slVal = ((risk.stop_loss_pct || 0.03) * 100).toFixed(1);
@@ -5848,13 +5948,83 @@ HTML_CONTENT = """
             }
         }
 
+        let _suppressDirtyMark = false;
+        let _settingsDirty = false;
+
+        function setLiveApplyStatus(state, msg) {
+            const el = document.getElementById('live-apply-status');
+            const btn = document.getElementById('apply-settings-btn');
+            if (!el) return;
+            if (state === 'dirty') {
+                el.style.color = '#fbbf24';
+                el.innerText = '● 변경됨 — 「설정 저장 및 엔진 적용」을 눌러야 반영됩니다';
+                if (btn) {
+                    btn.disabled = false;
+                    btn.style.boxShadow = '0 0 0 2px rgba(251,191,36,0.45)';
+                }
+            } else if (state === 'pending') {
+                el.style.color = '#fbbf24';
+                el.innerText = '⏳ 엔진에 적용 중...';
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerText = '적용 중...';
+                }
+            } else if (state === 'synced') {
+                el.style.color = '#86efac';
+                el.innerText = '✓ 엔진에 적용된 설정 (표시 = 적용 상태)';
+                _settingsDirty = false;
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerText = '설정 저장 및 엔진 적용';
+                    btn.style.boxShadow = '';
+                }
+            } else if (state === 'error') {
+                el.style.color = '#f87171';
+                el.innerText = '✗ 적용 실패: ' + (msg || '알 수 없음');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerText = '설정 저장 및 엔진 적용';
+                }
+            }
+        }
+
+        function markSettingsDirty() {
+            if (_suppressDirtyMark || !activeTicker) return;
+            _settingsDirty = true;
+            updateConfigStatusBadge();
+            setLiveApplyStatus('dirty');
+        }
+
+        function formatIndicatorLabel(name) {
+            if (name === 'CustomBear' || name === 'CustomBear·전략') return 'CustomBear·전략';
+            return name;
+        }
+
+        function formatRiskConfigSummary(risk) {
+            if (!risk || risk.type === 'None') return '미적용';
+            const t = risk.type;
+            if (t === 'StopLoss') {
+                return `SL -${((risk.stop_loss_pct || 0) * 100).toFixed(1)}% / TP +${((risk.take_profit_pct || 0) * 100).toFixed(1)}%`;
+            }
+            if (t === 'BearScalp') {
+                return `SL -${((risk.stop_loss_pct || 0) * 100).toFixed(1)}% / TP +${((risk.take_profit_pct || 0) * 100).toFixed(1)}% / TS ${((risk.trail_pct || 0) * 100).toFixed(1)}%`;
+            }
+            if (t === 'TrailingStop') return `TS ${((risk.trail_pct || 0) * 100).toFixed(1)}%`;
+            if (t === 'AveragingDown') {
+                return `물타기 -${((risk.drop_trigger_pct || 0) * 100).toFixed(1)}% (최대 ${risk.max_add_count || 1}회)`;
+            }
+            return t;
+        }
+
         function updateParamValue(elId, val) {
             document.getElementById(elId).innerText = val;
+            markSettingsDirty();
         }
 
         function toggleStrategy(name) {
             const enabled = document.getElementById(`toggle-${name.toLowerCase()}`).checked;
             toggleStrategyControlsState(name, enabled);
+            markSettingsDirty();
         }
 
         function toggleStrategyControlsState(name, enabled) {
@@ -5870,7 +6040,7 @@ HTML_CONTENT = """
             }
         }
 
-        function toggleThresholdDisplay(logic) {
+        function toggleThresholdDisplay(logic, skipDirtyMark) {
             const group = document.getElementById('threshold-control-group');
             const desc = document.getElementById('logic-desc-text');
             
@@ -5883,6 +6053,7 @@ HTML_CONTENT = """
                 else if (logic === 'OR') desc.innerText = 'OR: 활성 전략 중 하나라도 BUY이면 매수, 하나라도 SELL이면 매도합니다.';
                 else if (logic === 'VOTE') desc.innerText = '활성화된 전략들의 다수결(과반수 이상 합의)을 기준으로 판단합니다.';
             }
+            if (!skipDirtyMark) markSettingsDirty();
         }
 
         async function changeRegimeOverride(ticker, regime) {
@@ -6159,10 +6330,15 @@ HTML_CONTENT = """
                 let rowsHtml = '';
                 const currentRegime = config.current_regime || 'BEAR';
                 const tactic = config.tactics ? config.tactics[currentRegime] : null;
+                const risk = tactic ? tactic.risk : null;
+                if (risk && risk.type && risk.type !== 'None') {
+                    rowsHtml += `<tr><td>리스크엔진</td><td style="color:var(--accent-blue);">${formatRiskConfigSummary(risk)}</td></tr>`;
+                }
                 const strategies = tactic ? tactic.strategies : [];
                 strategies.forEach(s => {
                     if (s.enabled) {
-                        const label = s.name === 'UsdtFxBollinger' ? '환율+BB 융합' : s.name;
+                        const label = s.name === 'UsdtFxBollinger' ? '환율+BB 융합'
+                            : (s.name === 'CustomBear' ? 'CustomBear·전략' : s.name);
                         rowsHtml += `<tr><td>${label}</td><td>대기 중</td></tr>`;
                     }
                 });
@@ -6172,6 +6348,8 @@ HTML_CONTENT = """
         }
 
         function loadConfigForTicker(ticker) {
+            _suppressDirtyMark = true;
+            try {
             const config = tickerConfigs[ticker];
             if (!config) return;
             
@@ -6191,7 +6369,7 @@ HTML_CONTENT = """
             }
             
             document.getElementById('logic-select').value = (tactic.logic === 'CUSTOM_BEAR') ? 'OR' : tactic.logic;
-            toggleThresholdDisplay(tactic.logic);
+            toggleThresholdDisplay(tactic.logic, true);
             
             // 수동 장세 고정 드롭다운 값 맞춤
             const regSelect = document.getElementById(`regime-select-${ticker}`);
@@ -6262,6 +6440,10 @@ HTML_CONTENT = """
             syncBearStrategyUI(ticker);
             syncUsdtPanel(ticker);
             loadBacktestCompareData(ticker);
+            } finally {
+                _suppressDirtyMark = false;
+                setLiveApplyStatus('synced');
+            }
         }
 
         /* DYNAMIC_FACTORY_DEFAULTS_START */
@@ -6443,9 +6625,10 @@ HTML_CONTENT = """
             const defaults = tickerDefaults ? tickerDefaults[currentRegime] : null;
             if (!defaults) return;
 
+            _suppressDirtyMark = true;
             // UI 값을 디폴트로 업데이트
             document.getElementById('logic-select').value = (defaults.logic === 'CUSTOM_BEAR') ? 'OR' : defaults.logic;
-            toggleThresholdDisplay(defaults.logic);
+            toggleThresholdDisplay(defaults.logic, true);
             
             document.getElementById('weighted-threshold').value = defaults.threshold;
             document.getElementById('threshold-val').innerText = defaults.threshold;
@@ -6512,12 +6695,14 @@ HTML_CONTENT = """
                 }
             });
 
-            // 엔진에 적용 및 로그 기록
+            _suppressDirtyMark = false;
             applySettingsToEngine();
             addLog(formatKstTime(), activeTicker, 'SYSTEM', '전략 UI 및 엔진 설정이 검증된 기본 설정으로 복구되었습니다.');
         }
 
-        async function applySettingsToEngine() {
+        async function applySettingsToEngine(opts = {}) {
+            const silent = !!opts.silent;
+            setLiveApplyStatus('pending');
             const logic = document.getElementById('logic-select').value;
             const threshold = parseFloat(document.getElementById('weighted-threshold').value);
             
@@ -6637,14 +6822,19 @@ HTML_CONTENT = """
                     syncRiskPanelForTactic(tickerConfigs[activeTicker].tactics[currentRegime]);
                     const badgeEl = document.getElementById(`badge-text-${activeTicker}`);
                     if (badgeEl) badgeEl.innerText = formatStrategyBadge(effectiveLogic);
-                    addLog(formatKstTime(), activeTicker, 'SYSTEM', `복합 전략 설정이 런타임 엔진에 실시간 적용되었습니다. (${effectiveLogic})`);
+                    if (!silent) {
+                        addLog(formatKstTime(), activeTicker, 'SYSTEM', `복합 전략 설정이 런타임 엔진에 적용되었습니다. (${effectiveLogic})`);
+                    }
                     updateStrategyDetailsTable(activeTicker, tickerConfigs[activeTicker]);
                     updateConfigStatusBadge();
+                    setLiveApplyStatus('synced');
                 } else {
+                    setLiveApplyStatus('error', res.error);
                     addLog(formatKstTime(), activeTicker, 'SYSTEM', `설정 적용 실패: ${res.error}`);
                 }
             } catch (e) {
                 console.error("Apply settings error:", e);
+                setLiveApplyStatus('error', '네트워크 오류');
                 addLog(formatKstTime(), activeTicker, 'SYSTEM', `설정 적용 요청 실패.`);
             }
         }
@@ -6909,13 +7099,17 @@ HTML_CONTENT = """
                         const tableEl = document.getElementById(`table-${ticker}`);
                         if (tableEl) {
                             let rowsHtml = '';
+                            if (msg.data.risk_live) {
+                                rowsHtml += `<tr><td>리스크엔진</td><td style="color:var(--accent-blue);">${msg.data.risk_live}</td></tr>`;
+                            }
                             Object.entries(comp.indicators).forEach(([indName, indVal]) => {
-                                const sig = comp.sub_signals ? (comp.sub_signals[indName] || 'HOLD') : 'HOLD';
+                                const sigKey = indName.replace('·전략', '');
+                                const sig = comp.sub_signals ? (comp.sub_signals[sigKey] || comp.sub_signals[indName] || 'HOLD') : 'HOLD';
                                 let sigColor = 'var(--text-secondary)';
                                 if (sig === 'BUY') sigColor = 'var(--accent-green)';
                                 else if (sig === 'SELL') sigColor = 'var(--accent-red)';
                                 
-                                rowsHtml += `<tr><td>${indName}</td><td style="color:${sigColor}">${indVal} (${sig})</td></tr>`;
+                                rowsHtml += `<tr><td>${formatIndicatorLabel(indName)}</td><td style="color:${sigColor}">${indVal} (${sig})</td></tr>`;
                             });
                             
                             let finalColor = 'var(--text-primary)';
@@ -7072,6 +7266,160 @@ HTML_CONTENT = """
 
         // 초기 시작
         // 백테스트 진행률 조회 및 제어 함수 정의
+        const BT_DEFAULT_ETA_HINT = '약 8~14시간 (4종목 × 3장세 × 대규모 그리드)';
+        let _btRunTracker = {
+            active: false,
+            startMs: null,
+            smoothedSecPerPct: null,
+            lastPct: null,
+            lastProgressMs: null,
+        };
+
+        function resetBacktestEtaTracker(startMs) {
+            _btRunTracker = {
+                active: true,
+                startMs: startMs || Date.now(),
+                smoothedSecPerPct: null,
+                lastPct: null,
+                lastProgressMs: null,
+            };
+        }
+
+        function clearBacktestEtaTracker() {
+            _btRunTracker.active = false;
+            _btRunTracker.startMs = null;
+            _btRunTracker.smoothedSecPerPct = null;
+            _btRunTracker.lastPct = null;
+            _btRunTracker.lastProgressMs = null;
+        }
+
+        function formatDurationKorean(totalSec) {
+            if (totalSec == null || !isFinite(totalSec) || totalSec < 0) return null;
+            if (totalSec < 45) return '1분 이내';
+            const sec = Math.round(totalSec);
+            const h = Math.floor(sec / 3600);
+            const m = Math.floor((sec % 3600) / 60);
+            if (h >= 48) {
+                const d = Math.floor(h / 24);
+                const rh = h % 24;
+                return rh > 0 ? `약 ${d}일 ${rh}시간` : `약 ${d}일`;
+            }
+            if (h > 0) return m > 0 ? `약 ${h}시간 ${m}분` : `약 ${h}시간`;
+            return `약 ${m}분`;
+        }
+
+        function formatFinishClock(totalSecFromNow) {
+            if (totalSecFromNow == null || !isFinite(totalSecFromNow) || totalSecFromNow < 0) return null;
+            const finish = new Date(Date.now() + totalSecFromNow * 1000);
+            return finish.toLocaleString('ko-KR', {
+                month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false
+            }) + ' 경';
+        }
+
+        function parseBacktestSubProgress(message) {
+            if (!message) return null;
+            const m = message.match(/\\((\\d+)\\s*\\/\\s*(\\d+)\\)/);
+            if (!m) return null;
+            const done = parseInt(m[1], 10);
+            const total = parseInt(m[2], 10);
+            if (!total || total <= 0) return null;
+            return { done, total, ratio: done / total };
+        }
+
+        function computeBacktestEta(pct, isRunning, updatedAt, message) {
+            const now = Date.now();
+            if (!isRunning) {
+                clearBacktestEtaTracker();
+                return { elapsedSec: null, remainingSec: null, confidence: 'idle' };
+            }
+
+            if (!_btRunTracker.active) {
+                const parsed = updatedAt ? Date.parse(updatedAt) : NaN;
+                resetBacktestEtaTracker(!isNaN(parsed) ? parsed : now);
+            }
+
+            const elapsedSec = Math.max(0, (now - _btRunTracker.startMs) / 1000);
+            let remainingSec = null;
+            let confidence = 'warming';
+
+            if (pct > 0 && _btRunTracker.lastPct != null && pct > _btRunTracker.lastPct && _btRunTracker.lastProgressMs) {
+                const deltaPct = pct - _btRunTracker.lastPct;
+                const deltaSec = Math.max(1, (now - _btRunTracker.lastProgressMs) / 1000);
+                const instantSecPerPct = deltaSec / deltaPct;
+                _btRunTracker.smoothedSecPerPct = _btRunTracker.smoothedSecPerPct == null
+                    ? instantSecPerPct
+                    : (_btRunTracker.smoothedSecPerPct * 0.75 + instantSecPerPct * 0.25);
+            } else if (pct > 0.3 && elapsedSec > 60) {
+                const avgSecPerPct = elapsedSec / pct;
+                _btRunTracker.smoothedSecPerPct = _btRunTracker.smoothedSecPerPct == null
+                    ? avgSecPerPct
+                    : (_btRunTracker.smoothedSecPerPct * 0.85 + avgSecPerPct * 0.15);
+            }
+
+            _btRunTracker.lastPct = pct;
+            _btRunTracker.lastProgressMs = now;
+
+            if (_btRunTracker.smoothedSecPerPct && pct > 0) {
+                remainingSec = _btRunTracker.smoothedSecPerPct * Math.max(0, 100 - pct);
+                confidence = elapsedSec > 120 && pct >= 1 ? 'stable' : 'early';
+            }
+
+            const sub = parseBacktestSubProgress(message);
+            if (sub && sub.ratio > 0 && sub.ratio < 1 && remainingSec != null) {
+                const subRemainingShare = (1 - sub.ratio) * (100 / Math.max(3, 12));
+                const subRemainingSec = _btRunTracker.smoothedSecPerPct * subRemainingShare;
+                if (subRemainingSec < remainingSec) {
+                    remainingSec = subRemainingSec * 0.4 + remainingSec * 0.6;
+                }
+            }
+
+            return { elapsedSec, remainingSec, confidence };
+        }
+
+        function updateBacktestEtaUI(isRunning, pct, message, updatedAt) {
+            const etaRow = document.getElementById('bt-eta-row');
+            const etaInline = document.getElementById('bt-eta-inline');
+            const elapsedEl = document.getElementById('bt-elapsed');
+            const etaEl = document.getElementById('bt-eta');
+            const finishEl = document.getElementById('bt-finish-at');
+            if (!etaRow || !etaEl) return;
+
+            if (!isRunning) {
+                etaRow.style.display = 'none';
+                if (etaInline) etaInline.style.display = 'none';
+                return;
+            }
+
+            etaRow.style.display = 'flex';
+            const eta = computeBacktestEta(pct, isRunning, updatedAt, message);
+            const elapsedStr = formatDurationKorean(eta.elapsedSec) || '-';
+            let remainingStr = '계산 중...';
+            let finishStr = '-';
+
+            if (eta.remainingSec != null && eta.confidence === 'stable') {
+                remainingStr = formatDurationKorean(eta.remainingSec) || '계산 중...';
+                finishStr = formatFinishClock(eta.remainingSec) || '-';
+            } else if (eta.remainingSec != null && eta.confidence === 'early') {
+                remainingStr = `${formatDurationKorean(eta.remainingSec)} (초기 추정)`;
+                finishStr = formatFinishClock(eta.remainingSec) || '-';
+            } else if (pct <= 0.1) {
+                remainingStr = BT_DEFAULT_ETA_HINT;
+            }
+
+            elapsedEl.innerText = elapsedStr;
+            etaEl.innerText = remainingStr;
+            finishEl.innerText = finishStr;
+
+            if (etaInline) {
+                etaInline.style.display = 'inline';
+                if (eta.remainingSec != null && eta.confidence !== 'warming') {
+                    etaInline.innerText = `⏱ 남은 ${formatDurationKorean(eta.remainingSec)}`;
+                } else {
+                    etaInline.innerText = `⏱ 예상 ${BT_DEFAULT_ETA_HINT}`;
+                }
+            }
+        }
+
         async function fetchBacktestProgress() {
             try {
                 const res = await fetch('/api/backtest/progress');
@@ -7114,11 +7462,16 @@ HTML_CONTENT = """
                     stageStr = '최적화 실패';
                     dotColor = '#ef4444'; // red
                     isRunning = false;
+                } else if (stage === 'interrupted') {
+                    stageStr = '중단됨';
+                    dotColor = '#ef4444';
+                    isRunning = false;
                 }
                 isRunning = !!isRunning;
                 
                 stageEl.innerHTML = `<span style="display:inline-block; width:8px; height:8px; background-color:${dotColor}; border-radius:50%; margin-right:6px;"></span>${stageStr}`;
                 messageEl.innerText = message || (isRunning ? '진행 중...' : '대기 상태');
+                updateBacktestEtaUI(isRunning, pct, message, data.updated_at);
                 
                 if (isRunning) {
                     runBtn.disabled = true;
@@ -7138,10 +7491,18 @@ HTML_CONTENT = """
         
         async function runBacktestNow() {
             if (!confirm(`백그라운드에서 15분봉(96포인트/일) 9년 데이터 최적화를 즉시 시작하시겠습니까?
-(약 10~20분 소요, 캐시 재수집 포함. 거래 엔진은 중단 없이 동작하며 WebSocket 틱마다 조건 충족 시 즉시 매매합니다)`)) return;
+
+예상 소요: ${BT_DEFAULT_ETA_HINT}
+(캐시가 없으면 데이터 수집이 추가됩니다. 거래 엔진은 중단 없이 동작합니다)`)) return;
             try {
+                resetBacktestEtaTracker(Date.now());
+                updateBacktestEtaUI(true, 0, '', null);
                 const res = await fetch('/api/backtest/run-now', { method: 'POST' });
                 const data = await res.json();
+                if (!data.success) {
+                    clearBacktestEtaTracker();
+                    updateBacktestEtaUI(false, 0, '', null);
+                }
                 alert(data.message || "최적화를 시작했습니다.");
                 fetchBacktestProgress();
             } catch (e) {
@@ -7158,11 +7519,14 @@ HTML_CONTENT = """
         fetchBacktestProgress();
         setInterval(fetchBacktestProgress, 4000);
 
-        // 실시간 사용자 조작 감지 이벤트 바인딩
+        // 설정 변경 시 미적용 표시만 (엔진 반영은 버튼으로만)
         const strategyPanel = document.getElementById('strategy-panel');
         if (strategyPanel) {
-            strategyPanel.addEventListener('input', updateConfigStatusBadge);
-            strategyPanel.addEventListener('change', updateConfigStatusBadge);
+            strategyPanel.addEventListener('change', (e) => {
+                if (e.target && (e.target.tagName === 'SELECT' || e.target.type === 'checkbox')) {
+                    markSettingsDirty();
+                }
+            });
         }
 
         // ══════════════════════════════════════════════════════════════
