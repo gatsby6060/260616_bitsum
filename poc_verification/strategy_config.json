@@ -249,7 +249,7 @@
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
             "cycle_match_cycle": 8,
-            "cycle_similarity_pct": 71.3,
+            "cycle_similarity_pct": 71.2,
             "regimes": {
                 "BULL": {
                     "logic": "AND",
@@ -304,7 +304,7 @@
         "cycle_analysis": {
             "matched_cycle_number": 8,
             "total_cycles": 8,
-            "similarity_pct": 71.3,
+            "similarity_pct": 71.2,
             "current_angle_pct_per_month": -0.2,
             "current_angle_pct_per_day": -0.0066,
             "matched_angle_pct_per_month": 3.38,
@@ -436,8 +436,8 @@
                     "peak_date": "2024-12-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 156972000.0,
-                    "trough_price": 94809000.0,
-                    "drawdown_pct": 39.6,
+                    "trough_price": 94654000.0,
+                    "drawdown_pct": 39.7,
                     "duration_days": 17
                 },
                 {
@@ -447,8 +447,8 @@
                     "peak_date": "2025-08-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 166311000.0,
-                    "trough_price": 94809000.0,
-                    "drawdown_pct": 43.0,
+                    "trough_price": 94654000.0,
+                    "drawdown_pct": 43.1,
                     "duration_days": 9
                 }
             ],
@@ -460,17 +460,17 @@
                 "peak_date": "2025-08-01",
                 "trough_date": "2026-05-01",
                 "peak_price": 166311000.0,
-                "trough_price": 94809000.0,
-                "drawdown_pct": 43.0,
+                "trough_price": 94654000.0,
+                "drawdown_pct": 43.1,
                 "duration_days": 9,
                 "ongoing": true,
-                "current_price": 94809000.0
+                "current_price": 94654000.0
             },
             "active_pattern": {
                 "active": true,
                 "months_since_peak": 9,
-                "drawdown_from_peak_pct": -43.0,
-                "slope_3m_pct": -8.42,
+                "drawdown_from_peak_pct": -43.1,
+                "slope_3m_pct": -8.57,
                 "peak_price": 166311000.0,
                 "peak_date_idx": 99
             },
@@ -478,21 +478,21 @@
                 "phase": "bottom_zone",
                 "entry_style": "swing_bottom",
                 "entry_score": 68.0,
-                "bottom_proximity_pct": 89.9,
-                "projected_bottom_price": 105408333.33333333,
-                "dist_to_bottom_pct": -10.1,
+                "bottom_proximity_pct": 90.0,
+                "projected_bottom_price": 105149999.99999997,
+                "dist_to_bottom_pct": -10.0,
                 "pattern_active": true,
-                "drawdown_from_peak_pct": -43.0,
-                "summary": "예상 바닥선(105,408,333원) 부근 — ETH형 바닥 진입 구간"
+                "drawdown_from_peak_pct": -43.1,
+                "summary": "예상 바닥선(105,150,000원) 부근 — ETH형 바닥 진입 구간"
             },
             "pattern_match": {
                 "matched_episode_number": 7,
                 "total_episodes": 7,
                 "similarity_pct": 100.0,
-                "matched_drawdown_pct": 43.0,
-                "summary": "현재 월봉 하락 43.0% → 과거 #7번 패턴(43.0%, 유사도 100%)"
+                "matched_drawdown_pct": 43.1,
+                "summary": "현재 월봉 하락 43.1% → 과거 #7번 패턴(43.1%, 유사도 100%)"
             },
-            "pattern_summary": "예상 바닥선(105,408,333원) 부근 — ETH형 바닥 진입 구간"
+            "pattern_summary": "예상 바닥선(105,150,000원) 부근 — ETH형 바닥 진입 구간"
         }
     },
     "ETH": {
@@ -746,7 +746,7 @@
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
             "cycle_match_cycle": 7,
-            "cycle_similarity_pct": 57.1,
+            "cycle_similarity_pct": 57.6,
             "regimes": {
                 "BULL": {
                     "logic": "VOTE",
@@ -801,13 +801,13 @@
         "cycle_analysis": {
             "matched_cycle_number": 7,
             "total_cycles": 8,
-            "similarity_pct": 57.1,
-            "current_angle_pct_per_month": 20.69,
-            "current_angle_pct_per_day": 0.6896,
+            "similarity_pct": 57.6,
+            "current_angle_pct_per_month": 20.61,
+            "current_angle_pct_per_day": 0.6871,
             "matched_angle_pct_per_month": 14.48,
             "matched_rise_pct": 89.3,
             "matched_duration_days": 92,
-            "summary": "현재 회귀각 +20.7%/월 → 과거 7번째 상승 사이클(+14.5%/월, 유사도 57%)과 가장 유사",
+            "summary": "현재 회귀각 +20.6%/월 → 과거 7번째 상승 사이클(+14.5%/월, 유사도 58%)과 가장 유사",
             "historical_cycles": [
                 {
                     "cycle_number": 1,
@@ -933,8 +933,8 @@
                     "peak_date": "2024-04-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 5326000.0,
-                    "trough_price": 2567000.0,
-                    "drawdown_pct": 51.8,
+                    "trough_price": 2564000.0,
+                    "drawdown_pct": 51.9,
                     "duration_days": 25
                 },
                 {
@@ -944,8 +944,8 @@
                     "peak_date": "2024-10-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 5149000.0,
-                    "trough_price": 2567000.0,
-                    "drawdown_pct": 50.1,
+                    "trough_price": 2564000.0,
+                    "drawdown_pct": 50.2,
                     "duration_days": 19
                 },
                 {
@@ -955,8 +955,8 @@
                     "peak_date": "2025-08-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 6129000.0,
-                    "trough_price": 2567000.0,
-                    "drawdown_pct": 58.1,
+                    "trough_price": 2564000.0,
+                    "drawdown_pct": 58.2,
                     "duration_days": 9
                 }
             ],
@@ -968,17 +968,17 @@
                 "peak_date": "2025-08-01",
                 "trough_date": "2026-05-01",
                 "peak_price": 6129000.0,
-                "trough_price": 2567000.0,
-                "drawdown_pct": 58.1,
+                "trough_price": 2564000.0,
+                "drawdown_pct": 58.2,
                 "duration_days": 9,
                 "ongoing": true,
-                "current_price": 2567000.0
+                "current_price": 2564000.0
             },
             "active_pattern": {
                 "active": true,
                 "months_since_peak": 9,
-                "drawdown_from_peak_pct": -58.1,
-                "slope_3m_pct": -20.01,
+                "drawdown_from_peak_pct": -58.2,
+                "slope_3m_pct": -20.1,
                 "peak_price": 6129000.0,
                 "peak_date_idx": 99
             },
@@ -987,20 +987,20 @@
                 "entry_style": "swing_bottom",
                 "entry_score": 68.0,
                 "bottom_proximity_pct": 100.0,
-                "projected_bottom_price": 2566999.9999999995,
+                "projected_bottom_price": 2563999.999999999,
                 "dist_to_bottom_pct": 0.0,
                 "pattern_active": true,
-                "drawdown_from_peak_pct": -58.1,
-                "summary": "예상 바닥선(2,567,000원) 부근 — ETH형 바닥 진입 구간"
+                "drawdown_from_peak_pct": -58.2,
+                "summary": "예상 바닥선(2,564,000원) 부근 — ETH형 바닥 진입 구간"
             },
             "pattern_match": {
                 "matched_episode_number": 8,
                 "total_episodes": 8,
                 "similarity_pct": 100.0,
-                "matched_drawdown_pct": 58.1,
-                "summary": "현재 월봉 하락 58.1% → 과거 #8번 패턴(58.1%, 유사도 100%)"
+                "matched_drawdown_pct": 58.2,
+                "summary": "현재 월봉 하락 58.2% → 과거 #8번 패턴(58.2%, 유사도 100%)"
             },
-            "pattern_summary": "예상 바닥선(2,567,000원) 부근 — ETH형 바닥 진입 구간"
+            "pattern_summary": "예상 바닥선(2,564,000원) 부근 — ETH형 바닥 진입 구간"
         }
     },
     "XRP": {
@@ -1233,7 +1233,7 @@
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
             "cycle_match_cycle": 3,
-            "cycle_similarity_pct": 97.1,
+            "cycle_similarity_pct": 98.7,
             "regimes": {
                 "BULL": {
                     "logic": "VOTE",
@@ -1287,13 +1287,13 @@
         "cycle_analysis": {
             "matched_cycle_number": 3,
             "total_cycles": 7,
-            "similarity_pct": 97.1,
-            "current_angle_pct_per_month": 11.71,
-            "current_angle_pct_per_day": 0.3902,
+            "similarity_pct": 98.7,
+            "current_angle_pct_per_month": 11.27,
+            "current_angle_pct_per_day": 0.3757,
             "matched_angle_pct_per_month": 10.91,
             "matched_rise_pct": 897.7,
             "matched_duration_days": 105,
-            "summary": "현재 회귀각 +11.7%/월 → 과거 3번째 상승 사이클(+10.9%/월, 유사도 97%)과 가장 유사",
+            "summary": "현재 회귀각 +11.3%/월 → 과거 3번째 상승 사이클(+10.9%/월, 유사도 99%)과 가장 유사",
             "historical_cycles": [
                 {
                     "cycle_number": 1,
@@ -1423,8 +1423,8 @@
                     "peak_date": "2024-12-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 4568.0,
-                    "trough_price": 1718.0,
-                    "drawdown_pct": 62.4,
+                    "trough_price": 1708.0,
+                    "drawdown_pct": 62.6,
                     "duration_days": 17
                 },
                 {
@@ -1434,8 +1434,8 @@
                     "peak_date": "2025-06-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 4231.0,
-                    "trough_price": 1718.0,
-                    "drawdown_pct": 59.4,
+                    "trough_price": 1708.0,
+                    "drawdown_pct": 59.6,
                     "duration_days": 11
                 }
             ],
@@ -1444,8 +1444,8 @@
             "active_pattern": {
                 "active": false,
                 "months_since_peak": 17,
-                "drawdown_from_peak_pct": -62.4,
-                "slope_3m_pct": -16.03,
+                "drawdown_from_peak_pct": -62.6,
+                "slope_3m_pct": -16.52,
                 "peak_price": 4568.0,
                 "peak_date_idx": 91
             },
@@ -1454,10 +1454,10 @@
                 "entry_style": "swing_bottom",
                 "entry_score": 78.0,
                 "bottom_proximity_pct": 71.2,
-                "projected_bottom_price": 2414.0000000000005,
+                "projected_bottom_price": 2397.3333333333335,
                 "dist_to_bottom_pct": -28.8,
                 "pattern_active": false,
-                "drawdown_from_peak_pct": -62.4,
+                "drawdown_from_peak_pct": -62.6,
                 "summary": "하락 레그 종료·바닥권 — 스윙 진입 유리"
             },
             "pattern_match": null,

@@ -4379,7 +4379,7 @@ HTML_CONTENT = """
                         USDT 환율+볼린저 융합 (역프 할인 · BB 타점)
                     </h2>
                     <p style="font-size:10px; color:var(--text-secondary); margin:0 0 10px 0; line-height:1.5;">
-                        <strong>기준환율</strong> 10분마다 API 갱신 · <strong>빗썸 USDT</strong> WebSocket 실시간 비교<br>
+                        <strong>기준환율</strong> 국내(네이버·은행 고시) 10분마다 갱신 · <strong>빗썸 USDT</strong> WebSocket 실시간<br>
                         <strong>1차</strong> 환율차 ≥ 검토 gap(최소 40원, 백테스트 최적값 자동 적용) → <strong>2차</strong> 수수료·목표% + 15m BB 하단 → 매수
                     </p>
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:10px; font-size:11px;">
@@ -5716,7 +5716,11 @@ HTML_CONTENT = """
             if (srcEl) {
                 const mins = d.fx_refresh_minutes || 10;
                 if (d.fair_source === 'manual') srcEl.innerText = '수동 입력';
-                else if (d.fair_source === 'api' || (d.fair_source || '').includes('api')) srcEl.innerText = `${mins}분마다 API 갱신`;
+                else if (d.fair_source === 'naver_domestic' || (d.fair_source || '').includes('naver')) {
+                    srcEl.innerText = `국내 고시 · ${mins}분마다 갱신`;
+                } else if (d.fair_source === 'api_intl' || d.fair_source === 'api') {
+                    srcEl.innerText = `해외 API(폴백) · ${mins}분마다`;
+                } else if ((d.fair_source || '').includes('api')) srcEl.innerText = `${mins}분마다 API 갱신`;
                 else srcEl.innerText = '기본값';
             }
             if (mktEl) mktEl.innerText = d.usdt_krw ? `${d.usdt_krw.toLocaleString()}원` : '-';

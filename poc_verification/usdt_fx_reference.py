@@ -1,6 +1,8 @@
 """
 USD/KRW 기준 환율 조회 — USDT 역프리미엄(할인) 매매용.
 1 USDT ≒ 1 USD 이므로, 빗썸 KRW-USDT가 기준 환율보다 낮으면 역프(할인) 구간.
+
+실시간: 네이버 금융(하나은행 등 국내 고시 환율) 우선 → 실패 시 해외 mid-market API.
 """
 import time
 import logging
@@ -8,17 +10,78 @@ import requests
 
 logger = logging.getLogger("UsdtFxReference")
 
-FX_API_URL = "https://open.er-api.com/v6/latest/USD"
+# 국내 — 네이버 금융 USD/KRW (하나은행 고시, 국내 시장 기준)
+NAVER_FX_URL = (
+    "https://m.stock.naver.com/front-api/marketIndex/productDetail"
+    "?category=exchange&reutersCode=FX_USDKRW"
+)
+# 해외 mid-market — 국내 API 실패 시 폴백
+FX_API_URL_INTL = "https://open.er-api.com/v6/latest/USD"
 DEFAULT_KRW = 1400.0
 CACHE_TTL_SEC = 600  # 기본 10분 (USDT_FX_REFRESH_MINUTES와 동일)
+_REQUEST_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; AutoQuantTrading/1.0)",
+    "Accept": "application/json",
+}
 
 _cache = {"krw": 0.0, "updated_at": 0.0, "source": "default"}
+
+
+def _parse_price_str(value) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip().replace(",", "")
+    return float(s) if s else 0.0
+
+
+def _fetch_krw_naver_domestic() -> tuple[float, str] | None:
+    """네이버 금융 — 국내 은행 고시 USD/KRW (하나은행 등)."""
+    try:
+        r = requests.get(NAVER_FX_URL, timeout=8, headers=_REQUEST_HEADERS)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not data.get("isSuccess"):
+            return None
+        result = data.get("result") or {}
+        krw = _parse_price_str(result.get("closePrice"))
+        if krw <= 0:
+            return None
+        exch = result.get("stockExchangeType") or {}
+        bank = exch.get("nameKor") or exch.get("nameEng") or "domestic"
+        traded_at = result.get("localTradedAt", "")
+        logger.info(
+            f"[UsdtFx] USD/KRW 국내 고시 갱신: {krw:,.2f}원 ({bank}, {traded_at})"
+        )
+        return krw, "naver_domestic"
+    except Exception as e:
+        logger.warning(f"[UsdtFx] 국내 환율(네이버) 조회 실패: {e}")
+        return None
+
+
+def _fetch_krw_intl_fallback() -> tuple[float, str] | None:
+    """해외 mid-market USD/KRW — 국내 API 불가 시."""
+    try:
+        r = requests.get(FX_API_URL_INTL, timeout=8)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        krw = float(data.get("rates", {}).get("KRW", 0))
+        if krw <= 0:
+            return None
+        logger.info(f"[UsdtFx] USD/KRW 해외 API 폴백: {krw:,.2f}")
+        return krw, "api_intl"
+    except Exception as e:
+        logger.warning(f"[UsdtFx] 해외 환율 API 조회 실패: {e}")
+        return None
 
 
 def get_usd_krw_rate(manual_krw: float = 0.0, cache_ttl_sec: int = CACHE_TTL_SEC) -> tuple:
     """
     USD 1달러당 KRW 기준환율 반환.
-    manual_krw > 0 이면 수동값 우선, 아니면 API 캐시(기본 10분) → 실패 시 DEFAULT_KRW.
+    manual_krw > 0 이면 수동값 우선, 아니면 국내 API 캐시(기본 10분) → 해외 폴백 → stale.
     Returns: (rate, source_label)
     """
     if manual_krw and manual_krw > 0:
@@ -28,19 +91,13 @@ def get_usd_krw_rate(manual_krw: float = 0.0, cache_ttl_sec: int = CACHE_TTL_SEC
     if _cache["krw"] > 0 and (now - _cache["updated_at"]) < cache_ttl_sec:
         return _cache["krw"], _cache["source"]
 
-    try:
-        r = requests.get(FX_API_URL, timeout=8)
-        if r.status_code == 200:
-            data = r.json()
-            krw = float(data.get("rates", {}).get("KRW", 0))
-            if krw > 0:
-                _cache["krw"] = krw
-                _cache["updated_at"] = now
-                _cache["source"] = "api"
-                logger.info(f"[UsdtFx] USD/KRW 기준환율 갱신: {krw:,.2f} (API)")
-                return krw, "api"
-    except Exception as e:
-        logger.warning(f"[UsdtFx] 환율 API 조회 실패: {e}")
+    fetched = _fetch_krw_naver_domestic() or _fetch_krw_intl_fallback()
+    if fetched:
+        krw, source = fetched
+        _cache["krw"] = krw
+        _cache["updated_at"] = now
+        _cache["source"] = source
+        return krw, source
 
     if _cache["krw"] > 0:
         return _cache["krw"], _cache["source"] + "_stale"
