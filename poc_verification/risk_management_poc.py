@@ -360,8 +360,9 @@ TIMEFRAME_BAR_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 360
 PORTFOLIO_MAX_SINGLE_BUY_OF_SHARE = 0.5  # 종목 할당분(1/N)의 절반까지 1회 매수
 MIN_BITHUMB_ORDER_KRW = 5000.0
 
-# BEAR auto: 단기→장기 순으로 예상 수익 비교 (동률 시 다음 기간)
+# BEAR auto: UI 비교표용 전체 기간 / 자동선택은 단기 4구간 평균
 BEAR_COMPARE_HORIZONS = ["1d", "3d", "1w", "2w", "1m", "3m", "6m"]
+BEAR_AUTO_PICK_HORIZONS = ["1d", "3d", "1w", "2w"]
 BEAR_HORIZON_LABELS = {
     "1d": "1일", "3d": "3일", "1w": "1주", "2w": "2주",
     "1m": "1개월", "3m": "3개월", "6m": "6개월",
@@ -373,6 +374,15 @@ BEAR_LIVE_RSI_OVERBOUGHT = 62        # RSI 매도: 반등 초기 청산
 BEAR_LIVE_BB_STD_DEV = 3.5           # BB: 하단 이탈 폭 확대
 BEAR_LIVE_STOP_LOSS = 0.03
 BEAR_LIVE_MIN_NET_PROFIT = 0.005     # 수수료(0.5%) 후 최소 순이익 바닥 — 학습값이 이보다 낮으면만 상향
+# CustomBear 하락장(BTC·ETH·XRP) — 목표%·학습보유시간은 백테스트 최적화값
+BEAR_TIERED_EXIT_TICKERS = frozenset({"BTC", "ETH", "XRP"})
+BEAR_TARGET_PROFIT_FALLBACK = 0.012
+BEAR_OPTIMAL_HOLD_MIN_H = 2.0
+BEAR_OPTIMAL_HOLD_FALLBACK_H = 48.0
+# 학습보유 1주기마다 base 대비 90→60→40→20% 완만 하향 → 최종 바닥 0.75%(순이익·손해없음)
+BEAR_TIER_STEP_MULTIPLIERS = (0.9, 0.6, 0.4, 0.2)
+BEAR_TIER_STEP_LABELS = ("90%", "60%", "40%", "20%")
+BEAR_TIER_FINAL_FLOOR_PCT = 0.0075
 BEAR_RISK_FALLBACK = {
     "take_profit_pct": 0.012,
     "trail_pct": 0.004,
@@ -381,6 +391,96 @@ BEAR_RISK_FALLBACK = {
 }
 BEAR_LIVE_BUY_DROP_PCT = 0.045
 BEAR_LIVE_BUY_VOL_RATIO = 2.8
+
+
+def _bear_base_target_profit_pct(params: dict) -> float:
+    """백테스트가 찾은 종목별 목표 순이익% (고정 5% 아님)."""
+    base = float(params.get("target_profit_pct") or 0)
+    if base <= 0:
+        base = float(BEAR_RISK_FALLBACK.get("min_strategy_sell_profit_pct", BEAR_TARGET_PROFIT_FALLBACK))
+    return base
+
+
+def _bear_uses_tiered_exit(ticker: str, regime: str) -> bool:
+    return regime == "BEAR" and ticker in BEAR_TIERED_EXIT_TICKERS
+
+
+def _bear_optimal_hold_hours(params: dict) -> float:
+    """백테스트가 해당 파라미터로 익절까지 걸린 중위 보유시간(시간)."""
+    h = float(params.get("optimal_hold_hours") or 0)
+    if h <= 0:
+        return BEAR_OPTIMAL_HOLD_FALLBACK_H
+    return max(BEAR_OPTIMAL_HOLD_MIN_H, h)
+
+
+def _bear_tier_step_index(hold_hours: float, optimal_h: float) -> int:
+    """-1=base 유지, 0~3=90~20% 구간, 그 이상=바닥."""
+    if hold_hours < optimal_h:
+        return -1
+    return int((hold_hours - optimal_h) / optimal_h)
+
+
+def _bear_tier_target_for_step(base_pct: float, step: int) -> float:
+    if step < 0:
+        return base_pct
+    if step < len(BEAR_TIER_STEP_MULTIPLIERS):
+        return max(BEAR_TIER_FINAL_FLOOR_PCT, base_pct * BEAR_TIER_STEP_MULTIPLIERS[step])
+    return BEAR_TIER_FINAL_FLOOR_PCT
+
+
+def _bear_build_tier_schedule(params: dict) -> list:
+    """진입 시점 기준 예정 목표 하향 일정."""
+    base = _bear_base_target_profit_pct(params)
+    opt = _bear_optimal_hold_hours(params)
+    schedule = [{
+        "at_hours": 0.0,
+        "target_pct": round(base * 100, 2),
+        "label": "100%",
+        "note": f"0~{opt:.1f}h 학습 중위보유",
+    }]
+    for i, (mult, lbl) in enumerate(zip(BEAR_TIER_STEP_MULTIPLIERS, BEAR_TIER_STEP_LABELS)):
+        at_h = round(opt * (1 + i), 1)
+        tgt = round(max(BEAR_TIER_FINAL_FLOOR_PCT, base * mult) * 100, 2)
+        schedule.append({
+            "at_hours": at_h,
+            "target_pct": tgt,
+            "label": lbl,
+            "note": f"{at_h:.1f}h부터",
+        })
+    floor_at = round(opt * (1 + len(BEAR_TIER_STEP_MULTIPLIERS)), 1)
+    schedule.append({
+        "at_hours": floor_at,
+        "target_pct": round(BEAR_TIER_FINAL_FLOOR_PCT * 100, 2),
+        "label": "바닥",
+        "note": f"{floor_at:.1f}h+ 손해없음",
+    })
+    return schedule
+
+
+def _bear_resolve_min_target(params: dict, hold_hours: float, ticker: str, regime: str) -> float:
+    base = _bear_base_target_profit_pct(params)
+    if _bear_uses_tiered_exit(ticker, regime):
+        optimal = _bear_optimal_hold_hours(params)
+        return _bear_tiered_min_net_profit(hold_hours, base, optimal)
+    return max(base, BEAR_LIVE_MIN_NET_PROFIT)
+
+
+def _bear_tiered_min_net_profit(hold_hours: float, base_pct: float, optimal_hold_hours: float) -> float:
+    """학습 중위보유까지 100% → 이후 주기마다 90·60·40·20% → 바닥 0.75%."""
+    opt = max(BEAR_OPTIMAL_HOLD_MIN_H, optimal_hold_hours)
+    step = _bear_tier_step_index(hold_hours, opt)
+    return _bear_tier_target_for_step(base_pct, step)
+
+
+def _bear_hold_tier_label(hold_hours: float, min_tgt: float, params: dict) -> str:
+    optimal = _bear_optimal_hold_hours(params)
+    opt_d = optimal / 24.0
+    step = _bear_tier_step_index(hold_hours, optimal)
+    if step < 0:
+        return f"학습보유 {optimal:.0f}h({opt_d:.1f}일) 이내 · 목표≥{min_tgt*100:.1f}%"
+    if step < len(BEAR_TIER_STEP_MULTIPLIERS):
+        return f"학습주기×{step + 1} · {BEAR_TIER_STEP_LABELS[step]} · ≥{min_tgt*100:.1f}%"
+    return f"장기보유 · 바닥0.75%(손해없음) · ≥{min_tgt*100:.1f}%"
 
 # USDT: 고정 융합 vs 학습 3대지표 — 단기(최대 3주) 예상 수익 비교
 USDT_COMPARE_HORIZONS = ["1d", "3d", "1w", "3w"]
@@ -555,42 +655,52 @@ def _expand_profit_horizons(strategy_reg: dict) -> dict:
     return profits
 
 
+def _bear_horizon_avg(profits: dict, horizons: list) -> float:
+    vals = [float(profits.get(h, 0) or 0) for h in horizons]
+    return sum(vals) / len(vals) if vals else 0.0
+
+
 def _compute_bear_auto_pick(bear_opt_reg: dict, cycle_match: dict = None) -> tuple:
-    """BEAR: 1일→3일→1주→2주→1달→3달→6달 예상 수익 순 비교, 전부 동률이면 Sharpe·MDD·사이클."""
+    """BEAR: 1·3·7·14일 예상 수익 평균 비교, 동률이면 Sharpe·MDD·사이클."""
     custom = bear_opt_reg.get("custom_bear_strategy", {})
     mixed = bear_opt_reg.get("mixed_strategy", {})
     c_profits = _expand_profit_horizons(custom)
     m_profits = _expand_profit_horizons(mixed)
 
-    for horizon in BEAR_COMPARE_HORIZONS:
-        c_val = c_profits.get(horizon, 0)
-        m_val = m_profits.get(horizon, 0)
-        label = BEAR_HORIZON_LABELS[horizon]
-        if m_val > c_val:
-            return "mixed", f"{label} 예상 수익 우세 (Mixed {m_val:+.2f}% > Custom {c_val:+.2f}%)"
-        if c_val > m_val:
-            return "custom_bear", f"{label} 예상 수익 우세 (Custom {c_val:+.2f}% > Mixed {m_val:+.2f}%)"
+    c_avg = _bear_horizon_avg(c_profits, BEAR_AUTO_PICK_HORIZONS)
+    m_avg = _bear_horizon_avg(m_profits, BEAR_AUTO_PICK_HORIZONS)
+    horizon_tag = "·".join(BEAR_HORIZON_LABELS[h] for h in BEAR_AUTO_PICK_HORIZONS)
+    if m_avg > c_avg:
+        return (
+            "mixed",
+            f"단기 평균 예상 수익 우세 ({horizon_tag} 평균 Mixed {m_avg:+.2f}% > Custom {c_avg:+.2f}%)",
+        )
+    if c_avg > m_avg:
+        return (
+            "custom_bear",
+            f"단기 평균 예상 수익 우세 ({horizon_tag} 평균 Custom {c_avg:+.2f}% > Mixed {m_avg:+.2f}%)",
+        )
 
     custom_bt = custom.get("backtest", {})
     mixed_bt = mixed.get("backtest", {})
     c_sharpe = custom_bt.get("sharpe_ratio", -999)
     m_sharpe = mixed_bt.get("sharpe_ratio", -999)
     if m_sharpe > c_sharpe:
-        return "mixed", "전 기간 동률 → Sharpe 우세 (Mixed)"
+        return "mixed", "단기 평균 동률 → Sharpe 우세 (Mixed)"
     if m_sharpe < c_sharpe:
-        return "custom_bear", "전 기간 동률 → Sharpe 우세 (CustomBear)"
+        return "custom_bear", "단기 평균 동률 → Sharpe 우세 (CustomBear)"
     c_mdd = custom_bt.get("mdd_pct", 999)
     m_mdd = mixed_bt.get("mdd_pct", 999)
     if m_mdd != c_mdd:
         pick = "mixed" if m_mdd < c_mdd else "custom_bear"
-        return pick, f"전 기간 동률 → MDD 우세 ({pick})"
+        return pick, f"단기 평균 동률 → MDD 우세 ({pick})"
     if cycle_match and cycle_match.get("similarity_pct", 0) >= 55:
         matched_angle = cycle_match.get("matched_angle_pct_per_month", 0)
         if matched_angle >= 8:
-            return "custom_bear", "전 기간·Sharpe·MDD 동률 → 사이클 각도 급등 구간 (CustomBear)"
+            return "custom_bear", "단기 평균·Sharpe·MDD 동률 → 사이클 각도 급등 구간 (CustomBear)"
         if matched_angle <= 3:
-            return "mixed", "전 기간·Sharpe·MDD 동률 → 사이클 각도 완만 구간 (Mixed)"
-    return "mixed", "전 기간 동률 → 기본 Mixed"
+            return "mixed", "단기 평균·Sharpe·MDD 동률 → 사이클 각도 완만 구간 (Mixed)"
+    return "mixed", "단기 평균 동률 → 기본 Mixed"
 
 
 def _bear_floor_profit(val: float) -> float:
@@ -854,13 +964,21 @@ def _build_tactics_from_opt_reg(opt_reg: dict) -> dict:
             params = {"fast": s_data.get("fast", 12), "slow": s_data.get("slow", 26), "signal_period": s_data.get("signal_period", 9)}
         elif s_name == "CustomBear":
             tf = OPTIM_BACKTEST_TIMEFRAME
+            bt = opt_reg.get("backtest", {})
+            optimal_h = float(
+                s_data.get("optimal_hold_hours")
+                or bt.get("median_hold_hours")
+                or bt.get("avg_hold_hours")
+                or 0
+            )
             params = {
                 "lookback": s_data.get("lookback", 8),
                 "drop_pct": s_data.get("drop_pct", 0.05),
                 "volume_ratio": s_data.get("volume_ratio", 2.0),
                 "trail_pct": s_data.get("trail_pct", 0.015),
                 "stop_loss": s_data.get("stop_loss", 0.015),
-                "time_cut": s_data.get("time_cut", 24)
+                "target_profit_pct": s_data.get("target_profit_pct", BEAR_TARGET_PROFIT_FALLBACK),
+                "optimal_hold_hours": round(optimal_h, 1) if optimal_h > 0 else 0,
             }
         elif s_name in ("UsdtFxBollinger", "ReversePremium"):
             tf = s_data.get("timeframe", "15m")
@@ -1075,6 +1193,14 @@ def _summarize_opt_reg_for_ui(opt_reg: dict, bear_variant: str = None) -> dict:
         "expected_profit_1d": round(_expand_profit_horizons(opt_reg).get("1d", 0), 2),
         "expected_profit_1m": round(_expand_profit_horizons(opt_reg).get("1m", 0), 2),
     }
+    cb = opt_reg.get("strategies", {}).get("CustomBear", {})
+    if cb:
+        tp = cb.get("target_profit_pct")
+        if tp is not None:
+            summary["target_profit_pct"] = round(float(tp) * 100, 2)
+        oh = cb.get("optimal_hold_hours")
+        if oh:
+            summary["optimal_hold_hours"] = round(float(oh), 1)
     if bear_variant:
         summary["bear_variant"] = bear_variant
     return summary
@@ -1586,7 +1712,12 @@ class BithumbUsdtFxBollingerStrategy(BaseStrategy):
 
 class BithumbCustomBearStrategy(BaseStrategy):
     NAME = "CustomBear"
-    PARAMS = {"lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0, "trail_pct": 0.015, "stop_loss": 0.015, "time_cut": 48}
+    PARAMS = {
+        "lookback": 8, "drop_pct": 0.05, "volume_ratio": 2.0,
+        "trail_pct": 0.015, "stop_loss": 0.015,
+        "target_profit_pct": BEAR_TARGET_PROFIT_FALLBACK,
+        "optimal_hold_hours": 0,
+    }
 
     def __init__(self, candle_manager, timeframe="15m", params=None):
         super().__init__(params)
@@ -1595,6 +1726,59 @@ class BithumbCustomBearStrategy(BaseStrategy):
         self.entry_price = 0.0
         self.entry_time = None
         self.peak_price = 0.0
+        self._last_tier_step = -2
+        self._tier_history: list = []
+
+    def _reset_tier_tracking(self) -> None:
+        self._last_tier_step = -2
+        self._tier_history = []
+
+    def _record_tier_change(
+        self, hold_hours: float, ticker: str, regime: str, data: dict
+    ) -> None:
+        if not _bear_uses_tiered_exit(ticker, regime):
+            data.pop("custom_bear_tier_schedule", None)
+            data.pop("custom_bear_tier_history", None)
+            data.pop("custom_bear_tier_step", None)
+            return
+
+        base = _bear_base_target_profit_pct(self.params)
+        optimal = _bear_optimal_hold_hours(self.params)
+        step = _bear_tier_step_index(hold_hours, optimal)
+        min_tgt = _bear_tiered_min_net_profit(hold_hours, base, optimal)
+        data["custom_bear_tier_schedule"] = _bear_build_tier_schedule(self.params)
+        data["custom_bear_tier_step"] = step
+
+        if step != self._last_tier_step:
+            if self._last_tier_step == -2:
+                self._tier_history.append({
+                    "at_hours": round(hold_hours, 2),
+                    "target_pct": round(base * 100, 2),
+                    "label": "100%",
+                    "event": "진입",
+                    "message": (
+                        f"진입 · 목표 {base * 100:.2f}% "
+                        f"(학습보유 {optimal:.1f}h 이내)"
+                    ),
+                })
+            elif step > self._last_tier_step and step >= 0:
+                if step < len(BEAR_TIER_STEP_MULTIPLIERS):
+                    lbl = BEAR_TIER_STEP_LABELS[step]
+                    msg = (
+                        f"보유 {hold_hours:.1f}h · 목표 {min_tgt * 100:.2f}%로 하향 ({lbl})"
+                    )
+                else:
+                    msg = f"보유 {hold_hours:.1f}h · 목표 0.75% 바닥 적용 (손해없음)"
+                self._tier_history.append({
+                    "at_hours": round(hold_hours, 2),
+                    "target_pct": round(min_tgt * 100, 2),
+                    "label": BEAR_TIER_STEP_LABELS[step] if step < len(BEAR_TIER_STEP_LABELS) else "바닥",
+                    "event": "하향",
+                    "message": msg,
+                })
+            self._last_tier_step = step
+
+        data["custom_bear_tier_history"] = list(self._tier_history)
 
     def generate_signal(self, data: dict) -> str:
         # candle_manager로부터 15분봉 캔들 조회
@@ -1612,6 +1796,7 @@ class BithumbCustomBearStrategy(BaseStrategy):
         
         if qty == 0.0:
             self.peak_price = 0.0
+            self._reset_tier_tracking()
             # 매수 조건
             lookback = self.params["lookback"]
             window_closes = closes[-lookback-1:-1]
@@ -1641,6 +1826,7 @@ class BithumbCustomBearStrategy(BaseStrategy):
                 self.entry_price = curr_price
                 self.entry_time = datetime.now()
                 self.peak_price = curr_price
+                self._reset_tier_tracking()
                 return "BUY"
         else:
             # 매도 조건 (트레일링 스톱, 손절, 시간청산) — 틱 가격으로 즉시 평가
@@ -1659,27 +1845,36 @@ class BithumbCustomBearStrategy(BaseStrategy):
             drawdown = (self.peak_price - curr_price) / self.peak_price
             avg = float(data.get("avg_price") or self.entry_price)
             net_pnl = calc_net_pnl_pct(avg, curr_price)
-
-            exit_ts = drawdown >= self.params["trail_pct"] and net_pnl >= BEAR_LIVE_MIN_NET_PROFIT
-            exit_sl = pnl <= -self.params["stop_loss"]
-            
-            exit_tc = False
-            if self.entry_time:
-                elapsed_sec = (datetime.now() - self.entry_time).total_seconds()
-                bar_sec = _bar_seconds_for_timeframe(self.timeframe)
-                if elapsed_sec >= self.params["time_cut"] * bar_sec:
-                    exit_tc = True
-            
-            # 실시간 지표 상태 기록
-            data["custom_bear_val"] = (
-                f"보유 · 고점되돌림 {drawdown*100:.1f}% (전략 TS {self.params['trail_pct']*100:.1f}%) / "
-                f"손익 {pnl*100:.1f}% (전략 SL -{self.params['stop_loss']*100:.1f}%)"
+            hold_hours = (
+                (datetime.now() - self.entry_time).total_seconds() / 3600.0
+                if self.entry_time else 0.0
             )
-            
-            if exit_ts or exit_sl or exit_tc:
+            ticker = str(data.get("ticker") or "")
+            regime = str(data.get("regime") or "BEAR")
+            base_tgt = _bear_base_target_profit_pct(self.params)
+            min_tgt = _bear_resolve_min_target(self.params, hold_hours, ticker, regime)
+            tier_lbl = (
+                _bear_hold_tier_label(hold_hours, min_tgt, self.params)
+                if _bear_uses_tiered_exit(ticker, regime)
+                else f"목표≥{min_tgt*100:.1f}%"
+            )
+            self._record_tier_change(hold_hours, ticker, regime, data)
+
+            exit_tp = net_pnl >= min_tgt
+            exit_ts = drawdown >= self.params["trail_pct"] and net_pnl >= min_tgt
+            exit_sl = pnl <= -self.params["stop_loss"]
+
+            data["custom_bear_val"] = (
+                f"보유 {hold_hours:.1f}h · {tier_lbl} · "
+                f"순이익 {net_pnl*100:.1f}% (목표 {min_tgt*100:.1f}%) / "
+                f"고점되돌림 {drawdown*100:.1f}% / SL -{self.params['stop_loss']*100:.1f}%"
+            )
+
+            if exit_tp or exit_ts or exit_sl:
                 self.entry_price = 0.0
                 self.entry_time = None
                 self.peak_price = 0.0
+                self._reset_tier_tracking()
                 return "SELL"
                 
         return "HOLD"
@@ -2230,6 +2425,8 @@ class UITickerWorker(TickerWorker):
         # 3. 갱신된 전략 세팅으로 시그널 도출
         data["position_qty"] = self.position.quantity
         data["avg_price"] = self.position.avg_price
+        data["ticker"] = self.ticker
+        data["regime"] = self.current_regime
         if self.ticker in STABLECOIN_TICKERS:
             meta = self.config.get("usdt_position_meta") or {}
             data["entry_fair_krw"] = (
@@ -2278,7 +2475,12 @@ class UITickerWorker(TickerWorker):
                     "avg_price": self.position.avg_price,
                     "krw_value": krw_value,
                     "pnl_pct": pnl_pct * 100.0
-                }
+                },
+                "custom_bear_tier": {
+                    "schedule": data.get("custom_bear_tier_schedule") or [],
+                    "history": data.get("custom_bear_tier_history") or [],
+                    "step": data.get("custom_bear_tier_step"),
+                } if data.get("custom_bear_tier_schedule") is not None else None,
             }
         }
         ui_event_queue.put(ui_event)
@@ -4624,9 +4826,9 @@ HTML_CONTENT = """
                                 <span class="param-val" id="custombear-stop_loss-val">1.5</span>
                             </div>
                             <div class="control-row">
-                                <span class="control-label">시간청산(time_cut 캔들수)</span>
-                                <input type="range" class="param-slider" id="custombear-time_cut" min="2" max="48" value="24" oninput="updateParamValue('custombear-time_cut-val', this.value)">
-                                <span class="param-val" id="custombear-time_cut-val">24</span>
+                                <span class="control-label">목표 순이익% (백테스트 최적값)</span>
+                                <input type="range" class="param-slider" id="custombear-target_profit" min="0.8" max="8" step="0.1" value="1.2" oninput="updateParamValue('custombear-target_profit-val', this.value)">
+                                <span class="param-val" id="custombear-target_profit-val">1.2</span>
                             </div>
                             <div class="control-row weight-row">
                                 <span class="control-label" style="color:var(--accent-blue); font-weight:700;">전략 가중치</span>
@@ -4733,8 +4935,16 @@ HTML_CONTENT = """
                                     <div>진입가 대비 <strong id="risk-cb-stop-val" style="color:var(--accent-red);">-</strong> 이하 시 매도</div>
                                 </div>
                                 <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px 12px;">
-                                    <div style="color:#fff; font-weight:600; margin-bottom:4px;">시간 청산</div>
-                                    <div><strong id="risk-cb-timecut-val" style="color:var(--accent-blue);">-</strong> (<span id="risk-cb-timecut-hint">-</span>)</div>
+                                    <div style="color:#fff; font-weight:600; margin-bottom:4px;">보유별 목표 이율 (단계 하향)</div>
+                                    <div>기본 <strong id="risk-cb-timecut-val" style="color:var(--accent-blue);">-</strong> · <span id="risk-cb-timecut-hint">-</span></div>
+                                </div>
+                                <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px 12px;">
+                                    <div style="color:#fff; font-weight:600; margin-bottom:6px;">목표 하향 일정 (백테스트 학습 기준)</div>
+                                    <ul id="risk-cb-tier-plan" style="margin:0; padding-left:16px; font-size:11px; line-height:1.65; color:#94a3b8;"></ul>
+                                </div>
+                                <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px 12px;">
+                                    <div style="color:#fff; font-weight:600; margin-bottom:6px;">실매매 목표 하향 기록</div>
+                                    <ul id="risk-cb-tier-live" style="margin:0; padding-left:16px; font-size:11px; line-height:1.65; color:#a5b4fc;"></ul>
                                 </div>
                                 <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px 12px;">
                                     <div style="color:#fff; font-weight:600; margin-bottom:4px;">보조 안전손절 (리스크매니저)</div>
@@ -4812,7 +5022,7 @@ HTML_CONTENT = """
                         <span class="active-badge" id="badge-auto" style="display:none; background:var(--accent-blue); color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; font-weight:bold;">적용 중</span>
                     </div>
                     <p style="font-size:11px; color:var(--text-secondary); margin:0; line-height:1.5;">
-                        하락장(BEAR) 판정 시에만 적용됩니다. 백테스트 예상 수익을 <strong>1일 → 3일 → 1주 → 2주 → 1달 → 3달 → 6달</strong> 순으로 비교해 더 높은 전략을 매일 자동 선택합니다.
+                        하락장(BEAR) 판정 시에만 적용됩니다. 백테스트 예상 수익 <strong>1일·3일·1주·2주</strong> 4구간 <strong>평균</strong>이 더 높은 전략을 자동 선택합니다. (동률 시 Sharpe → MDD)
                         현재 AI 선택: <strong id="bear-resolved-label" style="color:var(--accent-green);">-</strong><br>
                         <span id="bear-auto-pick-reason" style="font-size:10px; color:#a5b4fc; margin-top:4px; display:inline-block;">-</span>
                     </p>
@@ -5893,6 +6103,42 @@ HTML_CONTENT = """
             return map[tf] || 0.5;
         }
 
+        function buildBearTierPlanLines(p) {
+            const base = parseFloat(p.target_profit_pct) || 0.012;
+            const opt = Math.max(2, parseFloat(p.optimal_hold_hours) || 48);
+            const mults = [0.9, 0.6, 0.4, 0.2];
+            const labels = ['90%', '60%', '40%', '20%'];
+            const floor = 0.0075;
+            const lines = [];
+            lines.push(`0~${opt.toFixed(1)}h: ${(base * 100).toFixed(2)}% (100% · 학습 중위보유)`);
+            mults.forEach((m, i) => {
+                const at = opt * (1 + i);
+                const tgt = Math.max(floor, base * m) * 100;
+                lines.push(`${at.toFixed(1)}h~: ${tgt.toFixed(2)}% (${labels[i]} · base)`);
+            });
+            const floorAt = opt * (1 + mults.length);
+            lines.push(`${floorAt.toFixed(1)}h+: 0.75% (바닥 · 순이익 손해없음)`);
+            return lines;
+        }
+
+        function renderBearTierPlan(p) {
+            const el = document.getElementById('risk-cb-tier-plan');
+            if (!el) return;
+            el.innerHTML = buildBearTierPlanLines(p).map(l => `<li>${l}</li>`).join('');
+        }
+
+        function renderBearTierLive(tierData) {
+            const el = document.getElementById('risk-cb-tier-live');
+            if (!el) return;
+            if (!tierData || !tierData.history || tierData.history.length === 0) {
+                el.innerHTML = '<li style="list-style:none; margin-left:-16px; color:#64748b;">보유 중 하향 시점이 여기에 기록됩니다.</li>';
+                return;
+            }
+            el.innerHTML = tierData.history.map(h =>
+                `<li>${h.message || `${h.event || ''} ${h.target_pct}%`}</li>`
+            ).join('');
+        }
+
         function syncRiskPanelForTactic(tactic) {
             const stdPanel = document.getElementById('risk-standard-panel');
             const cbPanel = document.getElementById('risk-custombear-panel');
@@ -5910,18 +6156,23 @@ HTML_CONTENT = """
                 const tf = cbStrat ? (cbStrat.timeframe || '15m') : '15m';
                 const trailPct = ((p.trail_pct ?? 0.02) * 100).toFixed(1);
                 const stopPct = ((p.stop_loss ?? 0.015) * 100).toFixed(1);
-                const timeCut = p.time_cut ?? 24;
-                const barHours = _timeframeBarHours(tf);
-                const holdHours = (timeCut * barHours).toFixed(1);
+                const baseTp = ((p.target_profit_pct ?? 0.012) * 100).toFixed(1);
+                const optHold = parseFloat(p.optimal_hold_hours) || 0;
+                const optHoldTxt = optHold > 0
+                    ? `${optHold.toFixed(1)}h (${(optHold / 24).toFixed(1)}일)`
+                    : '백테스트 갱신 후';
                 const backupSl = ((tactic.risk?.stop_loss_pct ?? p.stop_loss ?? 0.015) * 100).toFixed(1);
 
                 document.getElementById('risk-cb-trail-val').innerText = trailPct + '%';
                 document.getElementById('risk-cb-stop-val').innerText = '-' + stopPct + '%';
-                document.getElementById('risk-cb-timecut-val').innerText = `${timeCut}봉 (${tf})`;
-                document.getElementById('risk-cb-timecut-hint').innerText = `약 ${holdHours}시간 경과 시 무조건 청산`;
+                document.getElementById('risk-cb-timecut-val').innerText = baseTp + '% (최적화)';
+                document.getElementById('risk-cb-timecut-hint').innerText =
+                    `BTC·ETH·XRP 하락장 · 학습보유 ${optHoldTxt}까지 100% → 90·60·40·20% → 바닥0.75%`;
                 document.getElementById('risk-cb-backup-sl-val').innerText = '-' + backupSl + '%';
+                renderBearTierPlan(p);
+                renderBearTierLive(null);
 
-                desc.innerText = 'CustomBear·전략: 급락 반등 매수 후 전략 내 트레일링·손절·시간청산으로 매도합니다. 우측 리스크 엔진과 별도입니다.';
+                desc.innerText = 'CustomBear·전략: 급락 반등 매수 후 트레일링·손절·보유별 목표이율로 매도합니다. 우측 리스크 엔진과 별도입니다.';
             } else {
                 cbPanel.style.display = 'none';
                 stdPanel.style.display = 'block';
@@ -6548,9 +6799,11 @@ HTML_CONTENT = """
                 if (!savedCB) return false;
                 if (savedCB.enabled !== defCB.enabled) return false;
                 if (Math.abs((savedCB.weight ?? 1) - (defCB.weight ?? 1)) > 0.001) return false;
-                const cbKeys = ['lookback', 'drop_pct', 'volume_ratio', 'trail_pct', 'stop_loss', 'time_cut'];
+                const cbKeys = ['lookback', 'drop_pct', 'volume_ratio', 'trail_pct', 'stop_loss', 'target_profit_pct'];
                 for (const key of cbKeys) {
-                    if (Math.abs(Number(savedCB[key]) - Number(defCB[key])) > 0.001) return false;
+                    const defVal = key === 'target_profit_pct' ? (defCB[key] ?? 0.012) : defCB[key];
+                    const savedVal = key === 'target_profit_pct' ? (savedCB[key] ?? 0.012) : savedCB[key];
+                    if (Math.abs(Number(savedVal) - Number(defVal)) > 0.001) return false;
                 }
             } else {
                 for (const [sName, defS] of Object.entries(defStrats)) {
@@ -6686,9 +6939,10 @@ HTML_CONTENT = """
                     const stopLossVal = (sCfg.stop_loss * 100).toFixed(1);
                     document.getElementById('custombear-stop_loss').value = stopLossVal;
                     document.getElementById('custombear-stop_loss-val').innerText = stopLossVal;
-                    
-                    document.getElementById('custombear-time_cut').value = sCfg.time_cut;
-                    document.getElementById('custombear-time_cut-val').innerText = sCfg.time_cut;
+
+                    const tpVal = ((sCfg.target_profit_pct ?? 0.012) * 100).toFixed(1);
+                    document.getElementById('custombear-target_profit').value = tpVal;
+                    document.getElementById('custombear-target_profit-val').innerText = tpVal;
                 }
 
                 const weightEl = document.getElementById(`${prefix}-weight`);
@@ -6759,18 +7013,26 @@ HTML_CONTENT = """
             // CustomBear
             const toggleCustomBear = document.getElementById('toggle-custombear');
             if (toggleCustomBear) {
-                strategies.push({
-                    name: 'CustomBear',
-                    enabled: toggleCustomBear.checked,
-                    weight: parseFloat(document.getElementById('custombear-weight').value),
-                    params: {
+                const curReg = tickerConfigs[activeTicker]?.current_regime || 'BEAR';
+                const existingCb = (tickerConfigs[activeTicker]?.tactics?.[curReg]?.strategies || [])
+                    .find(s => s.name === 'CustomBear');
+                const prevOpt = parseFloat(existingCb?.params?.optimal_hold_hours);
+                const cbParams = {
                         lookback: parseInt(document.getElementById('custombear-lookback').value),
                         drop_pct: parseFloat(document.getElementById('custombear-drop_pct').value) / 100,
                         volume_ratio: parseFloat(document.getElementById('custombear-volume_ratio').value),
                         trail_pct: parseFloat(document.getElementById('custombear-trail_pct').value) / 100,
                         stop_loss: parseFloat(document.getElementById('custombear-stop_loss').value) / 100,
-                        time_cut: parseInt(document.getElementById('custombear-time_cut').value)
-                    }
+                        target_profit_pct: parseFloat(document.getElementById('custombear-target_profit').value) / 100,
+                };
+                if (Number.isFinite(prevOpt) && prevOpt > 0) {
+                    cbParams.optimal_hold_hours = prevOpt;
+                }
+                strategies.push({
+                    name: 'CustomBear',
+                    enabled: toggleCustomBear.checked,
+                    weight: parseFloat(document.getElementById('custombear-weight').value),
+                    params: cbParams,
                 });
             }
             
@@ -7099,6 +7361,9 @@ HTML_CONTENT = """
                     }
                     
                     // 5. 지표 상세 텍스트 및 테이블 동적 업데이트
+                    if (ticker === activeTicker && msg.data.custom_bear_tier) {
+                        renderBearTierLive(msg.data.custom_bear_tier);
+                    }
                     if (comp && comp.indicators) {
                         const tableEl = document.getElementById(`table-${ticker}`);
                         if (tableEl) {
@@ -7567,7 +7832,7 @@ HTML_CONTENT = """
 
         function formatRiskLabel(risk, logic) {
             if (logic === 'CUSTOM_BEAR') {
-                return 'CustomBear 내장 (트레일링·손절·시간청산)';
+                return 'CustomBear 내장 (트레일링·손절·보유별 목표이율)';
             }
             if (!risk || risk.type === 'None') return 'None (미적용)';
             if (risk.take_profit_pct >= 5) {
@@ -7847,7 +8112,7 @@ def load_dynamic_factory_defaults():
                                     "volume_ratio": s_src.get("volume_ratio", 2.0),
                                     "trail_pct": s_src.get("trail_pct", 0.015),
                                     "stop_loss": s_src.get("stop_loss", 0.015),
-                                    "time_cut": s_src.get("time_cut", 24)
+                                    "target_profit_pct": s_src.get("target_profit_pct", 0.012),
                                 }
                         ticker_data[regime] = {
                             "logic": reg_data.get("logic", "OR"),

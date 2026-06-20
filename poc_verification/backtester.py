@@ -64,6 +64,13 @@ except ImportError:
 
 USDT_MIN_TARGET_PROFIT_PCT = 2.0  # 진입 시 최소 기대 스프레드(수수료+이율) 하한
 USDT_MIN_CONSIDER_GAP_FLOOR = 40  # 환율차 검토·매수 하한 (원) — 그리드·실매매 공통
+
+# CustomBear 하락장(BTC·ETH·XRP) — 목표%·학습보유시간은 백테스트 최적화값
+BEAR_TARGET_PROFIT_FALLBACK = 0.012
+BEAR_OPTIMAL_HOLD_MIN_H = 2.0
+BEAR_OPTIMAL_HOLD_FALLBACK_H = 48.0
+BEAR_TIER_STEP_MULTIPLIERS = (0.9, 0.6, 0.4, 0.2)
+BEAR_TIER_FINAL_FLOOR_PCT = 0.0075
 USDT_FX_GRID = {
     "min_consider_gap_krw": [40, 45, 50, 55, 60, 65],
     "min_target_profit_pct": [2.0, 2.25, 2.5, 2.75, 3.0],
@@ -101,6 +108,43 @@ TARGET_TIMES_KST = [(h, m) for h in range(24) for m in (0, 15, 30, 45)]
 # 수수료: 빗썸 실거래 체결 기준 편도 약 0.25% (왕복 0.50%)
 FEE_RATE = 0.0025          # 편도 1회 수수료
 ROUND_TRIP_FEE = FEE_RATE * 2  # 왕복 0.005
+
+
+def bear_base_target_profit_pct(params: dict) -> float:
+    base = float(params.get("target_profit_pct") or 0)
+    if base <= 0:
+        return BEAR_TARGET_PROFIT_FALLBACK
+    return base
+
+
+def bear_optimal_hold_hours(params: dict) -> float:
+    h = float(params.get("optimal_hold_hours") or 0)
+    if h <= 0:
+        return BEAR_OPTIMAL_HOLD_FALLBACK_H
+    return max(BEAR_OPTIMAL_HOLD_MIN_H, h)
+
+
+def bear_tier_step_index(hold_hours: float, optimal_h: float) -> int:
+    if hold_hours < optimal_h:
+        return -1
+    return int((hold_hours - optimal_h) / optimal_h)
+
+
+def bear_tier_target_for_step(base_pct: float, step: int) -> float:
+    if step < 0:
+        return base_pct
+    if step < len(BEAR_TIER_STEP_MULTIPLIERS):
+        return max(BEAR_TIER_FINAL_FLOOR_PCT, base_pct * BEAR_TIER_STEP_MULTIPLIERS[step])
+    return BEAR_TIER_FINAL_FLOOR_PCT
+
+
+def bear_tiered_min_net_profit(hold_hours: float, base_pct: float, optimal_hold_hours=None) -> float:
+    """최적화 시 optimal_hold_hours=None → base만. 실매매는 학습보유 이후 90→20% 완만 하향."""
+    if optimal_hold_hours is None:
+        return base_pct
+    opt = max(BEAR_OPTIMAL_HOLD_MIN_H, optimal_hold_hours)
+    step = bear_tier_step_index(hold_hours, opt)
+    return bear_tier_target_for_step(base_pct, step)
 
 # 캐시 파일 경로 (backtester.py 와 같은 폴더)
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -983,7 +1027,6 @@ class StrategySimulator:
             volume_ratio = params["volume_ratio"]
             trail_pct = params["trail_pct"]
             stop_loss = params["stop_loss"]
-            time_cut = params["time_cut"]
 
             warmup = max(lookback, 20)
 
@@ -1018,15 +1061,19 @@ class StrategySimulator:
                     # peak_price 실시간 최고가 업데이트
                     peak_price = max(peak_price, highs[i])
                     
-                    # 청산 조건 (트레일링 스톱, 손절, 시간청산)
+                    # 청산 조건 (트레일링 스톱, 손절 — 보유별 목표이율 단계 하향, 강제 시간청산 없음)
                     pnl = (price - entry_price) / entry_price
                     drawdown = (peak_price - price) / peak_price
-                    
-                    exit_ts = drawdown >= trail_pct
-                    exit_sl = pnl <= -stop_loss
-                    exit_tc = (i - entry_idx) >= time_cut
+                    hold_hours = (i - entry_idx) * CANDLE_INTERVAL_HOURS
+                    base_tgt = bear_base_target_profit_pct(params)
+                    min_tgt = bear_tiered_min_net_profit(hold_hours, base_tgt, None)
+                    net_pnl = pnl - ROUND_TRIP_FEE
 
-                    if exit_ts or exit_sl or exit_tc:
+                    exit_tp = net_pnl >= min_tgt
+                    exit_ts = drawdown >= trail_pct and net_pnl >= min_tgt
+                    exit_sl = pnl <= -stop_loss
+
+                    if exit_tp or exit_ts or exit_sl:
                         gross = position * price
                         fee = gross * FEE_RATE
                         capital = gross - fee
@@ -1505,14 +1552,14 @@ class GridSearchOptimizer:
         volume_ratios = [1.2, 1.5, 2.0, 2.5, 3.0]
         trail_pcts    = [0.01, 0.02, 0.03, 0.04, 0.05]
         stop_losses   = [0.01, 0.02, 0.03, 0.04, 0.05]
-        time_cuts     = [24, 48, 72, 96]
-        
+        target_profit_pcts = [0.008, 0.012, 0.018, 0.025, 0.03, 0.035, 0.04, 0.05, 0.06]
+
         for lb in lookbacks:
             for dp in drop_pcts:
                 for vr in volume_ratios:
                     for trail in trail_pcts:
                         for sl in stop_losses:
-                            for tc in time_cuts:
+                            for tp in target_profit_pcts:
                                 yield {
                                     "custom_bear": True,
                                     "rsi": False, "bb": False, "macd": False,
@@ -1521,7 +1568,7 @@ class GridSearchOptimizer:
                                     "volume_ratio": vr,
                                     "trail_pct": trail,
                                     "stop_loss": sl,
-                                    "time_cut": tc
+                                    "target_profit_pct": tp,
                                 }
 
     def optimize_regime(self, data: list, regime: str, market: str, base_pct: float = 20.0, span_pct: float = 60.0) -> dict:
@@ -2001,7 +2048,10 @@ def _build_custom_bear_output(params: dict, result: dict, expected_profits: dict
                 "volume_ratio": params["volume_ratio"],
                 "trail_pct":    params["trail_pct"],
                 "stop_loss":    params["stop_loss"],
-                "time_cut":     params["time_cut"]
+                "target_profit_pct": params.get("target_profit_pct", BEAR_TARGET_PROFIT_FALLBACK),
+                "optimal_hold_hours": round(
+                    float(result.get("median_hold_hours") or result.get("avg_hold_hours") or 0), 1
+                ),
             }
         },
         "logic": "CUSTOM_BEAR",
@@ -2045,7 +2095,8 @@ def _default_custom_bear_params(regime: str) -> dict:
                 "volume_ratio": 2.0,
                 "trail_pct": 0.015,
                 "stop_loss": 0.015,
-                "time_cut": 24
+                "target_profit_pct": BEAR_TARGET_PROFIT_FALLBACK,
+                "optimal_hold_hours": 0,
             }
         },
         "logic": "CUSTOM_BEAR",

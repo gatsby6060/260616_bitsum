@@ -167,7 +167,8 @@
                             "volume_ratio": 3.0,
                             "trail_pct": 0.03,
                             "stop_loss": 0.01,
-                            "time_cut": 24
+                            "target_profit_pct": 0.012,
+                            "optimal_hold_hours": 2.5
                         }
                     }
                 ],
@@ -244,7 +245,7 @@
             ],
             "active_risk_type": "StopLoss",
             "resolved_bear_strategy": "mixed",
-            "bear_auto_pick_reason": "1일 예상 수익 우세 (Mixed +0.08% > Custom +0.00%)",
+            "bear_auto_pick_reason": "단기 평균 예상 수익 우세 (1일·3일·1주·2주 평균 Mixed +0.50% > Custom +0.01%)",
             "resolved_usdt_strategy": null,
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
@@ -282,7 +283,7 @@
                     "expected_profit_1d": 0.08,
                     "expected_profit_1m": 2.39,
                     "bear_variant": "mixed",
-                    "bear_pick_reason": "1일 예상 수익 우세 (Mixed +0.08% > Custom +0.00%)"
+                    "bear_pick_reason": "단기 평균 예상 수익 우세 (1일·3일·1주·2주 평균 Mixed +0.50% > Custom +0.01%)"
                 },
                 "RANGE": {
                     "logic": "AND",
@@ -370,7 +371,7 @@
                 }
             ]
         },
-        "bear_auto_pick_reason": "1일 예상 수익 우세 (Mixed +0.08% > Custom +0.00%)",
+        "bear_auto_pick_reason": "단기 평균 예상 수익 우세 (1일·3일·1주·2주 평균 Mixed +0.50% > Custom +0.01%)",
         "bear_pattern_analysis": {
             "pattern_active": true,
             "historical_episodes": [
@@ -664,7 +665,8 @@
                             "volume_ratio": 3.0,
                             "trail_pct": 0.03,
                             "stop_loss": 0.03,
-                            "time_cut": 24
+                            "target_profit_pct": 0.012,
+                            "optimal_hold_hours": 9.5
                         }
                     }
                 ],
@@ -741,7 +743,7 @@
             ],
             "active_risk_type": "StopLoss",
             "resolved_bear_strategy": "mixed",
-            "bear_auto_pick_reason": "2주 예상 수익 우세 (Mixed +0.05% > Custom +0.04%)",
+            "bear_auto_pick_reason": "단기 평균 예상 수익 우세 (1일·3일·1주·2주 평균 Mixed +0.02% > Custom +0.02%)",
             "resolved_usdt_strategy": null,
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
@@ -779,7 +781,7 @@
                     "expected_profit_1d": 0.0,
                     "expected_profit_1m": 0.1,
                     "bear_variant": "mixed",
-                    "bear_pick_reason": "2주 예상 수익 우세 (Mixed +0.05% > Custom +0.04%)"
+                    "bear_pick_reason": "단기 평균 예상 수익 우세 (1일·3일·1주·2주 평균 Mixed +0.02% > Custom +0.02%)"
                 },
                 "RANGE": {
                     "logic": "AND",
@@ -867,7 +869,7 @@
                 }
             ]
         },
-        "bear_auto_pick_reason": "2주 예상 수익 우세 (Mixed +0.05% > Custom +0.04%)",
+        "bear_auto_pick_reason": "단기 평균 예상 수익 우세 (1일·3일·1주·2주 평균 Mixed +0.02% > Custom +0.02%)",
         "bear_pattern_analysis": {
             "pattern_active": true,
             "historical_episodes": [
@@ -1071,7 +1073,8 @@
                             "volume_ratio": 3.0,
                             "trail_pct": 0.04,
                             "stop_loss": 0.01,
-                            "time_cut": 36
+                            "target_profit_pct": 0.012,
+                            "optimal_hold_hours": 1.5
                         }
                     }
                 ],
@@ -1152,7 +1155,8 @@
                             "volume_ratio": 3.0,
                             "trail_pct": 0.04,
                             "stop_loss": 0.01,
-                            "time_cut": 36
+                            "target_profit_pct": 0.012,
+                            "optimal_hold_hours": 1.5
                         }
                     }
                 ],
@@ -1228,7 +1232,7 @@
             ],
             "active_risk_type": "StopLoss",
             "resolved_bear_strategy": "custom_bear",
-            "bear_auto_pick_reason": "1일 예상 수익 우세 (Custom +0.01% > Mixed +0.00%)",
+            "bear_auto_pick_reason": "단기 평균 예상 수익 우세 (1일·3일·1주·2주 평균 Custom +0.06% > Mixed +0.02%)",
             "resolved_usdt_strategy": null,
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
@@ -1264,7 +1268,7 @@
                     "expected_profit_1d": 0.01,
                     "expected_profit_1m": 0.28,
                     "bear_variant": "custom_bear",
-                    "bear_pick_reason": "1일 예상 수익 우세 (Custom +0.01% > Mixed +0.00%)"
+                    "bear_pick_reason": "단기 평균 예상 수익 우세 (1일·3일·1주·2주 평균 Custom +0.06% > Mixed +0.02%)"
                 },
                 "RANGE": {
                     "logic": "AND",
@@ -1346,7 +1350,7 @@
                 }
             ]
         },
-        "bear_auto_pick_reason": "1일 예상 수익 우세 (Custom +0.01% > Mixed +0.00%)",
+        "bear_auto_pick_reason": "단기 평균 예상 수익 우세 (1일·3일·1주·2주 평균 Custom +0.06% > Mixed +0.02%)",
         "bear_pattern_analysis": {
             "pattern_active": false,
             "historical_episodes": [
