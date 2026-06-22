@@ -55,15 +55,37 @@ try:
         ensure_daily_fx_for_bars,
         ensure_fx_history,
         usdt_fx_buy_allowed,
+        usdt_fx_entry_allowed,
+        usdt_fx_exit_fusion,
+        USDT_DEFAULT_ENTRY_GAP_KRW,
+        USDT_DEFAULT_EXIT_GAP_KRW,
+        USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT,
+        USDT_MIN_ENTRY_GAP_FLOOR,
+        USDT_MIN_EXIT_GAP_FLOOR,
+        USDT_MIN_EXIT_TP_FLOOR,
         usdt_fx_exit_allowed,
         usdt_fx_net_pnl_pct,
+        save_usdt_optimal_defaults,
+        refresh_usdt_defaults,
     )
     HAS_USDT_FX_HIST = True
 except ImportError:
     HAS_USDT_FX_HIST = False
+    USDT_DEFAULT_ENTRY_GAP_KRW = 30
+    USDT_DEFAULT_EXIT_GAP_KRW = 10
+    USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT = 3.0
+    USDT_MIN_ENTRY_GAP_FLOOR = 30
+    USDT_MIN_EXIT_GAP_FLOOR = 10
+    USDT_MIN_EXIT_TP_FLOOR = 2.0
 
-USDT_MIN_TARGET_PROFIT_PCT = 2.0  # 진입 시 최소 기대 스프레드(수수료+이율) 하한
-USDT_MIN_CONSIDER_GAP_FLOOR = 40  # 환율차 검토·매수 하한 (원) — 그리드·실매매 공통
+    def save_usdt_optimal_defaults(params, result=None):
+        return params
+
+    def refresh_usdt_defaults(force=False):
+        return {}
+
+USDT_MIN_TARGET_PROFIT_PCT = USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT  # 탈출 TP 기본·하한 참조
+USDT_MIN_CONSIDER_GAP_FLOOR = USDT_MIN_ENTRY_GAP_FLOOR
 
 # CustomBear 하락장(BTC·ETH·XRP) — 목표%·학습보유시간은 백테스트 최적화값
 BEAR_TARGET_PROFIT_FALLBACK = 0.012
@@ -72,10 +94,9 @@ BEAR_OPTIMAL_HOLD_FALLBACK_H = 48.0
 BEAR_TIER_STEP_MULTIPLIERS = (0.9, 0.6, 0.4, 0.2)
 BEAR_TIER_FINAL_FLOOR_PCT = 0.0075
 USDT_FX_GRID = {
-    "min_consider_gap_krw": [40, 45, 50, 55, 60, 65],
-    "min_target_profit_pct": [2.0, 2.25, 2.5, 2.75, 3.0],
-    "exit_gap_krw": [5, 10, 15, 20, 30],       # 탈출: 기준환율과 잔여 gap
-    "exit_convergence_pct": [80, 85, 90, 95, 100],  # 탈출: 매수 시 할인 수렴 %
+    "min_consider_gap_krw": [30, 35, 40, 45, 50],
+    "exit_take_profit_pct": [2.0, 2.5, 3.0],
+    "exit_gap_krw": [10, 15, 20, 25],
 }
 
 # 지표 매도 최소 순수익 (왕복 수수료 이후) — 조기 소액 익절 억제
@@ -87,8 +108,8 @@ BEAR_MIN_NET_PROFIT_FLOOR = 0.005
 BEAR_OPTIM_MAX_TAKE_PROFIT_PCT = 0.025  # 하락장 익절 상한 — 5% 익절은 그리드에서 제외
 
 USDT_FUSION_BB_GRID = {
-    "bb_period": [15, 20, 25],
-    "bb_std": [2.0, 2.5, 3.0],  # 넓은 밴드 = BB 하단 깊은 할인만 매수
+    "bb_period": [20, 25],
+    "bb_std": [2.0, 2.5],
 }
 
 logger = logging.getLogger("Backtester")
@@ -402,27 +423,24 @@ def _bear_profit_basis(regime_data: list, full_data: list = None, episodes: list
 
 
 def _usdt_optimizer_score(result: dict, params: dict) -> float:
-    """USDT: 2%↑ 목표·장기 홀딩·저빈도 매매 우선."""
+    """USDT: 총수익(%) 최우선 · 최소 3거래 · MDD 제한."""
     trades = int(result.get("trades", 0))
-    if trades < 1:
+    if trades < 3:
         return -9999.0
-    tgt = float(params.get("min_target_profit_pct", 0))
-    if tgt < USDT_MIN_TARGET_PROFIT_PCT:
+    exit_tp = float(params.get("min_target_profit_pct", 0))
+    if exit_tp < USDT_MIN_EXIT_TP_FLOOR:
         return -9999.0
     gap = float(params.get("min_consider_gap_krw", 0))
-    if gap < USDT_MIN_CONSIDER_GAP_FLOOR:
+    if gap < USDT_MIN_ENTRY_GAP_FLOOR:
         return -9999.0
     mdd = float(result.get("mdd", 1.0))
     if mdd > MDD_LIMIT:
         return -9999.0
-    ret = float(result.get("total_return", 0))
+    ret = float(result.get("total_return", 0))  # 이미 % 단위
     sharpe = float(result.get("sharpe", 0))
-    hold_h = float(result.get("avg_hold_hours", 0))
     win = float(result.get("win_rate", 0))
-    hold_bonus = min(hold_h / 168.0, 2.5) * 15.0
-    trade_penalty = max(0, trades - 15) * 0.2
-    gap_bonus = float(params.get("min_consider_gap_krw", 40)) / 80.0 * 4.0
-    return ret * 0.5 + sharpe * 5.0 + hold_bonus + win * 0.03 - trade_penalty + gap_bonus
+    trade_bonus = min(trades, 12) * 0.08
+    return ret * 3.0 + sharpe * 1.5 + win * 0.02 + trade_bonus
 
 
 def _optimizer_profit_score(result: dict) -> float:
@@ -1263,22 +1281,15 @@ class StrategySimulator:
         }
 
     def _simulate_usdt_fusion(self, data: list, params: dict) -> dict:
-        """USDT 고정 융합 — fair_krw는 캔들 ts 기준 당일 USD/KRW (usdt_fx_historical)."""
+        """USDT 고정 융합 — gap 진입 · gap/TP 탈출 (fair_krw = 당일 USD/KRW)."""
         if len(data) < 30:
             return {"sharpe": -999, "mdd": 1.0, "total_return": 0, "win_rate": 0, "trades": 0, **_hold_stats([])}
 
         closes = [d["close"] for d in data]
-        ind = Indicators()
-
-        min_gap = float(params.get("min_consider_gap_krw", 30))
-        min_profit_pct = float(params.get("min_target_profit_pct", 0.2))
-        exit_gap = float(params.get("exit_gap_krw", 15))
-        exit_conv = float(params.get("exit_convergence_pct", 90))
+        entry_gap = float(params.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW))
+        exit_gap = float(params.get("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW))
+        exit_tp_pct = float(params.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT))
         fee = float(params.get("fee_one_way", FEE_RATE))
-        bb_period = int(params.get("bb_period", 20))
-        bb_std = float(params.get("bb_std", 2.0))
-
-        bb_mid, bb_upper, bb_lower = ind.bollinger(closes, bb_period, bb_std)
 
         fair_vals = [d.get("fair_krw") for d in data]
         if not any(fair_vals):
@@ -1300,23 +1311,20 @@ class StrategySimulator:
         wins = 0
         total_trades = 0
         holding_bars = []
-        warmup = bb_period + 5
+        warmup = 30
 
         for i in range(warmup, len(closes)):
             price = closes[i]
             fair = fair_vals[i]
-            if fair is None or bb_lower[i] is None or bb_mid[i] is None:
+            if fair is None:
                 continue
 
-            at_lower = price <= bb_lower[i]
-            at_middle = price >= bb_mid[i]
-            at_upper = price >= bb_upper[i] if bb_upper[i] else False
-            fx_ok = usdt_fx_buy_allowed(price, fair, min_gap, min_profit_pct, fee) if HAS_USDT_FX_HIST else (
-                (fair - price) >= min_gap
+            fx_ok = usdt_fx_entry_allowed(price, fair, entry_gap, fee) if HAS_USDT_FX_HIST else (
+                (fair - price) >= entry_gap
             )
 
             if position == 0:
-                if fx_ok and at_lower:
+                if fx_ok:
                     cost = capital * fee
                     position = (capital - cost) / price
                     entry_price = price
@@ -1326,10 +1334,10 @@ class StrategySimulator:
                     total_trades += 1
             else:
                 if HAS_USDT_FX_HIST:
-                    exit_info = usdt_fx_exit_allowed(
+                    exit_info = usdt_fx_exit_fusion(
                         entry_price, entry_fair, price, fair,
                         exit_gap_krw=exit_gap,
-                        exit_convergence_pct=exit_conv,
+                        exit_take_profit_pct=exit_tp_pct,
                         fee_one_way=fee,
                     )
                     sell = exit_info["allowed"]
@@ -1515,32 +1523,29 @@ class GridSearchOptimizer:
                                 }
 
     def _iter_usdt_mixed_params(self):
-        """USDT 학습믹스: 3대 지표 × 당일 환율차(검토·수수료) 그리드."""
+        """USDT 학습믹스: 3대 지표 × 당일 환율차(gap 진입) 그리드."""
         for base in self._iter_strategy_params():
             for min_gap in USDT_FX_GRID["min_consider_gap_krw"]:
-                for min_profit in USDT_FX_GRID["min_target_profit_pct"]:
-                    yield {
-                        **base,
-                        "usdt_fx_filter": True,
-                        "min_consider_gap_krw": min_gap,
-                        "min_target_profit_pct": min_profit,
-                    }
+                for exit_gap in USDT_FX_GRID["exit_gap_krw"]:
+                    for exit_tp in USDT_FX_GRID["exit_take_profit_pct"]:
+                        yield {
+                            **base,
+                            "usdt_fx_filter": True,
+                            "min_consider_gap_krw": min_gap,
+                            "min_target_profit_pct": 0.0,
+                            "exit_gap_krw": exit_gap,
+                            "exit_take_profit_pct": exit_tp,
+                        }
 
     def _iter_usdt_fusion_params(self):
         for min_gap in USDT_FX_GRID["min_consider_gap_krw"]:
-            for min_profit in USDT_FX_GRID["min_target_profit_pct"]:
-                for exit_gap in USDT_FX_GRID["exit_gap_krw"]:
-                    for exit_conv in USDT_FX_GRID["exit_convergence_pct"]:
-                        for bb_p in USDT_FUSION_BB_GRID["bb_period"]:
-                            for bb_s in USDT_FUSION_BB_GRID["bb_std"]:
-                                p = _default_usdt_fusion_sim_params()
-                                p["min_consider_gap_krw"] = min_gap
-                                p["min_target_profit_pct"] = min_profit
-                                p["exit_gap_krw"] = exit_gap
-                                p["exit_convergence_pct"] = exit_conv
-                                p["bb_period"] = bb_p
-                                p["bb_std"] = bb_s
-                                yield p
+            for exit_gap in USDT_FX_GRID["exit_gap_krw"]:
+                for exit_tp in USDT_FX_GRID["exit_take_profit_pct"]:
+                    p = _default_usdt_fusion_sim_params()
+                    p["min_consider_gap_krw"] = min_gap
+                    p["exit_gap_krw"] = exit_gap
+                    p["min_target_profit_pct"] = exit_tp
+                    yield p
 
     def _iter_params(self, regime: str):
         """전략 × 리스크 전체 조합 (소규모 테스트·폴백용)."""
@@ -1875,14 +1880,24 @@ class GridSearchOptimizer:
                 best_params = dict(params)
 
         if best_params:
-            best_params["min_target_profit_pct"] = max(
-                float(best_params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
-                USDT_MIN_TARGET_PROFIT_PCT,
-            )
             best_params["min_consider_gap_krw"] = max(
-                int(best_params.get("min_consider_gap_krw", USDT_MIN_CONSIDER_GAP_FLOOR)),
-                USDT_MIN_CONSIDER_GAP_FLOOR,
+                int(best_params.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW)),
+                USDT_MIN_ENTRY_GAP_FLOOR,
             )
+            best_params["exit_gap_krw"] = max(
+                int(best_params.get("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW)),
+                USDT_MIN_EXIT_GAP_FLOOR,
+            )
+            best_params["min_target_profit_pct"] = max(
+                float(best_params.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT)),
+                USDT_MIN_EXIT_TP_FLOOR,
+            )
+        else:
+            best_params = _default_usdt_fusion_sim_params()
+
+        if best_params and best_result and int(best_result.get("trades", 0)) >= 3:
+            save_usdt_optimal_defaults(best_params, best_result)
+            refresh_usdt_defaults(force=True)
 
         logger.info(
             f"[Optimizer] {market} UsdtFusion: {total}조합, "
@@ -1978,8 +1993,9 @@ def _build_output(params: dict, result: dict, expected_profits: dict = None) -> 
         out["period_expected_profits"] = expected_profits
     if params.get("usdt_fx_filter"):
         out["usdt_fx_filter"] = {
-            "min_consider_gap_krw": params.get("min_consider_gap_krw", 30),
-            "min_target_profit_pct": params.get("min_target_profit_pct", 0.2),
+            "min_consider_gap_krw": params.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW),
+            "min_target_profit_pct": params.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT),
+            "exit_gap_krw": params.get("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW),
         }
     return out
 
@@ -1993,20 +2009,20 @@ def _default_usdt_fusion_output() -> dict:
 
 
 def _default_usdt_fusion_sim_params(regime: str = "RANGE") -> dict:
+    if HAS_USDT_FX_HIST:
+        refresh_usdt_defaults()
     return {
         "usdt_fusion": True,
         "use_all_regimes": True,
         "target_regime": regime,
-        "min_consider_gap_krw": 40,
-        "min_target_profit_pct": USDT_MIN_TARGET_PROFIT_PCT,
-        "exit_gap_krw": 15,
+        "min_consider_gap_krw": USDT_DEFAULT_ENTRY_GAP_KRW,
+        "min_target_profit_pct": USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT,
+        "exit_gap_krw": USDT_DEFAULT_EXIT_GAP_KRW,
         "exit_convergence_pct": 90,
         "fee_one_way": FEE_RATE,
         "fair_ma_period": 672,
         "bb_period": 20,
         "bb_std": 2.0,
-        "stop_loss_pct": 0.01,
-        "take_profit_pct": 0.025,
     }
 
 
@@ -2017,18 +2033,18 @@ def _build_usdt_fusion_output(params: dict, result: dict, expected_profits: dict
                 "enabled": True,
                 "weight": 1.0,
                 "timeframe": "15m",
-                "min_consider_gap_krw": params.get("min_consider_gap_krw", USDT_MIN_CONSIDER_GAP_FLOOR),
-                "min_target_profit_pct": params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT),
-                "exit_gap_krw": params.get("exit_gap_krw", 15),
+                "min_consider_gap_krw": params.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW),
+                "min_target_profit_pct": params.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT),
+                "exit_gap_krw": params.get("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW),
                 "exit_convergence_pct": params.get("exit_convergence_pct", 90),
                 "bb_period": params.get("bb_period", 20),
                 "bb_std_dev": params.get("bb_std", 2.0),
             }
         },
         "usdt_fx_filter": {
-            "min_consider_gap_krw": params.get("min_consider_gap_krw", 40),
-            "min_target_profit_pct": params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT),
-            "exit_gap_krw": params.get("exit_gap_krw", 15),
+            "min_consider_gap_krw": params.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW),
+            "min_target_profit_pct": params.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT),
+            "exit_gap_krw": params.get("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW),
             "exit_convergence_pct": params.get("exit_convergence_pct", 90),
         },
         "logic": "OR",
@@ -2205,8 +2221,8 @@ def run_optimization(markets: list = None) -> dict:
 
 def run_usdt_daily_tuning() -> Optional[dict]:
     """
-    USDT 전용 일일 경량 튜닝 — 15m 캐시 + 환율 기반 고정 융합 그리드.
-    목표 이율 2% 이상, 신중 진입(높은 gap·깊은 BB) 우선.
+    USDT 전용 일일 경량 튜닝 — gap 진입 · gap/TP 탈출 그리드.
+    기본값: 진입 gap 35원 · 탈출 gap 15원 · 백업 TP 2.5%.
     """
     market = "KRW-USDT"
     cache_mgr = DataCache()
@@ -2233,18 +2249,27 @@ def run_usdt_daily_tuning() -> Optional[dict]:
 
     optimizer = GridSearchOptimizer()
     fixed_params, fixed_result = optimizer._optimize_usdt_fusion(sim_data, market, 0, 100)
-    if not fixed_params or not fixed_result:
-        logger.warning("[UsdtDaily] 최적 파라미터 없음")
-        return None
+    if not fixed_params:
+        fixed_params = _default_usdt_fusion_sim_params()
+    if not fixed_result or int(fixed_result.get("trades", 0)) < 1:
+        fixed_result = StrategySimulator()._simulate_usdt_fusion(sim_data, fixed_params)
 
-    fixed_params["min_target_profit_pct"] = max(
-        float(fixed_params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
-        USDT_MIN_TARGET_PROFIT_PCT,
-    )
     fixed_params["min_consider_gap_krw"] = max(
-        int(fixed_params.get("min_consider_gap_krw", USDT_MIN_CONSIDER_GAP_FLOOR)),
-        USDT_MIN_CONSIDER_GAP_FLOOR,
+        int(fixed_params.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW)),
+        USDT_MIN_ENTRY_GAP_FLOOR,
     )
+    fixed_params["exit_gap_krw"] = max(
+        int(fixed_params.get("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW)),
+        USDT_MIN_EXIT_GAP_FLOOR,
+    )
+    fixed_params["min_target_profit_pct"] = max(
+        float(fixed_params.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT)),
+        USDT_MIN_EXIT_TP_FLOOR,
+    )
+
+    if int(fixed_result.get("trades", 0)) >= 3:
+        save_usdt_optimal_defaults(fixed_params, fixed_result)
+        refresh_usdt_defaults(force=True)
 
     def get_profits(ret_pct):
         return _calculate_expected_profits(ret_pct, sim_data)
@@ -2282,11 +2307,11 @@ def run_usdt_daily_tuning() -> Optional[dict]:
         "bb_period": fixed_params.get("bb_period"),
         "bb_std": fixed_params.get("bb_std"),
         "backtest_trades": fixed_result.get("trades", 0),
-        "backtest_return_pct": round(fixed_result.get("total_return", 0) * 100, 2),
+        "backtest_return_pct": round(float(fixed_result.get("total_return", 0)), 2),
         "avg_hold_days": fixed_result.get("avg_hold_days", 0),
         "reason": (
             f"역사 환율 학습 — 진입 gap {fixed_params.get('min_consider_gap_krw')}원 · "
-            f"탈출 gap≤{fixed_params.get('exit_gap_krw')}원 / 수렴≥{fixed_params.get('exit_convergence_pct')}%"
+            f"탈출 gap≤{fixed_params.get('exit_gap_krw')}원 / TP {fixed_params.get('min_target_profit_pct')}%"
         ),
     }
 

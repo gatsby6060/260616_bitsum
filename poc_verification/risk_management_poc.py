@@ -127,22 +127,53 @@ from usdt_fx_reference import (
 try:
     from usdt_fx_historical import (
         usdt_fx_buy_allowed,
+        usdt_fx_entry_allowed,
+        usdt_fx_exit_fusion,
         usdt_fx_exit_allowed,
         calc_usdt_fx_convergence,
         ensure_fx_history,
         fx_cache_stats,
+        USDT_DEFAULT_ENTRY_GAP_KRW,
+        USDT_DEFAULT_EXIT_GAP_KRW,
+        USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT,
+        USDT_MIN_ENTRY_GAP_FLOOR,
+        USDT_MIN_EXIT_GAP_FLOOR,
+        USDT_MIN_EXIT_TP_FLOOR,
+        refresh_usdt_defaults,
+        get_usdt_default_params,
+        get_usdt_optimal_params,
+        get_usdt_live_default_params,
+        apply_usdt_live_gaps,
+        USDT_LIVE_GAP_SAFETY_OFFSET,
+        USDT_OPTIMAL_ENTRY_GAP_KRW,
+        USDT_OPTIMAL_EXIT_GAP_KRW,
     )
 except ImportError:
     usdt_fx_buy_allowed = None
+    usdt_fx_entry_allowed = None
+    usdt_fx_exit_fusion = None
     usdt_fx_exit_allowed = None
     calc_usdt_fx_convergence = None
     ensure_fx_history = None
     fx_cache_stats = None
+    USDT_DEFAULT_ENTRY_GAP_KRW = 30
+    USDT_DEFAULT_EXIT_GAP_KRW = 10
+    USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT = 3.0
+    USDT_MIN_ENTRY_GAP_FLOOR = 30
+    USDT_MIN_EXIT_GAP_FLOOR = 10
+    USDT_MIN_EXIT_TP_FLOOR = 2.0
+    refresh_usdt_defaults = lambda force=False: {}
+    get_usdt_default_params = lambda: {}
+    get_usdt_optimal_params = lambda: {}
+    get_usdt_live_default_params = lambda: {}
+    apply_usdt_live_gaps = lambda p: p
+    USDT_LIVE_GAP_SAFETY_OFFSET = 5
+    USDT_OPTIMAL_ENTRY_GAP_KRW = 30
+    USDT_OPTIMAL_EXIT_GAP_KRW = 10
 
-# 글로벌 설정 및 엔진 인스턴스 홀더
-USDT_DEFAULT_MIN_CONSIDER_GAP_KRW = 40  # 실매매·설정 기본값 (백테스트 최적 gap 하한과 동일)
-USDT_MIN_TARGET_PROFIT_PCT = 2.0  # 과거 데이터 학습 하한 — 일 1회 갱신
-USDT_FX_REFRESH_MINUTES = 10  # USD/KRW 기준환율 API 갱신 주기 — USDT 체결가는 WebSocket 실시간
+USDT_DEFAULT_MIN_CONSIDER_GAP_KRW = USDT_DEFAULT_ENTRY_GAP_KRW
+USDT_MIN_TARGET_PROFIT_PCT = USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT
+USDT_FX_REFRESH_MINUTES = 10
 
 
 def _usdt_profit_sell_allowed(avg_price: float, current_price: float) -> bool:
@@ -157,26 +188,47 @@ def _usdt_fx_should_exit(
     current_fair: float,
     params: dict,
 ) -> dict:
-    """환율 수렴 기반 탈출 판단 (실전·전략 공통)."""
-    if not usdt_fx_exit_allowed or entry_price <= 0 or entry_fair <= 0:
+    """gap 수렴 · 백업 TP 탈출 (실전·전략 공통)."""
+    if not usdt_fx_exit_fusion or entry_price <= 0 or entry_fair <= 0:
         return {"allowed": False, "reason": "환율 모델 미가용"}
     fee = float(params.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
-    return usdt_fx_exit_allowed(
+    return usdt_fx_exit_fusion(
         entry_price,
         entry_fair,
         current_price,
         current_fair,
-        exit_gap_krw=float(params.get("exit_gap_krw", 15)),
-        exit_convergence_pct=float(params.get("exit_convergence_pct", 90)),
+        exit_gap_krw=float(params.get("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW)),
+        exit_take_profit_pct=float(params.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT)),
         fee_one_way=fee,
     )
 
 
+def _migrate_usdt_fx_defaults(usdt_fx: dict) -> bool:
+    """구버전(55원·exit gap 5)만 현재 학습 기본값으로 교체."""
+    changed = False
+    entry = int(usdt_fx.get("min_consider_gap_krw", 0) or 0)
+    exit_g = int(usdt_fx.get("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW) or USDT_DEFAULT_EXIT_GAP_KRW)
+    if entry in {55, 60, 65} or (exit_g <= 5 and entry >= 50):
+        refresh_usdt_defaults(force=True)
+        targets = get_usdt_default_params()
+        for key, fx_key in (
+            ("min_consider_gap_krw", "min_consider_gap_krw"),
+            ("exit_gap_krw", "exit_gap_krw"),
+            ("min_target_profit_pct", "min_target_profit_pct"),
+        ):
+            new_val = targets.get(fx_key)
+            if new_val is not None and usdt_fx.get(fx_key) != new_val:
+                usdt_fx[fx_key] = new_val
+                changed = True
+    return changed
+
+
 def _usdt_fx_bollinger_params() -> dict:
+    live = get_usdt_live_default_params()
     return {
-        "min_consider_gap_krw": USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
-        "min_target_profit_pct": USDT_MIN_TARGET_PROFIT_PCT,
-        "exit_gap_krw": 15,
+        "min_consider_gap_krw": live["min_consider_gap_krw"],
+        "min_target_profit_pct": live["min_target_profit_pct"],
+        "exit_gap_krw": live["exit_gap_krw"],
         "exit_convergence_pct": 90,
         "sell_premium_pct": 0.15,
         "reference_krw": 0,
@@ -188,7 +240,7 @@ def _usdt_fx_bollinger_params() -> dict:
 
 
 def _build_default_usdt_config() -> dict:
-    """USDT: 환율 필터(관심구역) + 볼린저 하단 타점 매수 · 밴드/환율 청산."""
+    """USDT: 환율 gap 진입 · gap/TP 탈출 (BB는 참고용 표시)."""
     usdt_tactic = {
         "logic": "OR",
         "threshold": 0.5,
@@ -206,9 +258,9 @@ def _build_default_usdt_config() -> dict:
         "long_term_ma_period": 400,
         "usdt_fx": {
             "reference_krw": 0,
-            "min_consider_gap_krw": USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
-            "min_target_profit_pct": USDT_MIN_TARGET_PROFIT_PCT,
-            "exit_gap_krw": 15,
+            "min_consider_gap_krw": USDT_DEFAULT_ENTRY_GAP_KRW,
+            "min_target_profit_pct": USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT,
+            "exit_gap_krw": USDT_DEFAULT_EXIT_GAP_KRW,
             "exit_convergence_pct": 90,
             "sell_premium_pct": 0.15,
             "fx_refresh_minutes": USDT_FX_REFRESH_MINUTES,
@@ -522,7 +574,7 @@ def _compute_usdt_auto_pick(usdt_opt_reg: dict) -> tuple:
         return "learned_mixed", "전 기간 동률 → Sharpe 우세 (학습믹스)"
     if f_sh > l_sh:
         return "fixed_fusion", "전 기간 동률 → Sharpe 우세 (고정융합)"
-    return "fixed_fusion", "신중 진입·2%↑ 목표 — 고정 융합 우선 (역사 데이터 학습)"
+    return "fixed_fusion", "gap35·TP2.5% 기본 — 고정 융합 우선 (역사 데이터 학습)"
 
 
 def _build_usdt_fixed_fusion_tactics() -> dict:
@@ -576,6 +628,21 @@ def _apply_usdt_strategy_selection(ticker: str) -> bool:
     return True
 
 
+def _apply_usdt_live_from_optimal(usdt_fx: dict, optimal: dict = None) -> None:
+    """학습 최적값 + gap 여유 5원을 실매매 설정에 반영."""
+    opt = optimal or get_usdt_optimal_params()
+    live = apply_usdt_live_gaps(opt)
+    usdt_fx["optimal_min_consider_gap_krw"] = live["optimal_min_consider_gap_krw"]
+    usdt_fx["optimal_exit_gap_krw"] = live["optimal_exit_gap_krw"]
+    usdt_fx["live_gap_safety_offset"] = live["live_gap_safety_offset"]
+    usdt_fx["min_consider_gap_krw"] = max(int(live["min_consider_gap_krw"]), USDT_MIN_ENTRY_GAP_FLOOR)
+    usdt_fx["exit_gap_krw"] = max(int(live["exit_gap_krw"]), USDT_MIN_EXIT_GAP_FLOOR)
+    usdt_fx["min_target_profit_pct"] = max(
+        float(live.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT)),
+        USDT_MIN_EXIT_TP_FLOOR,
+    )
+
+
 def _apply_usdt_optimization_results(market_results: dict, ticker: str) -> bool:
     opt_reg = (market_results or {}).get("RANGE")
     if not opt_reg or "fixed_fusion_strategy" not in opt_reg:
@@ -598,18 +665,21 @@ def _apply_usdt_optimization_results(market_results: dict, ticker: str) -> bool:
     fx_filter = winner.get("usdt_fx_filter") or fixed.get("usdt_fx_filter") or {}
     if fx_filter:
         usdt_fx = cfg.setdefault("usdt_fx", {})
-        gap = int(fx_filter.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW))
-        profit = max(
-            float(fx_filter.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
-            USDT_MIN_TARGET_PROFIT_PCT,
-        )
-        usdt_fx["min_consider_gap_krw"] = max(gap, USDT_DEFAULT_MIN_CONSIDER_GAP_KRW)
-        usdt_fx["min_target_profit_pct"] = round(profit, 2)
-        for k in ("exit_gap_krw", "exit_convergence_pct"):
+        optimal = {
+            "min_consider_gap_krw": int(fx_filter.get("min_consider_gap_krw", USDT_OPTIMAL_ENTRY_GAP_KRW)),
+            "exit_gap_krw": int(fx_filter.get("exit_gap_krw", USDT_OPTIMAL_EXIT_GAP_KRW)),
+            "min_target_profit_pct": max(
+                float(fx_filter.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT)),
+                USDT_MIN_EXIT_TP_FLOOR,
+            ),
+        }
+        _apply_usdt_live_from_optimal(usdt_fx, optimal)
+        for k in ("exit_convergence_pct",):
             if k in fx_filter:
                 usdt_fx[k] = fx_filter[k]
+        _migrate_usdt_fx_defaults(usdt_fx)
         ufb = winner.get("strategies", {}).get("UsdtFxBollinger", {})
-        for k in ("bb_period", "bb_std_dev", "exit_gap_krw", "exit_convergence_pct"):
+        for k in ("bb_period", "bb_std_dev", "exit_convergence_pct"):
             if k in ufb:
                 if k == "bb_period":
                     usdt_fx["bb_period"] = ufb[k]
@@ -617,6 +687,7 @@ def _apply_usdt_optimization_results(market_results: dict, ticker: str) -> bool:
                     usdt_fx["bb_std_dev"] = ufb[k]
                 else:
                     usdt_fx[k] = ufb[k]
+        _apply_usdt_live_from_optimal(usdt_fx, optimal)
         _sync_usdt_strategy_params(usdt_fx)
     tuning = (get_latest_results() or {}).get("usdt_daily_tuning")
     if tuning:
@@ -626,20 +697,16 @@ def _apply_usdt_optimization_results(market_results: dict, ticker: str) -> bool:
 
 
 def _usdt_live_fx_allows_buy(config: dict, price: float) -> bool:
-    """실매매 USDT 매수 전 환율차·수수료 검증 (학습믹스 포함)."""
-    if not usdt_fx_buy_allowed or price <= 0:
+    """실매매 USDT 매수 전 환율 gap·수수료 검증."""
+    if not usdt_fx_entry_allowed or price <= 0:
         return True
     fx_cfg = config.get("usdt_fx", {})
     manual = float(fx_cfg.get("reference_krw") or 0)
     ttl = int(fx_cfg.get("fx_refresh_minutes", USDT_FX_REFRESH_MINUTES)) * 60
     fair, _ = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
     fee = float(fx_cfg.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
-    return usdt_fx_buy_allowed(
-        price, fair,
-        float(fx_cfg.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW)),
-        float(fx_cfg.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
-        fee,
-    )
+    gap = float(fx_cfg.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW))
+    return usdt_fx_entry_allowed(price, fair, gap, fee)
 
 
 def _expand_profit_horizons(strategy_reg: dict) -> dict:
@@ -997,13 +1064,14 @@ def _build_tactics_from_opt_reg(opt_reg: dict) -> dict:
                 elif "bb_std" in src:
                     params["bb_std_dev"] = src["bb_std"]
             params["min_consider_gap_krw"] = max(
-                int(params.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW)),
-                USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
+                int(params.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW)),
+                USDT_MIN_ENTRY_GAP_FLOOR,
             )
             params["min_target_profit_pct"] = max(
-                float(params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
-                USDT_MIN_TARGET_PROFIT_PCT,
+                float(params.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT)),
+                USDT_MIN_EXIT_TP_FLOOR,
             )
+            params.setdefault("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW)
             s_name = "UsdtFxBollinger"
         else:
             continue
@@ -1097,6 +1165,7 @@ def load_persisted_configs():
 
     usdt_cfg = active_ticker_configs.get("USDT")
     if isinstance(usdt_cfg, dict):
+        refresh_usdt_defaults(force=True)
         usdt_cfg.setdefault("selected_usdt_strategy", DEFAULT_USDT_STRATEGY)
         usdt_cfg.setdefault("usdt_auto_pick", "fixed_fusion")
         usdt_cfg.setdefault("resolved_usdt_strategy", "fixed_fusion")
@@ -1108,13 +1177,28 @@ def load_persisted_configs():
             usdt_fx.setdefault(k, v)
         if usdt_cfg.get("long_term_ma_period", 90) != 400:
             usdt_cfg["long_term_ma_period"] = 400
-        if usdt_fx.get("min_consider_gap_krw", 30) < USDT_DEFAULT_MIN_CONSIDER_GAP_KRW:
-            usdt_fx["min_consider_gap_krw"] = USDT_DEFAULT_MIN_CONSIDER_GAP_KRW
+        if _migrate_usdt_fx_defaults(usdt_fx):
             _sync_usdt_strategy_params(usdt_fx)
-        if float(usdt_fx.get("min_target_profit_pct", 0)) < USDT_MIN_TARGET_PROFIT_PCT:
-            usdt_fx["min_target_profit_pct"] = USDT_MIN_TARGET_PROFIT_PCT
+            save_persisted_configs()
+        else:
+            opt = get_usdt_optimal_params()
+            cur_e = int(usdt_fx.get("min_consider_gap_krw", 0) or 0)
+            cur_x = int(usdt_fx.get("exit_gap_krw", 0) or 0)
+            opt_e = int(opt["min_consider_gap_krw"])
+            opt_x = int(opt["exit_gap_krw"])
+            live_e = opt_e + USDT_LIVE_GAP_SAFETY_OFFSET
+            live_x = opt_x + USDT_LIVE_GAP_SAFETY_OFFSET
+            if cur_e == opt_e or (cur_e > 0 and cur_e < live_e) or cur_x == opt_x or (cur_x > 0 and cur_x < live_x):
+                _apply_usdt_live_from_optimal(usdt_fx, opt)
+                _sync_usdt_strategy_params(usdt_fx)
+                save_persisted_configs()
+        if usdt_fx.get("min_consider_gap_krw", 30) < USDT_MIN_ENTRY_GAP_FLOOR:
+            usdt_fx["min_consider_gap_krw"] = USDT_DEFAULT_ENTRY_GAP_KRW
             _sync_usdt_strategy_params(usdt_fx)
-        usdt_fx.setdefault("exit_gap_krw", 15)
+        if float(usdt_fx.get("min_target_profit_pct", 0)) < USDT_MIN_EXIT_TP_FLOOR:
+            usdt_fx["min_target_profit_pct"] = USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT
+            _sync_usdt_strategy_params(usdt_fx)
+        usdt_fx.setdefault("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW)
         usdt_fx.setdefault("exit_convergence_pct", 90)
         _sync_usdt_strategy_params(usdt_fx)
         if usdt_fx.get("fx_refresh_minutes", 60) != USDT_FX_REFRESH_MINUTES:
@@ -1282,6 +1366,7 @@ def update_configs_with_optimized_params():
         if ticker == "USDT":
             if _apply_usdt_optimization_results(results[market], ticker):
                 updated = True
+            refresh_usdt_defaults(force=True)
             active_ticker_configs[ticker]["optimized_default"] = _build_optimized_default_snapshot(ticker, results)
             updated = True
             continue
@@ -1632,12 +1717,16 @@ class BithumbUsdtFxBollingerStrategy(BaseStrategy):
         gap_krw = fx["gap_krw"]
 
         fee_one_way = float(self.params.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
-        min_profit_pct = float(self.params.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT))
+        exit_tp_pct = float(self.params.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT))
         sell_thr = float(self.params.get("sell_premium_pct", 0.15))
-        min_consider = float(self.params.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW))
+        min_consider = float(self.params.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW))
 
-        edge = calc_usdt_fee_aware_edge(fair, tick, fee_one_way, min_profit_pct)
+        edge = calc_usdt_fee_aware_edge(fair, tick, fee_one_way, 0.0)
         phase_info = calc_usdt_consideration_phase(gap_krw, min_consider, edge)
+        fx_ok = (
+            usdt_fx_entry_allowed(tick, fair, min_consider, fee_one_way)
+            if usdt_fx_entry_allowed else gap_krw >= min_consider
+        )
 
         prices = self.candle_manager.get_prices(self.timeframe)
         bb = self._calc_bollinger(prices) if prices else None
@@ -1653,25 +1742,27 @@ class BithumbUsdtFxBollingerStrategy(BaseStrategy):
             data["bb_val"] = "데이터 부족"
 
         phase = phase_info["phase"]
-        if phase == "idle":
+        if fx_ok:
+            fx_status = (
+                f"매수 타점 (환율차 {gap_krw:.0f}원 ≥ {min_consider:.0f}원, 수수료 확보)"
+            )
+        elif phase == "idle":
             fx_status = f"관심 구역 밖 (차이 {gap_krw:.0f}원 < {min_consider:.0f}원)"
-        elif phase == "consider":
-            fx_status = f"검토 중 · 수수료·목표 미달 (차이 {gap_krw:.0f}원)"
-        elif at_lower:
-            fx_status = f"매수 타점 (역프 {gap_krw:.0f}원 + BB하단)"
         else:
-            fx_status = f"대기 · BB하단 타점 (차이 {gap_krw:.0f}원, 하단 {bb['lower']:.1f}원)" if bb else f"대기 · BB 데이터 부족 (차이 {gap_krw:.0f}원)"
+            bb_hint = f" · BB하단 {bb['lower']:.1f}원" if bb else ""
+            fx_status = f"검토 중 (차이 {gap_krw:.0f}원{bb_hint})"
 
         data["usdt_fx_val"] = (
             f"{fx_status} | 기준:{fair:,.1f}원 | 현재:{tick:,.2f}원 | "
-            f"순이익여유:{edge['net_edge_krw']:+.1f}원"
+            f"환율차:{gap_krw:+.0f}원"
         )
         data["usdt_fx_status"] = {
             **fx,
             **edge,
             **phase_info,
+            "exit_take_profit_pct": exit_tp_pct,
             "fair_source": source,
-            "min_target_profit_pct": min_profit_pct,
+            "min_target_profit_pct": exit_tp_pct,
             "fee_one_way_pct": fee_one_way * 100,
             "sell_threshold_pct": sell_thr,
             "bb_timeframe": self.timeframe,
@@ -1687,7 +1778,7 @@ class BithumbUsdtFxBollingerStrategy(BaseStrategy):
 
         qty = data.get("position_qty", 0.0)
         if qty == 0:
-            if phase_info["in_consideration"] and edge["is_buy_profitable"] and at_lower:
+            if fx_ok:
                 return "BUY"
         else:
             avg = float(data.get("avg_price") or tick)
@@ -1698,13 +1789,13 @@ class BithumbUsdtFxBollingerStrategy(BaseStrategy):
             if exit_info.get("allowed"):
                 data["usdt_fx_val"] = (
                     f"탈출: {exit_info.get('reason', '')} | "
-                    f"수렴 {exit_info.get('convergence_pct', 0):.0f}% | "
+                    f"순 {exit_info.get('net_pnl_pct', 0):.2f}% | "
                     f"기준:{fair:,.1f}원 | 현재:{tick:,.2f}원"
                 )
                 return "SELL"
             data["usdt_fx_val"] = (
                 f"홀딩: {exit_info.get('reason', '')} | "
-                f"수렴 {exit_info.get('convergence_pct', 0):.0f}% | "
+                f"순 {exit_info.get('net_pnl_pct', 0):.2f}% | "
                 f"잔여gap {exit_info.get('current_gap_krw', 0):.0f}원"
             )
         return "HOLD"
@@ -3346,8 +3437,8 @@ def get_configs():
             continue
         if ticker == "USDT":
             fx = active_ticker_configs[ticker].setdefault("usdt_fx", {})
-            if fx.get("min_consider_gap_krw", 0) < USDT_DEFAULT_MIN_CONSIDER_GAP_KRW:
-                fx["min_consider_gap_krw"] = USDT_DEFAULT_MIN_CONSIDER_GAP_KRW
+            if fx.get("min_consider_gap_krw", 0) < USDT_MIN_ENTRY_GAP_FLOOR:
+                fx["min_consider_gap_krw"] = USDT_DEFAULT_ENTRY_GAP_KRW
     return active_ticker_configs
 
 @app.get("/api/usdt/fx-status")
@@ -3365,8 +3456,8 @@ def usdt_fx_status():
     fair, source = get_usd_krw_rate(manual_krw=manual, cache_ttl_sec=ttl)
     fx = calc_reverse_premium_pct(price, fair) if price > 0 else calc_reverse_premium_pct(0, fair)
     fee_one_way = float(fx_cfg.get("fee_one_way_pct", BITHUMB_FEE_RATE_ONE_WAY * 100)) / 100.0
-    min_profit_pct = float(fx_cfg.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT))
-    min_consider = float(fx_cfg.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW))
+    min_profit_pct = float(fx_cfg.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT))
+    min_consider = float(fx_cfg.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW))
     edge = calc_usdt_fee_aware_edge(fair, price, fee_one_way, min_profit_pct) if price > 0 else calc_usdt_fee_aware_edge(fair, fair, fee_one_way, min_profit_pct)
     phase_info = calc_usdt_consideration_phase(fx.get("gap_krw", 0), min_consider, edge)
 
@@ -3424,13 +3515,14 @@ def usdt_fx_config(payload: dict):
         if key in payload:
             fx[key] = payload[key]
     fx["min_consider_gap_krw"] = max(
-        int(fx.get("min_consider_gap_krw", USDT_DEFAULT_MIN_CONSIDER_GAP_KRW)),
-        USDT_DEFAULT_MIN_CONSIDER_GAP_KRW,
+        int(fx.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW)),
+        USDT_MIN_ENTRY_GAP_FLOOR,
     )
     fx["min_target_profit_pct"] = max(
-        float(fx.get("min_target_profit_pct", USDT_MIN_TARGET_PROFIT_PCT)),
-        USDT_MIN_TARGET_PROFIT_PCT,
+        float(fx.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT)),
+        USDT_MIN_EXIT_TP_FLOOR,
     )
+    fx.setdefault("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW)
     _sync_usdt_strategy_params(fx)
     save_persisted_configs()
     if engine_instance:
@@ -4582,7 +4674,8 @@ HTML_CONTENT = """
                     </h2>
                     <p style="font-size:10px; color:var(--text-secondary); margin:0 0 10px 0; line-height:1.5;">
                         <strong>기준환율</strong> 국내(네이버·은행 고시) 10분마다 갱신 · <strong>빗썸 USDT</strong> WebSocket 실시간<br>
-                        <strong>1차</strong> 환율차 ≥ 검토 gap(최소 40원, 백테스트 최적값 자동 적용) → <strong>2차</strong> 수수료·목표% + 15m BB 하단 → 매수
+                        <strong>1차</strong> 환율차 ≥ 검토 gap(학습 최적값 자동 적용) + 수수료 확보 → 매수<br>
+                        <strong>탈출</strong> 잔여 gap 수렴 또는 순이익 TP (학습 최적값)
                     </p>
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin-bottom:10px; font-size:11px;">
                         <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
@@ -4604,13 +4697,13 @@ HTML_CONTENT = """
                         </div>
                         <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
                             <div style="color:var(--text-secondary); font-size:9px;">백테스트 최적 gap</div>
-                            <div id="usdt-opt-gap-krw" style="font-weight:700; font-size:14px; color:#fbbf24;">40원+</div>
-                            <div id="usdt-opt-gap-source" style="font-size:8px; color:#94a3b8;">최소 40원 · 학습 후 갱신</div>
+                            <div id="usdt-opt-gap-krw" style="font-weight:700; font-size:14px; color:#fbbf24;">30원+</div>
+                            <div id="usdt-opt-gap-source" style="font-size:8px; color:#94a3b8;">학습 최적 · 자동 갱신</div>
                         </div>
                         <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
-                            <div style="color:var(--text-secondary); font-size:9px;">백테스트 최적 목표%</div>
-                            <div id="usdt-opt-profit-pct" style="font-weight:700; font-size:14px; color:#fbbf24;">2%+</div>
-                            <div id="usdt-opt-profit-source" style="font-size:8px; color:#94a3b8;">수수료 반영 순이익 하한</div>
+                            <div style="color:var(--text-secondary); font-size:9px;">백테스트 최적 탈출 TP</div>
+                            <div id="usdt-opt-profit-pct" style="font-weight:700; font-size:14px; color:#fbbf24;">3%+</div>
+                            <div id="usdt-opt-profit-source" style="font-size:8px; color:#94a3b8;">gap 수렴 우선 · TP 백업</div>
                         </div>
                         <div style="background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">
                             <div style="color:var(--text-secondary); font-size:9px;">볼린저 (15m)</div>
@@ -4622,10 +4715,11 @@ HTML_CONTENT = """
                         </div>
                     </div>
                     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; font-size:10px;">
-                        <label>검토 시작 ≥ <input type="number" id="usdt-min-gap" step="1" min="40" max="200" style="width:44px; margin:0 4px;"> 원
-                        <span style="color:#94a3b8;">(최소 40, 백테스트 최적값 자동)</span>
+                        <label>검토 시작 ≥ <input type="number" id="usdt-min-gap" step="1" min="30" max="200" style="width:44px; margin:0 4px;"> 원
+                        <span style="color:#94a3b8;">(학습 최적값 자동)</span>
                         </label>
-                        <label>목표 수익 <input type="number" id="usdt-min-profit" step="0.1" min="2" max="5" style="width:48px; margin:0 4px;"> %
+                        <label>탈출 TP <input type="number" id="usdt-min-profit" step="0.1" min="2" max="5" style="width:48px; margin:0 4px;"> %
+                        <span style="color:#94a3b8;">(gap≤15원 우선)</span>
                         </label>
                         <label>매도 프리미엄 ≥ <input type="number" id="usdt-sell-premium" step="0.05" min="0" max="3" style="width:48px; margin:0 4px;"> %
                         </label>
@@ -5614,7 +5708,9 @@ HTML_CONTENT = """
         // 종목 동적 렌더링 및 UI 스위칭
         // ══════════════════════════════════════════════════════════════
         const SYSTEM_TICKERS = ['BTC', 'ETH', 'XRP', 'USDT'];
-        const USDT_DEFAULT_GAP = 40;
+        const USDT_DEFAULT_GAP = 35;
+        const USDT_DEFAULT_EXIT_TP = 3.0;
+        const USDT_LIVE_GAP_OFFSET = 5;
 
         function upgradeUsdtSidebarBlock(ticker) {
             if (ticker !== 'USDT') return;
@@ -5803,7 +5899,7 @@ HTML_CONTENT = """
                 const feeEl = document.getElementById('usdt-fee-oneway');
                 const refEl = document.getElementById('usdt-ref-krw');
                 if (gapEl) gapEl.value = fx.min_consider_gap_krw ?? USDT_DEFAULT_GAP;
-                if (minEl) minEl.value = fx.min_target_profit_pct ?? 2.0;
+                if (minEl) minEl.value = fx.min_target_profit_pct ?? USDT_DEFAULT_EXIT_TP;
                 if (sellEl) sellEl.value = fx.sell_premium_pct ?? 0.15;
                 if (feeEl) feeEl.value = fx.fee_one_way_pct ?? 0.25;
                 if (refEl) refEl.value = fx.reference_krw ?? 0;
@@ -5835,7 +5931,7 @@ HTML_CONTENT = """
             const tuning = cfg.usdt_daily_tuning;
             if (tuneEl) {
                 tuneEl.innerText = tuning
-                    ? `오늘 학습: 진입 gap ${tuning.min_consider_gap_krw}원 · 탈출 gap≤${tuning.exit_gap_krw ?? '-'}원 / 수렴≥${tuning.exit_convergence_pct ?? '-'}% (${(tuning.tuned_at || '').slice(0, 10)})`
+                    ? `오늘 학습: 진입 gap ${tuning.min_consider_gap_krw}원 · 탈출 gap≤${tuning.exit_gap_krw ?? '-'}원 / TP ${tuning.min_target_profit_pct ?? '-'}% (${(tuning.tuned_at || '').slice(0, 10)})`
                     : '일일 환율 학습 대기 — 매일 새벽 이후 자동 갱신';
             }
             const selected = cfg.selected_usdt_strategy || 'auto';
@@ -5876,7 +5972,7 @@ HTML_CONTENT = """
             const resolved = cfg.resolved_usdt_strategy || cfg.usdt_auto_pick || 'fixed_fusion';
             const variant = resolved === 'learned_mixed' ? cmp.learned_mixed : cmp.fixed_fusion;
             const optGap = variant?.best_gap_krw ?? cfg.usdt_fx?.min_consider_gap_krw ?? USDT_DEFAULT_GAP;
-            const optProfit = variant?.min_target_profit_pct ?? cfg.usdt_fx?.min_target_profit_pct ?? 2;
+            const optProfit = variant?.min_target_profit_pct ?? cfg.usdt_fx?.min_target_profit_pct ?? USDT_DEFAULT_EXIT_TP;
             const hasBt = variant?.best_gap_krw != null;
             const optEl = document.getElementById('usdt-opt-gap-krw');
             const srcEl = document.getElementById('usdt-opt-gap-source');
@@ -5885,9 +5981,9 @@ HTML_CONTENT = """
             const sbOpt = document.getElementById('usdt-sb-optgap-USDT');
             const gapText = `${optGap}원`;
             if (optEl) optEl.innerText = gapText;
-            if (srcEl) srcEl.innerText = hasBt ? '백테스트 최적 (≥40원 하한)' : `최소 ${USDT_DEFAULT_GAP}원 (최적화 대기)`;
+            if (srcEl) srcEl.innerText = hasBt ? `학습 최적 ${(cfg.usdt_fx?.optimal_min_consider_gap_krw ?? optGap - USDT_LIVE_GAP_OFFSET)}원 +${USDT_LIVE_GAP_OFFSET}` : `실매매 ${USDT_DEFAULT_GAP}원 (학습+${USDT_LIVE_GAP_OFFSET})`;
             if (profitEl) profitEl.innerText = `${optProfit}%`;
-            if (profitSrcEl) profitSrcEl.innerText = hasBt ? '백테스트 최적 목표%' : '기본 2% 하한';
+            if (profitSrcEl) profitSrcEl.innerText = hasBt ? '학습 최적 TP · gap은 +5원 여유' : `기본 ${USDT_DEFAULT_EXIT_TP}%`;
             if (sbOpt) sbOpt.innerText = gapText;
         }
 
@@ -5984,7 +6080,7 @@ HTML_CONTENT = """
         async function saveUsdtFxConfig() {
             const payload = {
                 min_consider_gap_krw: Math.max(USDT_DEFAULT_GAP, parseFloat(document.getElementById('usdt-min-gap')?.value || USDT_DEFAULT_GAP)),
-                min_target_profit_pct: Math.max(2, parseFloat(document.getElementById('usdt-min-profit')?.value || 2)),
+                min_target_profit_pct: Math.max(2, parseFloat(document.getElementById('usdt-min-profit')?.value || USDT_DEFAULT_EXIT_TP)),
                 sell_premium_pct: parseFloat(document.getElementById('usdt-sell-premium')?.value || 0.15),
                 fee_one_way_pct: parseFloat(document.getElementById('usdt-fee-oneway')?.value || 0.25),
                 reference_krw: parseFloat(document.getElementById('usdt-ref-krw')?.value || 0),

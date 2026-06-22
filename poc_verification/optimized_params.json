@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-06-22T14:02:31.976531+09:00",
+  "last_updated": "2026-06-22T16:16:13.341247+09:00",
   "source": "빗썸 15분봉 (96포인트/일, KST 매시 0·15·30·45분)",
   "fee_assumption": "편도 0.25% (빗썸 실거래 체결 기준, 왕복 0.50%)",
   "optimization_criteria": "profit_score(총수익·보유기간 우선) + MDD <= 50% (지표 7조합 × OR/AND/VOTE/WEIGHTED_VOTE × 리스크·매도최소익 그리드)",
@@ -766,18 +766,18 @@
             "enabled": true,
             "weight": 1.0,
             "timeframe": "15m",
-            "min_consider_gap_krw": 55,
-            "min_target_profit_pct": 2.0,
-            "exit_gap_krw": 5,
+            "min_consider_gap_krw": 30,
+            "min_target_profit_pct": 3.0,
+            "exit_gap_krw": 10,
             "exit_convergence_pct": 90,
-            "bb_period": 25,
-            "bb_std_dev": 2.5
+            "bb_period": 20,
+            "bb_std_dev": 2.0
           }
         },
         "usdt_fx_filter": {
-          "min_consider_gap_krw": 55,
-          "min_target_profit_pct": 2.0,
-          "exit_gap_krw": 5,
+          "min_consider_gap_krw": 30,
+          "min_target_profit_pct": 3.0,
+          "exit_gap_krw": 10,
           "exit_convergence_pct": 90
         },
         "logic": "OR",
@@ -786,24 +786,24 @@
           "type": "None"
         },
         "backtest": {
-          "total_return_pct": 2.91,
-          "sharpe_ratio": 0.0,
-          "mdd_pct": 0.0,
-          "win_rate_pct": 100.0,
-          "trade_count": 1,
-          "avg_hold_hours": 303.5,
-          "median_hold_hours": 303.5,
-          "avg_hold_days": 12.65
+          "total_return_pct": 9.03,
+          "sharpe_ratio": 1.0609,
+          "mdd_pct": 0.04,
+          "win_rate_pct": 87.5,
+          "trade_count": 8,
+          "avg_hold_hours": 105.7,
+          "median_hold_hours": 97.2,
+          "avg_hold_days": 4.4
         },
         "period_expected_profits": {
-          "1d": 0.0,
-          "3d": 0.01,
-          "1w": 0.02,
-          "2w": 0.04,
-          "3w": 0.07,
-          "1m": 0.09,
-          "3m": 0.28,
-          "6m": 0.56
+          "1d": 0.01,
+          "3d": 0.03,
+          "1w": 0.07,
+          "2w": 0.13,
+          "3w": 0.2,
+          "1m": 0.28,
+          "3m": 0.84,
+          "6m": 1.69
         }
       },
       "learned_mixed_strategy": {
@@ -862,18 +862,18 @@
           "enabled": true,
           "weight": 1.0,
           "timeframe": "15m",
-          "min_consider_gap_krw": 55,
-          "min_target_profit_pct": 2.0,
-          "exit_gap_krw": 5,
+          "min_consider_gap_krw": 30,
+          "min_target_profit_pct": 3.0,
+          "exit_gap_krw": 10,
           "exit_convergence_pct": 90,
-          "bb_period": 25,
-          "bb_std_dev": 2.5
+          "bb_period": 20,
+          "bb_std_dev": 2.0
         }
       },
       "usdt_fx_filter": {
-        "min_consider_gap_krw": 55,
-        "min_target_profit_pct": 2.0,
-        "exit_gap_krw": 5,
+        "min_consider_gap_krw": 30,
+        "min_target_profit_pct": 3.0,
+        "exit_gap_krw": 10,
         "exit_convergence_pct": 90
       },
       "logic": "OR",
@@ -882,24 +882,24 @@
         "type": "None"
       },
       "backtest": {
-        "total_return_pct": 2.91,
-        "sharpe_ratio": 0.0,
-        "mdd_pct": 0.0,
-        "win_rate_pct": 100.0,
-        "trade_count": 1,
-        "avg_hold_hours": 303.5,
-        "median_hold_hours": 303.5,
-        "avg_hold_days": 12.65
+        "total_return_pct": 9.03,
+        "sharpe_ratio": 1.0609,
+        "mdd_pct": 0.04,
+        "win_rate_pct": 87.5,
+        "trade_count": 8,
+        "avg_hold_hours": 105.7,
+        "median_hold_hours": 97.2,
+        "avg_hold_days": 4.4
       },
       "period_expected_profits": {
-        "1d": 0.0,
-        "3d": 0.01,
-        "1w": 0.02,
-        "2w": 0.04,
-        "3w": 0.07,
-        "1m": 0.09,
-        "3m": 0.28,
-        "6m": 0.56
+        "1d": 0.01,
+        "3d": 0.03,
+        "1w": 0.07,
+        "2w": 0.13,
+        "3w": 0.2,
+        "1m": 0.28,
+        "3m": 0.84,
+        "6m": 1.69
       }
     },
     "BEAR": {
@@ -909,18 +909,18 @@
             "enabled": true,
             "weight": 1.0,
             "timeframe": "15m",
-            "min_consider_gap_krw": 55,
-            "min_target_profit_pct": 2.0,
-            "exit_gap_krw": 5,
+            "min_consider_gap_krw": 30,
+            "min_target_profit_pct": 3.0,
+            "exit_gap_krw": 10,
             "exit_convergence_pct": 90,
-            "bb_period": 25,
-            "bb_std_dev": 2.5
+            "bb_period": 20,
+            "bb_std_dev": 2.0
           }
         },
         "usdt_fx_filter": {
-          "min_consider_gap_krw": 55,
-          "min_target_profit_pct": 2.0,
-          "exit_gap_krw": 5,
+          "min_consider_gap_krw": 30,
+          "min_target_profit_pct": 3.0,
+          "exit_gap_krw": 10,
           "exit_convergence_pct": 90
         },
         "logic": "OR",
@@ -929,24 +929,24 @@
           "type": "None"
         },
         "backtest": {
-          "total_return_pct": 2.91,
-          "sharpe_ratio": 0.0,
-          "mdd_pct": 0.0,
-          "win_rate_pct": 100.0,
-          "trade_count": 1,
-          "avg_hold_hours": 303.5,
-          "median_hold_hours": 303.5,
-          "avg_hold_days": 12.65
+          "total_return_pct": 9.03,
+          "sharpe_ratio": 1.0609,
+          "mdd_pct": 0.04,
+          "win_rate_pct": 87.5,
+          "trade_count": 8,
+          "avg_hold_hours": 105.7,
+          "median_hold_hours": 97.2,
+          "avg_hold_days": 4.4
         },
         "period_expected_profits": {
-          "1d": 0.0,
-          "3d": 0.01,
-          "1w": 0.02,
-          "2w": 0.04,
-          "3w": 0.07,
-          "1m": 0.09,
-          "3m": 0.28,
-          "6m": 0.56
+          "1d": 0.01,
+          "3d": 0.03,
+          "1w": 0.07,
+          "2w": 0.13,
+          "3w": 0.2,
+          "1m": 0.28,
+          "3m": 0.84,
+          "6m": 1.69
         }
       },
       "learned_mixed_strategy": {
@@ -1005,18 +1005,18 @@
           "enabled": true,
           "weight": 1.0,
           "timeframe": "15m",
-          "min_consider_gap_krw": 55,
-          "min_target_profit_pct": 2.0,
-          "exit_gap_krw": 5,
+          "min_consider_gap_krw": 30,
+          "min_target_profit_pct": 3.0,
+          "exit_gap_krw": 10,
           "exit_convergence_pct": 90,
-          "bb_period": 25,
-          "bb_std_dev": 2.5
+          "bb_period": 20,
+          "bb_std_dev": 2.0
         }
       },
       "usdt_fx_filter": {
-        "min_consider_gap_krw": 55,
-        "min_target_profit_pct": 2.0,
-        "exit_gap_krw": 5,
+        "min_consider_gap_krw": 30,
+        "min_target_profit_pct": 3.0,
+        "exit_gap_krw": 10,
         "exit_convergence_pct": 90
       },
       "logic": "OR",
@@ -1025,24 +1025,24 @@
         "type": "None"
       },
       "backtest": {
-        "total_return_pct": 2.91,
-        "sharpe_ratio": 0.0,
-        "mdd_pct": 0.0,
-        "win_rate_pct": 100.0,
-        "trade_count": 1,
-        "avg_hold_hours": 303.5,
-        "median_hold_hours": 303.5,
-        "avg_hold_days": 12.65
+        "total_return_pct": 9.03,
+        "sharpe_ratio": 1.0609,
+        "mdd_pct": 0.04,
+        "win_rate_pct": 87.5,
+        "trade_count": 8,
+        "avg_hold_hours": 105.7,
+        "median_hold_hours": 97.2,
+        "avg_hold_days": 4.4
       },
       "period_expected_profits": {
-        "1d": 0.0,
-        "3d": 0.01,
-        "1w": 0.02,
-        "2w": 0.04,
-        "3w": 0.07,
-        "1m": 0.09,
-        "3m": 0.28,
-        "6m": 0.56
+        "1d": 0.01,
+        "3d": 0.03,
+        "1w": 0.07,
+        "2w": 0.13,
+        "3w": 0.2,
+        "1m": 0.28,
+        "3m": 0.84,
+        "6m": 1.69
       }
     },
     "RANGE": {
@@ -1052,18 +1052,18 @@
             "enabled": true,
             "weight": 1.0,
             "timeframe": "15m",
-            "min_consider_gap_krw": 55,
-            "min_target_profit_pct": 2.0,
-            "exit_gap_krw": 5,
+            "min_consider_gap_krw": 30,
+            "min_target_profit_pct": 3.0,
+            "exit_gap_krw": 10,
             "exit_convergence_pct": 90,
-            "bb_period": 25,
-            "bb_std_dev": 2.5
+            "bb_period": 20,
+            "bb_std_dev": 2.0
           }
         },
         "usdt_fx_filter": {
-          "min_consider_gap_krw": 55,
-          "min_target_profit_pct": 2.0,
-          "exit_gap_krw": 5,
+          "min_consider_gap_krw": 30,
+          "min_target_profit_pct": 3.0,
+          "exit_gap_krw": 10,
           "exit_convergence_pct": 90
         },
         "logic": "OR",
@@ -1072,24 +1072,24 @@
           "type": "None"
         },
         "backtest": {
-          "total_return_pct": 2.91,
-          "sharpe_ratio": 0.0,
-          "mdd_pct": 0.0,
-          "win_rate_pct": 100.0,
-          "trade_count": 1,
-          "avg_hold_hours": 303.5,
-          "median_hold_hours": 303.5,
-          "avg_hold_days": 12.65
+          "total_return_pct": 9.03,
+          "sharpe_ratio": 1.0609,
+          "mdd_pct": 0.04,
+          "win_rate_pct": 87.5,
+          "trade_count": 8,
+          "avg_hold_hours": 105.7,
+          "median_hold_hours": 97.2,
+          "avg_hold_days": 4.4
         },
         "period_expected_profits": {
-          "1d": 0.0,
-          "3d": 0.01,
-          "1w": 0.02,
-          "2w": 0.04,
-          "3w": 0.07,
-          "1m": 0.09,
-          "3m": 0.28,
-          "6m": 0.56
+          "1d": 0.01,
+          "3d": 0.03,
+          "1w": 0.07,
+          "2w": 0.13,
+          "3w": 0.2,
+          "1m": 0.28,
+          "3m": 0.84,
+          "6m": 1.69
         }
       },
       "learned_mixed_strategy": {
@@ -1148,18 +1148,18 @@
           "enabled": true,
           "weight": 1.0,
           "timeframe": "15m",
-          "min_consider_gap_krw": 55,
-          "min_target_profit_pct": 2.0,
-          "exit_gap_krw": 5,
+          "min_consider_gap_krw": 30,
+          "min_target_profit_pct": 3.0,
+          "exit_gap_krw": 10,
           "exit_convergence_pct": 90,
-          "bb_period": 25,
-          "bb_std_dev": 2.5
+          "bb_period": 20,
+          "bb_std_dev": 2.0
         }
       },
       "usdt_fx_filter": {
-        "min_consider_gap_krw": 55,
-        "min_target_profit_pct": 2.0,
-        "exit_gap_krw": 5,
+        "min_consider_gap_krw": 30,
+        "min_target_profit_pct": 3.0,
+        "exit_gap_krw": 10,
         "exit_convergence_pct": 90
       },
       "logic": "OR",
@@ -1168,38 +1168,38 @@
         "type": "None"
       },
       "backtest": {
-        "total_return_pct": 2.91,
-        "sharpe_ratio": 0.0,
-        "mdd_pct": 0.0,
-        "win_rate_pct": 100.0,
-        "trade_count": 1,
-        "avg_hold_hours": 303.5,
-        "median_hold_hours": 303.5,
-        "avg_hold_days": 12.65
+        "total_return_pct": 9.03,
+        "sharpe_ratio": 1.0609,
+        "mdd_pct": 0.04,
+        "win_rate_pct": 87.5,
+        "trade_count": 8,
+        "avg_hold_hours": 105.7,
+        "median_hold_hours": 97.2,
+        "avg_hold_days": 4.4
       },
       "period_expected_profits": {
-        "1d": 0.0,
-        "3d": 0.01,
-        "1w": 0.02,
-        "2w": 0.04,
-        "3w": 0.07,
-        "1m": 0.09,
-        "3m": 0.28,
-        "6m": 0.56
+        "1d": 0.01,
+        "3d": 0.03,
+        "1w": 0.07,
+        "2w": 0.13,
+        "3w": 0.2,
+        "1m": 0.28,
+        "3m": 0.84,
+        "6m": 1.69
       }
     }
   },
   "usdt_daily_tuning": {
-    "tuned_at": "2026-06-22T14:02:31.976531+09:00",
-    "min_target_profit_pct": 2.0,
-    "min_consider_gap_krw": 55,
-    "exit_gap_krw": 5,
+    "tuned_at": "2026-06-22T16:16:13.341247+09:00",
+    "min_target_profit_pct": 3.0,
+    "min_consider_gap_krw": 30,
+    "exit_gap_krw": 10,
     "exit_convergence_pct": 90,
-    "bb_period": 25,
-    "bb_std": 2.5,
-    "backtest_trades": 1,
-    "backtest_return_pct": 291.0,
-    "avg_hold_days": 12.65,
-    "reason": "역사 환율 학습 — 진입 gap 55원 · 탈출 gap≤5원 / 수렴≥90%"
+    "bb_period": 20,
+    "bb_std": 2.0,
+    "backtest_trades": 8,
+    "backtest_return_pct": 9.03,
+    "avg_hold_days": 4.4,
+    "reason": "역사 환율 학습 — 진입 gap 30원 · 탈출 gap≤10원 / TP 3.0%"
   }
 }
