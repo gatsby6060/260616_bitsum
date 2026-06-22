@@ -3096,7 +3096,17 @@ class MultiTickerUIEngine(TradingEngine):
                 }
             }
             ui_event_queue.put(ui_event)
+            
+            # [AI Agent 연동] 매매 이벤트 발생 시 LangGraph 기반 AI 분석 및 텔레그램/이메일 알림 실행
+            try:
+                from ai_agent_notifier import process_trade_event
+                process_trade_event(ui_event["data"])
+            except ImportError:
+                print("[System] ai_agent_notifier 모듈을 찾을 수 없어 AI 알림을 생략합니다.")
+            except Exception as e:
+                print(f"[System] AI Agent 실행 중 오류 발생: {e}")
         except Exception as outer_e:
+
             import traceback
             print(f"[ORDER SYSTEM FATAL] _execute_order 예외 발생!")
             traceback.print_exc()
