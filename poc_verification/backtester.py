@@ -185,8 +185,8 @@ DEFAULT_WEIGHTED_THRESHOLD = 0.5
 
 MDD_LIMIT = 0.50  # MDD 허용 한계 50%
 
-# 병렬 최적화: 7 워커 (i5-12400F 6코어/12스레드 — 물리코어+1 여유)
-OPTIMIZER_MAX_WORKERS = 7
+# 병렬 최적화: 8 워커 (사용자 지정 속도 개선)
+OPTIMIZER_MAX_WORKERS = 8
 # Windows 프로세스 spawn 비용(~5초) 때문에 소량 배치는 순차 실행
 PARALLEL_MIN_BATCH = 80
 
@@ -1426,19 +1426,22 @@ def _parallel_simulate(
     done = 0
     last_t = time.time()
     ctx = multiprocessing.get_context("spawn")
+    chunk_size = 1000
     with ProcessPoolExecutor(
         max_workers=workers,
         mp_context=ctx,
         initializer=_init_optimizer_pool,
         initargs=(data,),
     ) as executor:
-        futures = [executor.submit(_run_sim_task, p) for p in params_list]
-        for fut in as_completed(futures):
-            results.append(fut.result())
-            done += 1
-            if progress_fn and (done % progress_every == 0 or time.time() - last_t > 4.0):
-                progress_fn(done, len(params_list))
-                last_t = time.time()
+        for i in range(0, len(params_list), chunk_size):
+            chunk = params_list[i : i + chunk_size]
+            futures = [executor.submit(_run_sim_task, p) for p in chunk]
+            for fut in as_completed(futures):
+                results.append(fut.result())
+                done += 1
+                if progress_fn and (done % progress_every == 0 or time.time() - last_t > 4.0):
+                    progress_fn(done, len(params_list))
+                    last_t = time.time()
     return results
 
 

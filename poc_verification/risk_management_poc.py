@@ -8273,6 +8273,16 @@ def api_backtest_progress():
 
 @app.on_event("startup")
 def startup_event():
+    # 최적화 진행 상태가 활성 중(optimizing, collecting)인데 서버가 새로 시작된 경우 중단 상태로 리셋
+    if BACKTEST_AVAILABLE and _bt_mod:
+        try:
+            prog = _bt_mod.get_progress()
+            if prog.get("stage") in ("optimizing", "collecting", "interrupted"):
+                _bt_mod._save_progress("interrupted", 0.0, "서버 재기동으로 인해 최적화 중단됨")
+                print("[Startup] 기존 활성화되어 있던 최적화 상태를 'interrupted' 및 0%로 초기화했습니다.")
+        except Exception as e:
+            print(f"[Startup] 최적화 진행 상태 초기화 중 오류: {e}")
+
     asyncio.create_task(ui_event_broadcaster())
     start_composite_engine()
     # 백테스팅 일일 스케줄러 시작
