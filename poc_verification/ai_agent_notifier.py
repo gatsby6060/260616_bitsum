@@ -6,41 +6,143 @@ ai_agent_notifier.py
 =====================
 LangGraph 기반 AI 에이전트 연동 모듈.
 매매 체결 이벤트 발생 시:
-  1. GPT가 매매 이유를 분석
+  1. Gemini(기본) 또는 OpenAI가 매매 이유를 분석
   2. 텔레그램 메시지 전송
   3. 이메일 전송 (Gmail SMTP 사용)
 """
 
 import os
+import sys
+import re
 import time
 import asyncio
 import smtplib
 import threading
+from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import TypedDict, Dict, Any
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 from telegram import Bot
+from telegram.request import HTTPXRequest
+
+
+_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+
+
+def _configure_stdio() -> None:
+    """Windows cp949 콘솔에서 한글·특수문자 print 오류 방지."""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def _log(msg: str) -> None:
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(msg.encode(enc, errors="replace").decode(enc, errors="replace"))
+
+
+def _load_env_file() -> None:
+    """루트 .env 로드 (단독 실행·모듈 import 공통)."""
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.env"))
+    if not os.path.exists(env_path):
+        return
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            os.environ[key.strip()] = val.strip().strip('"').strip("'")
+
+
+def _env(key: str, default: str = "") -> str:
+    return (os.getenv(key) or default).strip()
+
+
+def _telegram_configured() -> bool:
+    tok = _env("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+    cid = _env("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
+    return bool(tok and cid and tok != "YOUR_TELEGRAM_BOT_TOKEN" and cid != "YOUR_TELEGRAM_CHAT_ID")
+
+
+def _gemini_configured() -> bool:
+    return bool(_env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY"))
+
+
+def _email_configured() -> bool:
+    sender = _env("EMAIL_SENDER")
+    receiver = _env("EMAIL_RECEIVER")
+    password = _env("EMAIL_PASSWORD")
+    if not password or "앱_비밀번호" in password or password.startswith("gmail_"):
+        return False
+    return bool(_EMAIL_RE.match(sender or "") and _EMAIL_RE.match(receiver or ""))
+
+
+def _ai_provider() -> str:
+    return _env("AI_PROVIDER", "gemini").lower() or "gemini"
+
+
+_configure_stdio()
+_load_env_file()
 
 # ==============================================================================
 # 1. 환경 설정 (.env 파일에 아래 항목들을 추가하세요)
 # ==============================================================================
 
-# --- 텔레그램 설정 ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "YOUR_TELEGRAM_CHAT_ID")
 
-# --- 이메일 설정 (Gmail 기준) ---
-EMAIL_SENDER    = os.getenv("EMAIL_SENDER",   "your_gmail@gmail.com")   # 보내는 계정
-EMAIL_PASSWORD  = os.getenv("EMAIL_PASSWORD", "YOUR_APP_PASSWORD")       # Gmail 앱 비밀번호
-EMAIL_RECEIVER  = os.getenv("EMAIL_RECEIVER", "your_email@example.com")  # 받는 이메일
+def _format_timestamp(ts) -> str:
+    if isinstance(ts, (int, float)):
+        try:
+            return datetime.fromtimestamp(ts / 1000 if ts > 1e12 else ts).strftime("%Y-%m-%d %H:%M:%S")
+        except (OSError, OverflowError, ValueError):
+            pass
+    return str(ts or "-")
 
-# --- OpenAI 설정 ---
-OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")
-OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+
+def _fallback_analysis(data: dict, error: str = "") -> str:
+    signal = data.get("signal", "HOLD")
+    ticker = data.get("ticker", "?")
+    reason = data.get("risk_reason", "전략 시그널")
+    suffix = "AI 분석 API 오류로 요약만 전송"
+    if "RESOURCE_EXHAUSTED" in error or "429" in error:
+        suffix = "Gemini 할당량 초과로 요약만 전송"
+    elif "미설정" in error:
+        suffix = "AI 키 미설정으로 요약만 전송"
+    return f"{ticker} {signal} 체결 — {reason}. ({suffix})"
+
+
+def _build_llm():
+    provider = _ai_provider()
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
+        api_key = _env("OPENAI_API_KEY")
+        if not api_key or api_key.startswith("sk-..."):
+            raise ValueError("OPENAI_API_KEY 미설정")
+        return ChatOpenAI(
+            model=_env("OPENAI_MODEL", "gpt-4o-mini"),
+            api_key=api_key,
+            base_url=_env("OPENAI_API_BASE", "https://api.openai.com/v1"),
+            temperature=0.3,
+        )
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    api_key = _env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY 또는 GOOGLE_API_KEY 미설정")
+    return ChatGoogleGenerativeAI(
+        model=_env("GEMINI_MODEL", "gemini-2.0-flash"),
+        google_api_key=api_key,
+        temperature=0.3,
+    )
 
 # ==============================================================================
 # 2. LangGraph 상태 정의
@@ -55,15 +157,9 @@ class AgentState(TypedDict):
 # 3. 노드 1: AI 매매 분석
 # ==============================================================================
 def analyze_trade(state: AgentState) -> AgentState:
-    """GPT를 사용하여 매매 이유를 2~3줄로 분석합니다."""
+    """Gemini(기본) 또는 OpenAI로 매매 이유를 2~3줄 분석."""
     data = state["trade_data"]
-
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        api_key=OPENAI_API_KEY,
-        base_url=OPENAI_API_BASE,
-        temperature=0.3
-    )
+    ts = _format_timestamp(data.get("timestamp"))
 
     system_prompt = (
         "당신은 전문 가상자산 퀀트 트레이더입니다. "
@@ -74,36 +170,50 @@ def analyze_trade(state: AgentState) -> AgentState:
 [매매 이벤트 발생]
 - 종목: {data.get('ticker')}
 - 방향: {data.get('signal')} (BUY=매수 / SELL=매도)
-- 체결가: {data.get('price'):,.0f} KRW
+- 체결가: {float(data.get('price') or 0):,.0f} KRW
 - 리스크 관리 이유: {data.get('risk_reason', '일반 지표 시그널')}
-- 시간: {data.get('timestamp')}
+- 시간: {ts}
 
 위 데이터를 바탕으로 매매 이유를 분석해 주세요.
 """
 
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt)
-    ]
-
-    response = llm.invoke(messages)
-    return {"analysis_result": response.content}
+    try:
+        llm = _build_llm()
+        response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ])
+        text = getattr(response, "content", str(response))
+        return {"analysis_result": text}
+    except Exception as e:
+        err = str(e)
+        _log(f"[AI Agent] {_ai_provider()} 분석 실패 — 폴백 사용: {err}")
+        return {"analysis_result": _fallback_analysis(data, err)}
 
 # ==============================================================================
 # 4. 노드 2: 텔레그램 알림 전송
 # ==============================================================================
 async def _send_telegram_async(message: str) -> bool:
     """비동기 텔레그램 메시지 전송."""
-    if TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
-        print("[Telegram] 토큰 미설정 — 콘솔 출력만 수행합니다.")
+    if not _telegram_configured():
+        _log("[Telegram] 토큰 미설정 — 콘솔 출력만 수행합니다.")
         return False
+    token = _env("TELEGRAM_BOT_TOKEN")
+    chat_id = _env("TELEGRAM_CHAT_ID")
+    request = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0, write_timeout=20.0)
     try:
-        bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
+        bot = Bot(token=token, request=request)
+        await bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
         return True
     except Exception as e:
-        print(f"[Telegram Error] {e}")
-        return False
+        _log(f"[Telegram Error] {e}")
+        try:
+            bot = Bot(token=token, request=request)
+            await bot.send_message(chat_id=chat_id, text=message)
+            return True
+        except Exception as e2:
+            _log(f"[Telegram Error] plain 재시도 실패: {e2}")
+            return False
 
 def notify_telegram(state: AgentState) -> AgentState:
     """분석 결과를 텔레그램으로 전송합니다."""
@@ -111,16 +221,17 @@ def notify_telegram(state: AgentState) -> AgentState:
     analysis = state["analysis_result"]
 
     signal_emoji = "🟢" if data.get("signal") == "BUY" else "🔴"
+    ts = _format_timestamp(data.get("timestamp"))
     message = (
         f"{signal_emoji} *자동매매 체결 알림* {signal_emoji}\n\n"
         f"📌 *종목*: {data.get('ticker')}\n"
         f"⚖️ *구분*: {data.get('signal')}\n"
-        f"💰 *단가*: {data.get('price'):,.0f} 원\n"
-        f"🕐 *시간*: {data.get('timestamp')}\n\n"
+        f"💰 *단가*: {float(data.get('price') or 0):,.0f} 원\n"
+        f"🕐 *시간*: {ts}\n\n"
         f"🧠 *AI 에이전트 분석*:\n{analysis}"
     )
 
-    print(f"\n[Telegram 메시지 미리보기]\n{message}\n")
+    _log(f"\n[Telegram 메시지 미리보기]\n{message}\n")
 
     try:
         success = asyncio.run(_send_telegram_async(message))
@@ -140,12 +251,20 @@ def notify_email(state: AgentState) -> AgentState:
     data     = state["trade_data"]
     analysis = state["analysis_result"]
 
-    if EMAIL_SENDER == "your_gmail@gmail.com":
-        print("[Email] 이메일 계정 미설정 — 이메일 전송을 생략합니다.")
+    if not _email_configured():
+        _log("[Email] 이메일 계정 미설정 — 이메일 전송을 생략합니다.")
         return {"email_status": "Skipped (계정 미설정)"}
 
+    email_sender = _env("EMAIL_SENDER")
+    email_password = _env("EMAIL_PASSWORD")
+    email_receiver = _env("EMAIL_RECEIVER")
+
     signal_label = "매수 (BUY)" if data.get("signal") == "BUY" else "매도 (SELL)"
-    subject = f"[자동매매 알림] {data.get('ticker')} {signal_label} 체결 — {data.get('timestamp')}"
+    from email.header import Header
+    subject = Header(
+        f"[자동매매 알림] {data.get('ticker')} {signal_label} 체결 — {data.get('timestamp')}",
+        "utf-8",
+    ).encode()
 
     # HTML 이메일 본문 구성
     html_body = f"""
@@ -191,23 +310,23 @@ def notify_email(state: AgentState) -> AgentState:
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = EMAIL_SENDER
-    msg["To"]      = EMAIL_RECEIVER
+    msg["From"]    = email_sender
+    msg["To"]      = email_receiver
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.ehlo()
             server.starttls()
-            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
-        print(f"[Email] 이메일 전송 성공 → {EMAIL_RECEIVER}")
+            server.login(email_sender, email_password)
+            server.sendmail(email_sender, email_receiver, msg.as_bytes())
+        _log(f"[Email] 이메일 전송 성공 → {email_receiver}")
         return {"email_status": "Success"}
     except smtplib.SMTPAuthenticationError:
-        print("[Email Error] 인증 실패 — Gmail 앱 비밀번호를 확인하세요.")
+        _log("[Email Error] 인증 실패 — Gmail 앱 비밀번호를 확인하세요.")
         return {"email_status": "Failed (인증 오류)"}
     except Exception as e:
-        print(f"[Email Error] {e}")
+        _log(f"[Email Error] {e}")
         return {"email_status": f"Failed ({e})"}
 
 # ==============================================================================
@@ -239,15 +358,19 @@ def process_trade_event(trade_data: dict):
     별도 스레드에서 실행하여 매매 엔진을 블로킹하지 않습니다.
     """
     def run_agent():
+        _load_env_file()
         initial_state = {
             "trade_data":      trade_data,
             "analysis_result": "",
             "telegram_status": "",
             "email_status":    ""
         }
-        print(f"[AI Agent] {trade_data.get('ticker')} {trade_data.get('signal')} 이벤트 분석 시작...")
+        _log(f"[AI Agent] {trade_data.get('ticker')} {trade_data.get('signal')} 이벤트 분석 시작 ({_ai_provider()})...")
+        _log(
+            f"[AI Agent] 설정 — telegram={_telegram_configured()} gemini={_gemini_configured()}"
+        )
         result = trade_agent_app.invoke(initial_state)
-        print(f"[AI Agent] 텔레그램: {result['telegram_status']} | 이메일: {result['email_status']}")
+        _log(f"[AI Agent] 텔레그램: {result['telegram_status']} | 이메일: {result['email_status']}")
 
     threading.Thread(target=run_agent, daemon=True).start()
 
@@ -263,5 +386,23 @@ if __name__ == "__main__":
         "risk_reason": "RSI 과매도 구간 진입 및 MACD 골든크로스 발생",
         "timestamp":   time.strftime("%Y-%m-%d %H:%M:%S")
     }
-    process_trade_event(test_event)
-    time.sleep(10)  # 백그라운드 스레드 완료 대기
+    done = threading.Event()
+
+    def run_test():
+        _load_env_file()
+        initial_state = {
+            "trade_data":      test_event,
+            "analysis_result": "",
+            "telegram_status": "",
+            "email_status":    ""
+        }
+        _log(f"[AI Agent] {test_event.get('ticker')} {test_event.get('signal')} 이벤트 분석 시작 ({_ai_provider()})...")
+        _log(
+            f"[AI Agent] 설정 — telegram={_telegram_configured()} gemini={_gemini_configured()}"
+        )
+        result = trade_agent_app.invoke(initial_state)
+        _log(f"[AI Agent] 텔레그램: {result['telegram_status']} | 이메일: {result['email_status']}")
+        done.set()
+
+    threading.Thread(target=run_test, daemon=True).start()
+    done.wait(timeout=90)

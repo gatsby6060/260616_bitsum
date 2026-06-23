@@ -2221,7 +2221,7 @@ def run_optimization(markets: list = None) -> dict:
 
 def run_usdt_daily_tuning() -> Optional[dict]:
     """
-    USDT 전용 일일 경량 튜닝 — gap 진입 · gap/TP 탈출 그리드.
+    USDT 전용 경량 튜닝 — gap 진입 · gap/TP 탈출 그리드 (2주 1회 스케줄).
     기본값: 진입 gap 35원 · 탈출 gap 15원 · 백업 TP 2.5%.
     """
     market = "KRW-USDT"

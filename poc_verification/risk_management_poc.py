@@ -1453,6 +1453,23 @@ def update_configs_and_apply_to_engine():
 
 
 _usdt_daily_tuning_running = False
+OPTIMIZER_RETRAIN_INTERVAL_DAYS = 14
+OPTIMIZER_SCHEDULE_HOUR_KST = 2
+
+
+def _optimizer_retrain_due(last_at: str = None, interval_days: int = OPTIMIZER_RETRAIN_INTERVAL_DAYS) -> bool:
+    """마지막 학습 시각 이후 interval_days 경과 여부."""
+    if not last_at:
+        return True
+    try:
+        kst = timezone(timedelta(hours=9))
+        last = datetime.fromisoformat(str(last_at).replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=kst)
+        elapsed = datetime.now(kst) - last.astimezone(kst)
+        return elapsed.days >= interval_days
+    except Exception:
+        return True
 
 
 def run_usdt_daily_tune_and_apply() -> bool:
@@ -2488,17 +2505,29 @@ class UITickerWorker(TickerWorker):
                     active_ticker_configs[self.ticker]["cycle_analysis"] = cycle_match
 
             should_refresh = False
-            if not hasattr(self, "last_usdt_strategy_check_date"):
-                should_refresh = True
-            elif kst_now.hour >= 1 and self.last_usdt_strategy_check_date != current_date_str:
-                should_refresh = True
+            if kst_now.hour >= OPTIMIZER_SCHEDULE_HOUR_KST:
+                last_check = getattr(self, "last_usdt_strategy_check_date", None)
+                results = get_latest_results() or {}
+                tuning = results.get("usdt_daily_tuning") or {}
+                if not last_check:
+                    if _optimizer_retrain_due(tuning.get("tuned_at")):
+                        should_refresh = True
+                    self.last_usdt_strategy_check_date = current_date_str
+                else:
+                    try:
+                        last_dt = datetime.strptime(last_check, "%Y-%m-%d").date()
+                        days_since = (kst_now.date() - last_dt).days
+                    except ValueError:
+                        days_since = OPTIMIZER_RETRAIN_INTERVAL_DAYS
+                    if days_since >= OPTIMIZER_RETRAIN_INTERVAL_DAYS and _optimizer_retrain_due(tuning.get("tuned_at")):
+                        should_refresh = True
+                        self.last_usdt_strategy_check_date = current_date_str
 
             if should_refresh:
-                self.last_usdt_strategy_check_date = current_date_str
                 threading.Thread(
                     target=run_usdt_daily_tune_and_apply,
                     daemon=True,
-                    name="UsdtDailyTune",
+                    name="UsdtBiweeklyTune",
                 ).start()
                 self.config = active_ticker_configs.get(self.ticker, self.config)
                 self.switch_regime("RANGE", log_to_ui=True)
@@ -4738,10 +4767,10 @@ HTML_CONTENT = """
                         <label>수동 환율(0=자동) <input type="number" id="usdt-ref-krw" step="1" min="0" style="width:64px; margin-left:4px;"> 원
                         </label>
                     </div>
-                    <div style="font-size:9px; color:#94a3b8; margin-top:6px;">※ 환율 수렴 모델: 매수 시 할인→기준환율 근접 시 탈출 · 순손실 매도 없음 · 매일 학습</div>
+                    <div style="font-size:9px; color:#94a3b8; margin-top:6px;">※ 환율 수렴 모델: 매수 시 할인→기준환율 근접 시 탈출 · 순손실 매도 없음 · 2주마다 학습</div>
                     <div id="usdt-daily-tuning-hint" style="font-size:9px; color:#a5b4fc; margin-top:4px;">-</div>
                     <div style="margin-top:10px; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px; border:1px solid rgba(255,255,255,0.06);">
-                        <div style="font-size:11px; font-weight:700; color:#fff; margin-bottom:6px;">전략 비교 · 매일 자동 선택</div>
+                        <div style="font-size:11px; font-weight:700; color:#fff; margin-bottom:6px;">전략 비교 · 2주마다 자동 선택</div>
                         <div id="usdt-strategy-auto-card" onclick="selectUsdtStrategy('auto')" style="background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.35); border-radius:8px; padding:8px; margin-bottom:6px; cursor:pointer;">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
                                 <span style="font-size:11px; font-weight:700;">🤖 AI 자동 선택</span>
@@ -5721,6 +5750,8 @@ HTML_CONTENT = """
         const USDT_DEFAULT_GAP = 35;
         const USDT_DEFAULT_EXIT_TP = 3.0;
         const USDT_LIVE_GAP_OFFSET = 5;
+        const OPTIMIZER_RETRAIN_INTERVAL_DAYS = 14;
+        const OPTIMIZER_SCHEDULE_HOUR_KST = 2;
 
         function upgradeUsdtSidebarBlock(ticker) {
             if (ticker !== 'USDT') return;
@@ -5942,7 +5973,7 @@ HTML_CONTENT = """
             if (tuneEl) {
                 tuneEl.innerText = tuning
                     ? `오늘 학습: 진입 gap ${tuning.min_consider_gap_krw}원 · 탈출 gap≤${tuning.exit_gap_krw ?? '-'}원 / TP ${tuning.min_target_profit_pct ?? '-'}% (${(tuning.tuned_at || '').slice(0, 10)})`
-                    : '일일 환율 학습 대기 — 매일 새벽 이후 자동 갱신';
+                    : `2주 주기 환율 학습 대기 (${OPTIMIZER_RETRAIN_INTERVAL_DAYS}일마다 ${String(OPTIMIZER_SCHEDULE_HOUR_KST).padStart(2,'0')}:00 KST)`;
             }
             const selected = cfg.selected_usdt_strategy || 'auto';
             const resolved = cfg.resolved_usdt_strategy || 'fixed_fusion';
@@ -6572,7 +6603,7 @@ HTML_CONTENT = """
             }
             const od = configOrData?.optimized_default || configOrData;
             if (!od || !od.regimes) {
-                el.innerText = '일일 최적화 디폴트 전략 대기 중... (02:00 KST 자동 갱신)';
+                el.innerText = `2주 주기 최적화 디폴트 전략 대기 중... (${String(OPTIMIZER_SCHEDULE_HOUR_KST).padStart(2,'0')}:00 KST · ${OPTIMIZER_RETRAIN_INTERVAL_DAYS}일마다)`;
                 return;
             }
             const regime = od.current_regime || 'BEAR';
@@ -6588,7 +6619,7 @@ HTML_CONTENT = """
             el.innerHTML = `✅ <b>디폴트 적용</b> ${regime}: ${active.logic || '-'} ${strats}${bearNote}<br>`
                 + `<span style="opacity:0.8;">매도 ${sellInfo}${holdInfo} · 1D예상 ${active.expected_profit_1d ?? '-'}% · 1M예상 ${active.expected_profit_1m ?? '-'}% · Sharpe ${active.sharpe ?? '-'}${cycleNote}</span><br>`
                 + (od.bear_auto_pick_reason ? `<span style="opacity:0.75; font-size:9px;">BEAR 선택: ${od.bear_auto_pick_reason}</span><br>` : '')
-                + `<span style="opacity:0.65; font-size:9px;">갱신: ${applied} (02:00 KST 학습·완료 시 자동)</span>`;
+                + `<span style="opacity:0.65; font-size:9px;">갱신: ${applied} (${OPTIMIZER_RETRAIN_INTERVAL_DAYS}일마다 ${String(OPTIMIZER_SCHEDULE_HOUR_KST).padStart(2,'0')}:00 KST 학습·완료 시 자동)</span>`;
         }
 
         async function loadAllConfigs() {
@@ -8293,10 +8324,11 @@ def start_composite_engine():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 백테스팅 일일 스케줄러
+# 백테스팅 주기 스케줄러 (2주 1회 · 02:00 KST)
 # ─────────────────────────────────────────────────────────────────────────────
 _optimizer_running = False
 _optimizer_thread: threading.Thread = None
+_KST = timezone(timedelta(hours=9))
 
 def _run_optimizer_bg():
     global _optimizer_running
@@ -8311,7 +8343,7 @@ def _run_optimizer_bg():
         except Exception as apply_err:
             print(f"[DailyOptimizer] 최적화 결과 엔진 적용 중 오류: {apply_err}")
 
-        msg = {"type": "optimizer_done", "message": "일일 백테스팅 최적화 완료", "updated_at": datetime.now(timezone(timedelta(hours=9))).isoformat()}
+        msg = {"type": "optimizer_done", "message": "2주 주기 백테스팅 최적화 완료", "updated_at": datetime.now(_KST).isoformat()}
         ui_event_queue.put_nowait(json.dumps(msg))
         print("[DailyOptimizer] 최적화 완료 — UI 알림 전송")
     except Exception as e:
@@ -8323,25 +8355,31 @@ def _run_optimizer_bg():
     finally:
         _optimizer_running = False
 
-def _daily_optimizer_scheduler():
-    """매일 새벽 02:00 KST에 자동 최적화 실행."""
-    print("[DailyOptimizer] 스케줄러 시작 (매일 02:00 KST 자동 최적화)")
+def _scheduled_optimizer_scheduler():
+    """2주마다 새벽 02:00 KST에 자동 최적화 실행."""
+    print(f"[Scheduler] 최적화 스케줄러 시작 ({OPTIMIZER_RETRAIN_INTERVAL_DAYS}일마다 {OPTIMIZER_SCHEDULE_HOUR_KST:02d}:00 KST)")
     while True:
         try:
-            _KST = timezone(timedelta(hours=9))
             now = datetime.now(_KST)
-            # 오늘 02:00 타겟
-            target = now.replace(hour=2, minute=0, second=0, microsecond=0)
+            target = now.replace(hour=OPTIMIZER_SCHEDULE_HOUR_KST, minute=0, second=0, microsecond=0)
             if now >= target:
                 target += timedelta(days=1)
             wait_sec = (target - now).total_seconds()
-            print(f"[DailyOptimizer] 다음 실행까지 {wait_sec/3600:.1f}시간 대기 ({target.strftime('%Y-%m-%d %H:%M')} KST)")
+            print(
+                f"[Scheduler] 다음 최적화까지 {wait_sec/3600:.1f}시간 대기 "
+                f"({target.strftime('%Y-%m-%d %H:%M')} KST)"
+            )
             time.sleep(wait_sec)
-            if BACKTEST_AVAILABLE and not _optimizer_running:
+            results = get_latest_results() or {}
+            if BACKTEST_AVAILABLE and not _optimizer_running and _optimizer_retrain_due(results.get("last_updated")):
                 t = threading.Thread(target=_run_optimizer_bg, daemon=True, name="OptimizerBG")
                 t.start()
+                t.join()
+            elif BACKTEST_AVAILABLE:
+                print(f"[Scheduler] 최근 전체 최적화 ({results.get('last_updated', '-')}) — 이번 주기 스킵")
+            time.sleep(OPTIMIZER_RETRAIN_INTERVAL_DAYS * 24 * 3600)
         except Exception as e:
-            print(f"[DailyOptimizer] 스케줄러 오류: {e}")
+            print(f"[Scheduler] 스케줄러 오류: {e}")
             time.sleep(60)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -8391,11 +8429,11 @@ def startup_event():
 
     asyncio.create_task(ui_event_broadcaster())
     start_composite_engine()
-    # 백테스팅 일일 스케줄러 시작
+    # 백테스팅 2주 스케줄러 시작
     if BACKTEST_AVAILABLE:
-        sched_thread = threading.Thread(target=_daily_optimizer_scheduler, daemon=True, name="DailyOptimizerScheduler")
+        sched_thread = threading.Thread(target=_scheduled_optimizer_scheduler, daemon=True, name="OptimizerScheduler")
         sched_thread.start()
-        print("[DailyOptimizer] 일일 스케줄러 가동 완료 (매일 02:00 KST)")
+        print(f"[Scheduler] 2주 주기 스케줄러 가동 ({OPTIMIZER_RETRAIN_INTERVAL_DAYS}일마다 {OPTIMIZER_SCHEDULE_HOUR_KST:02d}:00 KST)")
         def _startup_usdt_tune_if_needed():
             try:
                 if ensure_fx_history:
@@ -8406,11 +8444,10 @@ def startup_event():
                     )
                 results = get_latest_results() or {}
                 tuning = results.get("usdt_daily_tuning") or {}
-                today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
-                if (tuning.get("tuned_at") or "")[:10] != today:
+                if _optimizer_retrain_due(tuning.get("tuned_at")):
                     run_usdt_daily_tune_and_apply()
             except Exception as e:
-                print(f"[USDT Daily] 시작 시 튜닝 스킵: {e}")
+                print(f"[USDT Tune] 시작 시 튜닝 스킵: {e}")
         threading.Thread(target=_startup_usdt_tune_if_needed, daemon=True, name="UsdtStartupTune").start()
 
 if __name__ == "__main__":
