@@ -242,7 +242,7 @@
         "bear_auto_pick": "mixed",
         "resolved_bear_strategy": "mixed",
         "optimized_default": {
-            "applied_at": "2026-06-22T16:16:13.341247+09:00",
+            "applied_at": "2026-06-24T12:51:00.015641+09:00",
             "source": "빗썸 15분봉 (96포인트/일, KST 매시 0·15·30·45분)",
             "current_regime": "BEAR",
             "active_logic": "VOTE",
@@ -258,7 +258,7 @@
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
             "cycle_match_cycle": 8,
-            "cycle_similarity_pct": 71.0,
+            "cycle_similarity_pct": 70.8,
             "regimes": {
                 "BULL": {
                     "logic": "AND",
@@ -309,21 +309,18 @@
                     "expected_profit_1d": 0.06,
                     "expected_profit_1m": 1.73
                 }
-            },
-            "bear_entry_score": 68.0,
-            "bear_entry_style": "swing_bottom",
-            "bear_episode_count": 7
+            }
         },
         "cycle_analysis": {
             "matched_cycle_number": 8,
             "total_cycles": 8,
-            "similarity_pct": 71.0,
-            "current_angle_pct_per_month": -0.24,
-            "current_angle_pct_per_day": -0.0078,
+            "similarity_pct": 70.8,
+            "current_angle_pct_per_month": -0.25,
+            "current_angle_pct_per_day": -0.0084,
             "matched_angle_pct_per_month": 3.38,
             "matched_rise_pct": 54.0,
             "matched_duration_days": 183,
-            "summary": "현재 회귀각 -0.2%/월 → 과거 8번째 상승 사이클(+3.4%/월, 유사도 71%)과 가장 유사",
+            "summary": "현재 회귀각 -0.3%/월 → 과거 8번째 상승 사이클(+3.4%/월, 유사도 71%)과 가장 유사",
             "historical_cycles": [
                 {
                     "cycle_number": 2,
@@ -449,8 +446,8 @@
                     "peak_date": "2024-12-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 156972000.0,
-                    "trough_price": 96857000.0,
-                    "drawdown_pct": 38.3,
+                    "trough_price": 95748000.0,
+                    "drawdown_pct": 39.0,
                     "duration_days": 17
                 },
                 {
@@ -460,8 +457,8 @@
                     "peak_date": "2025-08-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 166311000.0,
-                    "trough_price": 96857000.0,
-                    "drawdown_pct": 41.8,
+                    "trough_price": 95748000.0,
+                    "drawdown_pct": 42.4,
                     "duration_days": 9
                 }
             ],
@@ -473,17 +470,17 @@
                 "peak_date": "2025-08-01",
                 "trough_date": "2026-05-01",
                 "peak_price": 166311000.0,
-                "trough_price": 96857000.0,
-                "drawdown_pct": 41.8,
+                "trough_price": 95748000.0,
+                "drawdown_pct": 42.4,
                 "duration_days": 9,
                 "ongoing": true,
-                "current_price": 96857000.0
+                "current_price": 95748000.0
             },
             "active_pattern": {
                 "active": true,
                 "months_since_peak": 9,
-                "drawdown_from_peak_pct": -41.8,
-                "slope_3m_pct": -6.44,
+                "drawdown_from_peak_pct": -42.4,
+                "slope_3m_pct": -7.51,
                 "peak_price": 166311000.0,
                 "peak_date_idx": 99
             },
@@ -491,21 +488,21 @@
                 "phase": "bottom_zone",
                 "entry_style": "swing_bottom",
                 "entry_score": 68.0,
-                "bottom_proximity_pct": 89.0,
-                "projected_bottom_price": 108821666.66666664,
-                "dist_to_bottom_pct": -11.0,
+                "bottom_proximity_pct": 89.5,
+                "projected_bottom_price": 106973333.33333334,
+                "dist_to_bottom_pct": -10.5,
                 "pattern_active": true,
-                "drawdown_from_peak_pct": -41.8,
-                "summary": "예상 바닥선(108,821,667원) 부근 — ETH형 바닥 진입 구간"
+                "drawdown_from_peak_pct": -42.4,
+                "summary": "예상 바닥선(106,973,333원) 부근 — ETH형 바닥 진입 구간"
             },
             "pattern_match": {
                 "matched_episode_number": 7,
                 "total_episodes": 7,
                 "similarity_pct": 100.0,
-                "matched_drawdown_pct": 41.8,
-                "summary": "현재 월봉 하락 41.8% → 과거 #7번 패턴(41.8%, 유사도 100%)"
+                "matched_drawdown_pct": 42.4,
+                "summary": "현재 월봉 하락 42.4% → 과거 #7번 패턴(42.4%, 유사도 100%)"
             },
-            "pattern_summary": "예상 바닥선(108,821,667원) 부근 — ETH형 바닥 진입 구간"
+            "pattern_summary": "예상 바닥선(106,973,333원) 부근 — ETH형 바닥 진입 구간"
         }
     },
     "ETH": {
@@ -732,7 +729,7 @@
         "bear_auto_pick": "custom_bear",
         "resolved_bear_strategy": "custom_bear",
         "optimized_default": {
-            "applied_at": "2026-06-22T16:16:13.341247+09:00",
+            "applied_at": "2026-06-24T12:51:00.015641+09:00",
             "source": "빗썸 15분봉 (96포인트/일, KST 매시 0·15·30·45분)",
             "current_regime": "BEAR",
             "active_logic": "CUSTOM_BEAR",
@@ -746,7 +743,7 @@
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
             "cycle_match_cycle": 7,
-            "cycle_similarity_pct": 90.1,
+            "cycle_similarity_pct": 99.6,
             "regimes": {
                 "BULL": {
                     "logic": "AND",
@@ -798,21 +795,18 @@
                     "expected_profit_1d": 0.01,
                     "expected_profit_1m": 0.36
                 }
-            },
-            "bear_entry_score": 68.0,
-            "bear_entry_style": "swing_bottom",
-            "bear_episode_count": 8
+            }
         },
         "cycle_analysis": {
             "matched_cycle_number": 7,
             "total_cycles": 8,
-            "similarity_pct": 90.1,
-            "current_angle_pct_per_month": 15.92,
-            "current_angle_pct_per_day": 0.5305,
+            "similarity_pct": 99.6,
+            "current_angle_pct_per_month": 14.54,
+            "current_angle_pct_per_day": 0.4846,
             "matched_angle_pct_per_month": 14.48,
             "matched_rise_pct": 89.3,
             "matched_duration_days": 92,
-            "summary": "현재 회귀각 +15.9%/월 → 과거 7번째 상승 사이클(+14.5%/월, 유사도 90%)과 가장 유사",
+            "summary": "현재 회귀각 +14.5%/월 → 과거 7번째 상승 사이클(+14.5%/월, 유사도 100%)과 가장 유사",
             "historical_cycles": [
                 {
                     "cycle_number": 1,
@@ -938,8 +932,8 @@
                     "peak_date": "2024-04-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 5326000.0,
-                    "trough_price": 2631000.0,
-                    "drawdown_pct": 50.6,
+                    "trough_price": 2590000.0,
+                    "drawdown_pct": 51.4,
                     "duration_days": 25
                 },
                 {
@@ -949,8 +943,8 @@
                     "peak_date": "2024-10-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 5149000.0,
-                    "trough_price": 2631000.0,
-                    "drawdown_pct": 48.9,
+                    "trough_price": 2590000.0,
+                    "drawdown_pct": 49.7,
                     "duration_days": 19
                 },
                 {
@@ -960,8 +954,8 @@
                     "peak_date": "2025-08-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 6129000.0,
-                    "trough_price": 2631000.0,
-                    "drawdown_pct": 57.1,
+                    "trough_price": 2590000.0,
+                    "drawdown_pct": 57.7,
                     "duration_days": 9
                 }
             ],
@@ -973,17 +967,17 @@
                 "peak_date": "2025-08-01",
                 "trough_date": "2026-05-01",
                 "peak_price": 6129000.0,
-                "trough_price": 2631000.0,
-                "drawdown_pct": 57.1,
+                "trough_price": 2590000.0,
+                "drawdown_pct": 57.7,
                 "duration_days": 9,
                 "ongoing": true,
-                "current_price": 2631000.0
+                "current_price": 2590000.0
             },
             "active_pattern": {
                 "active": true,
                 "months_since_peak": 9,
-                "drawdown_from_peak_pct": -57.1,
-                "slope_3m_pct": -18.01,
+                "drawdown_from_peak_pct": -57.7,
+                "slope_3m_pct": -19.29,
                 "peak_price": 6129000.0,
                 "peak_date_idx": 99
             },
@@ -992,20 +986,20 @@
                 "entry_style": "swing_bottom",
                 "entry_score": 68.0,
                 "bottom_proximity_pct": 100.0,
-                "projected_bottom_price": 2630999.9999999995,
+                "projected_bottom_price": 2589999.999999999,
                 "dist_to_bottom_pct": 0.0,
                 "pattern_active": true,
-                "drawdown_from_peak_pct": -57.1,
-                "summary": "예상 바닥선(2,631,000원) 부근 — ETH형 바닥 진입 구간"
+                "drawdown_from_peak_pct": -57.7,
+                "summary": "예상 바닥선(2,590,000원) 부근 — ETH형 바닥 진입 구간"
             },
             "pattern_match": {
                 "matched_episode_number": 8,
                 "total_episodes": 8,
                 "similarity_pct": 100.0,
-                "matched_drawdown_pct": 57.1,
-                "summary": "현재 월봉 하락 57.1% → 과거 #8번 패턴(57.1%, 유사도 100%)"
+                "matched_drawdown_pct": 57.7,
+                "summary": "현재 월봉 하락 57.7% → 과거 #8번 패턴(57.7%, 유사도 100%)"
             },
-            "pattern_summary": "예상 바닥선(2,631,000원) 부근 — ETH형 바닥 진입 구간"
+            "pattern_summary": "예상 바닥선(2,590,000원) 부근 — ETH형 바닥 진입 구간"
         }
     },
     "XRP": {
@@ -1230,7 +1224,7 @@
         "bear_auto_pick": "custom_bear",
         "resolved_bear_strategy": "custom_bear",
         "optimized_default": {
-            "applied_at": "2026-06-22T16:16:13.341247+09:00",
+            "applied_at": "2026-06-24T12:51:00.015641+09:00",
             "source": "빗썸 15분봉 (96포인트/일, KST 매시 0·15·30·45분)",
             "current_regime": "BEAR",
             "active_logic": "CUSTOM_BEAR",
@@ -1243,8 +1237,8 @@
             "resolved_usdt_strategy": null,
             "usdt_auto_pick_reason": null,
             "usdt_strategy_compare": null,
-            "cycle_match_cycle": 5,
-            "cycle_similarity_pct": 95.4,
+            "cycle_match_cycle": 7,
+            "cycle_similarity_pct": 98.9,
             "regimes": {
                 "BULL": {
                     "logic": "AND",
@@ -1294,21 +1288,18 @@
                     "expected_profit_1d": 0.07,
                     "expected_profit_1m": 2.04
                 }
-            },
-            "bear_entry_score": 78.0,
-            "bear_entry_style": "swing_bottom",
-            "bear_episode_count": 8
+            }
         },
         "cycle_analysis": {
-            "matched_cycle_number": 5,
+            "matched_cycle_number": 7,
             "total_cycles": 7,
-            "similarity_pct": 95.4,
-            "current_angle_pct_per_month": 5.3,
-            "current_angle_pct_per_day": 0.1767,
-            "matched_angle_pct_per_month": 4.02,
-            "matched_rise_pct": 139.6,
-            "matched_duration_days": 201,
-            "summary": "현재 회귀각 +5.3%/월 → 과거 5번째 상승 사이클(+4.0%/월, 유사도 95%)과 가장 유사",
+            "similarity_pct": 98.9,
+            "current_angle_pct_per_month": 3.03,
+            "current_angle_pct_per_day": 0.101,
+            "matched_angle_pct_per_month": 3.34,
+            "matched_rise_pct": 81.1,
+            "matched_duration_days": 103,
+            "summary": "현재 회귀각 +3.0%/월 → 과거 7번째 상승 사이클(+3.3%/월, 유사도 99%)과 가장 유사",
             "historical_cycles": [
                 {
                     "cycle_number": 1,
@@ -1438,8 +1429,8 @@
                     "peak_date": "2024-12-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 4568.0,
-                    "trough_price": 1717.0,
-                    "drawdown_pct": 62.4,
+                    "trough_price": 1684.0,
+                    "drawdown_pct": 63.1,
                     "duration_days": 17
                 },
                 {
@@ -1449,8 +1440,8 @@
                     "peak_date": "2025-06-01",
                     "trough_date": "2026-05-01",
                     "peak_price": 4231.0,
-                    "trough_price": 1717.0,
-                    "drawdown_pct": 59.4,
+                    "trough_price": 1684.0,
+                    "drawdown_pct": 60.2,
                     "duration_days": 11
                 }
             ],
@@ -1459,8 +1450,8 @@
             "active_pattern": {
                 "active": false,
                 "months_since_peak": 17,
-                "drawdown_from_peak_pct": -62.4,
-                "slope_3m_pct": -16.08,
+                "drawdown_from_peak_pct": -63.1,
+                "slope_3m_pct": -17.69,
                 "peak_price": 4568.0,
                 "peak_date_idx": 91
             },
@@ -1468,11 +1459,11 @@
                 "phase": "bottom_zone",
                 "entry_style": "swing_bottom",
                 "entry_score": 78.0,
-                "bottom_proximity_pct": 71.2,
-                "projected_bottom_price": 2412.333333333333,
-                "dist_to_bottom_pct": -28.8,
+                "bottom_proximity_pct": 71.4,
+                "projected_bottom_price": 2357.333333333333,
+                "dist_to_bottom_pct": -28.6,
                 "pattern_active": false,
-                "drawdown_from_peak_pct": -62.4,
+                "drawdown_from_peak_pct": -63.1,
                 "summary": "하락 레그 종료·바닥권 — 스윙 진입 유리"
             },
             "pattern_match": null,
@@ -1511,9 +1502,9 @@
                         "weight": 1.0,
                         "timeframe": "15m",
                         "params": {
-                            "min_consider_gap_krw": 35,
+                            "min_consider_gap_krw": 30,
                             "min_target_profit_pct": 3.0,
-                            "exit_gap_krw": 15,
+                            "exit_gap_krw": 10,
                             "exit_convergence_pct": 90,
                             "sell_premium_pct": 0.15,
                             "reference_krw": 0,
@@ -1543,9 +1534,9 @@
                         "weight": 1.0,
                         "timeframe": "15m",
                         "params": {
-                            "min_consider_gap_krw": 35,
+                            "min_consider_gap_krw": 30,
                             "min_target_profit_pct": 3.0,
-                            "exit_gap_krw": 15,
+                            "exit_gap_krw": 10,
                             "exit_convergence_pct": 90,
                             "sell_premium_pct": 0.15,
                             "reference_krw": 0,
@@ -1575,9 +1566,9 @@
                         "weight": 1.0,
                         "timeframe": "15m",
                         "params": {
-                            "min_consider_gap_krw": 35,
+                            "min_consider_gap_krw": 30,
                             "min_target_profit_pct": 3.0,
-                            "exit_gap_krw": 15,
+                            "exit_gap_krw": 10,
                             "exit_convergence_pct": 90,
                             "sell_premium_pct": 0.15,
                             "reference_krw": 0,
@@ -1718,7 +1709,7 @@
             }
         },
         "optimized_default": {
-            "applied_at": "2026-06-22T16:16:13.341247+09:00",
+            "applied_at": "2026-06-24T12:51:00.015641+09:00",
             "source": "빗썸 15분봉 (96포인트/일, KST 매시 0·15·30·45분)",
             "current_regime": "RANGE",
             "active_logic": "OR",
@@ -1816,7 +1807,7 @@
             }
         },
         "usdt_daily_tuning": {
-            "tuned_at": "2026-06-22T16:16:13.341247+09:00",
+            "tuned_at": "2026-06-24T12:51:00.015641+09:00",
             "min_target_profit_pct": 3.0,
             "min_consider_gap_krw": 30,
             "exit_gap_krw": 10,

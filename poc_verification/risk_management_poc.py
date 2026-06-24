@@ -410,7 +410,7 @@ STRATEGY_BAR_SECONDS = 900
 ORDER_SAME_DIR_COOLDOWN_SEC = 3  # 동일 틱 중복 주문만 방지 (분석 타이밍은 차단하지 않음)
 TIMEFRAME_BAR_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400}
 PORTFOLIO_MAX_SINGLE_BUY_OF_SHARE = 0.5  # 종목 할당분(1/N)의 절반까지 1회 매수
-MIN_BITHUMB_ORDER_KRW = 5000.0
+MIN_BITHUMB_ORDER_KRW = 5001.0
 
 # BEAR auto: UI 비교표용 전체 기간 / 자동선택은 단기 4구간 평균
 BEAR_COMPARE_HORIZONS = ["1d", "3d", "1w", "2w", "1m", "3m", "6m"]
@@ -2278,11 +2278,17 @@ class UITickerWorker(TickerWorker):
         current_val = self.position.quantity * self.position.current_price
         room = max(0.0, ticker_cap - current_val)
         single_max = ticker_cap * PORTFOLIO_MAX_SINGLE_BUY_OF_SHARE
+        
+        # 만약 1회 매수 상한선(single_max)이 빗썸 최소 주문 금액(5000원)보다 작다면,
+        # 충분한 할당 여유(room)와 잔고(balance)가 있을 때 최소 주문 금액만큼 매수할 수 있도록 보정합니다.
+        if single_max < MIN_BITHUMB_ORDER_KRW:
+            single_max = max(single_max, MIN_BITHUMB_ORDER_KRW)
+            
         balance = self.account.get_balance()
         amount = min(single_max, room, balance)
         if amount < MIN_BITHUMB_ORDER_KRW:
             if room >= MIN_BITHUMB_ORDER_KRW and balance >= MIN_BITHUMB_ORDER_KRW:
-                print(f"[Portfolio] {self.ticker} 1회 매수 상한({single_max:,.0f}원) 미달 — 할당 절반 규칙 적용 중")
+                print(f"[Portfolio] {self.ticker} 1회 매수 상한({single_max:,.0f}원) 미달 — 최소 주문금액 보정에도 불구하고 미달")
             elif room < MIN_BITHUMB_ORDER_KRW and current_val > 0:
                 print(f"[Portfolio Guard] {self.ticker} 할당 한도({ticker_cap:,.0f}원) 도달 — 추가 매수 불가")
             return 0.0
@@ -2985,7 +2991,7 @@ class MultiTickerUIEngine(TradingEngine):
                 return
                 
             pos = worker.position
-            order_amount = order.get("manual_amount", getattr(worker, "order_amount", 5000.0))
+            order_amount = order.get("manual_amount", getattr(worker, "order_amount", 5001.0))
             
             # 빗썸 원화 마켓 최소 주문 금액 (보통 500 KRW 이상)
             MIN_BITHUMB_ORDER_KRW = 500.0
@@ -3310,6 +3316,17 @@ def get_historical_candles(
 
         if not formatted_candles:
             return {"error": "No valid candle data returned from Bithumb"}
+
+        if market == "KRW-USDT":
+            for c in formatted_candles:
+                dt = datetime.fromtimestamp(c["time"], timezone(timedelta(hours=9)))
+                c["ts"] = dt.isoformat()
+            try:
+                from usdt_fx_historical import enrich_bars_with_historical_fx
+                formatted_candles = enrich_bars_with_historical_fx(formatted_candles)
+            except Exception as e:
+                logger.warning(f"[API] USDT 환율 enrich 실패: {e}")
+
         return formatted_candles
     except Exception as e:
         return {"error": f"Internal Server Error: {str(e)}"}
@@ -4693,6 +4710,10 @@ HTML_CONTENT = """
                 <div class="chart-area" id="chart-container">
                     <div class="chart-loader" id="chart-loader">로딩 중...</div>
                 </div>
+                <!-- 테더 전용 갭 히스토리 차트 영역 추가 -->
+                <div id="usdt-gap-chart-container" style="display: none; height: 180px; min-height: 180px; border: 1px solid var(--border-color); border-radius: 12px; background-color: #040814; position: relative; overflow: hidden; margin-top: -10px;">
+                    <div class="chart-loader" id="usdt-gap-chart-loader" style="display:none;">로딩 중...</div>
+                </div>
             </div>
 
             <!-- 3열: 우측 (전략 설정 패널) -->
@@ -5401,6 +5422,7 @@ HTML_CONTENT = """
         
         let activeTicker = 'BTC';
         let activeTimeframe = '15m';
+        let latestFairKrw = null;
         
         // 캐싱 저장소
         const candleCache = {};
@@ -5574,9 +5596,81 @@ HTML_CONTENT = """
         // TradingView Lightweight Charts 구성
         // ══════════════════════════════════════════════════════════════
         const chartElement = document.getElementById('chart-container');
+        const gapChartElement = document.getElementById('usdt-gap-chart-container');
         let chart = null;
         let candlestickSeries = null;
-        
+        let gapChart = null;
+        let gapSeries = null;
+
+        function initGapChart() {
+            if (gapChart) return;
+            try {
+                if (typeof LightweightCharts !== 'undefined' && chart) {
+                    gapChart = LightweightCharts.createChart(gapChartElement, {
+                        width: gapChartElement.clientWidth,
+                        height: gapChartElement.clientHeight,
+                        layout: {
+                            background: { type: 'solid', color: '#040814' },
+                            textColor: '#9ca3af',
+                            fontSize: 11,
+                            fontFamily: 'Outfit, sans-serif'
+                        },
+                        grid: {
+                            vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
+                            horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
+                        },
+                        localization: {
+                            locale: 'ko-KR',
+                            timeFormatter: (time) => formatKstChartLabel(time),
+                        },
+                        timeScale: {
+                            timeVisible: true,
+                            secondsVisible: false,
+                            borderColor: 'rgba(255, 255, 255, 0.08)'
+                        },
+                        rightPriceScale: {
+                            borderColor: 'rgba(255, 255, 255, 0.08)'
+                        }
+                    });
+
+                    gapSeries = gapChart.addAreaSeries({
+                        topColor: 'rgba(16, 185, 129, 0.35)',
+                        bottomColor: 'rgba(16, 185, 129, 0.0)',
+                        lineColor: '#10b981',
+                        lineWidth: 2,
+                        title: '환율 격차 (원)',
+                    });
+
+                    let isSyncing = false;
+                    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+                        if (isSyncing) return;
+                        isSyncing = true;
+                        if (range && gapChart) {
+                            gapChart.timeScale().setVisibleLogicalRange(range);
+                        }
+                        isSyncing = false;
+                    });
+                    
+                    gapChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+                        if (isSyncing) return;
+                        isSyncing = true;
+                        if (range && chart) {
+                            chart.timeScale().setVisibleLogicalRange(range);
+                        }
+                        isSyncing = false;
+                    });
+
+                    window.addEventListener('resize', () => {
+                        if (gapChart && gapChartElement.style.display !== 'none') {
+                            gapChart.resize(gapChartElement.clientWidth, gapChartElement.clientHeight);
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error("Gap chart init error:", e);
+            }
+        }
+
         try {
             if (typeof LightweightCharts !== 'undefined') {
                 chart = LightweightCharts.createChart(chartElement, {
@@ -5667,7 +5761,26 @@ HTML_CONTENT = """
                 
                 if (ticker === activeTicker && timeframe === activeTimeframe && candlestickSeries) {
                     candlestickSeries.setData(validData);
+                    
+                    if (ticker === 'USDT' && gapSeries) {
+                        const gapData = validData.map(c => {
+                            const fair = c.fair_krw || c.close;
+                            return {
+                                time: c.time,
+                                value: Math.round(fair - c.close)
+                            };
+                        });
+                        gapSeries.setData(gapData);
+                    }
+                    
                     chart.timeScale().fitContent();
+                    
+                    if (ticker === 'USDT' && gapChart) {
+                        setTimeout(() => {
+                            const range = chart.timeScale().getVisibleLogicalRange();
+                            if (range) gapChart.timeScale().setVisibleLogicalRange(range);
+                        }, 50);
+                    }
                     addLog(formatKstTime(), null, 'SYSTEM', `${ticker}의 ${timeframe} 과거 캔들 ${validData.length}개 렌더링 완료.`);
                 }
             } catch (e) {
@@ -5740,6 +5853,32 @@ HTML_CONTENT = """
             
             if (ticker === activeTicker && candlestickSeries) {
                 candlestickSeries.update(targetCandle);
+            }
+            
+            if (ticker === 'USDT' && gapSeries) {
+                let fair = latestFairKrw;
+                if (!fair) {
+                    fair = targetCandle.fair_krw;
+                }
+                if (!fair) {
+                    for (let i = cache.length - 1; i >= 0; i--) {
+                        if (cache[i].fair_krw) {
+                            fair = cache[i].fair_krw;
+                            break;
+                        }
+                    }
+                }
+                if (!fair) {
+                    fair = price;
+                }
+                targetCandle.fair_krw = fair;
+                
+                if (activeTicker === 'USDT') {
+                    gapSeries.update({
+                        time: targetCandle.time,
+                        value: Math.round(fair - price)
+                    });
+                }
             }
         }
 
@@ -5913,8 +6052,39 @@ HTML_CONTENT = """
             
             // 캐시 로드 혹은 REST 호출
             const cacheKey = `${ticker}_${activeTimeframe}`;
+            const isUsdt = ticker === 'USDT';
+            
+            if (isUsdt) {
+                gapChartElement.style.display = 'block';
+                if (chart) chart.resize(chartElement.clientWidth, chartElement.clientHeight);
+                initGapChart();
+                if (gapChart) gapChart.resize(gapChartElement.clientWidth, gapChartElement.clientHeight);
+            } else {
+                gapChartElement.style.display = 'none';
+                if (chart) chart.resize(chartElement.clientWidth, chartElement.clientHeight);
+            }
+
             if (candleCache[cacheKey] && candleCache[cacheKey].length > 0) {
                 candlestickSeries.setData(candleCache[cacheKey]);
+                
+                if (isUsdt && gapSeries) {
+                    const gapData = candleCache[cacheKey].map(c => {
+                        const fair = c.fair_krw || c.close;
+                        return {
+                            time: c.time,
+                            value: Math.round(fair - c.close)
+                        };
+                    });
+                    gapSeries.setData(gapData);
+                    
+                    if (gapChart) {
+                        setTimeout(() => {
+                            const range = chart.timeScale().getVisibleLogicalRange();
+                            if (range) gapChart.timeScale().setVisibleLogicalRange(range);
+                        }, 50);
+                    }
+                }
+                
                 chart.timeScale().fitContent();
             } else {
                 loadHistoricalCandles(activeTicker, activeTimeframe);
@@ -6052,6 +6222,9 @@ HTML_CONTENT = """
         }
 
         function updateUsdtFxPanel(d) {
+            if (d && d.fair_krw) {
+                latestFairKrw = d.fair_krw;
+            }
             const fairEl = document.getElementById('usdt-fair-krw');
             const mktEl = document.getElementById('usdt-market-krw');
             const revEl = document.getElementById('usdt-reverse-pct');
@@ -6182,8 +6355,29 @@ HTML_CONTENT = """
             recreateSeries();
 
             const cacheKey = `${activeTicker}_${timeframe}`;
+            const isUsdt = activeTicker === 'USDT';
+            
             if (candleCache[cacheKey] && candleCache[cacheKey].length > 0) {
                 candlestickSeries.setData(candleCache[cacheKey]);
+                
+                if (isUsdt && gapSeries) {
+                    const gapData = candleCache[cacheKey].map(c => {
+                        const fair = c.fair_krw || c.close;
+                        return {
+                            time: c.time,
+                            value: Math.round(fair - c.close)
+                        };
+                    });
+                    gapSeries.setData(gapData);
+                    
+                    if (gapChart) {
+                        setTimeout(() => {
+                            const range = chart.timeScale().getVisibleLogicalRange();
+                            if (range) gapChart.timeScale().setVisibleLogicalRange(range);
+                        }, 50);
+                    }
+                }
+                
                 chart.timeScale().fitContent();
             } else {
                 loadHistoricalCandles(activeTicker, activeTimeframe);

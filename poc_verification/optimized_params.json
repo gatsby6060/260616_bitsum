@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-06-22T16:16:13.341247+09:00",
+  "last_updated": "2026-06-24T12:51:00.015641+09:00",
   "source": "빗썸 15분봉 (96포인트/일, KST 매시 0·15·30·45분)",
   "fee_assumption": "편도 0.25% (빗썸 실거래 체결 기준, 왕복 0.50%)",
   "optimization_criteria": "profit_score(총수익·보유기간 우선) + MDD <= 50% (지표 7조합 × OR/AND/VOTE/WEIGHTED_VOTE × 리스크·매도최소익 그리드)",
@@ -1190,7 +1190,7 @@
     }
   },
   "usdt_daily_tuning": {
-    "tuned_at": "2026-06-22T16:16:13.341247+09:00",
+    "tuned_at": "2026-06-24T12:51:00.015641+09:00",
     "min_target_profit_pct": 3.0,
     "min_consider_gap_krw": 30,
     "exit_gap_krw": 10,
