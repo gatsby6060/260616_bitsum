@@ -167,7 +167,7 @@ except ImportError:
     get_usdt_optimal_params = lambda: {}
     get_usdt_live_default_params = lambda: {}
     apply_usdt_live_gaps = lambda p: p
-    USDT_LIVE_GAP_SAFETY_OFFSET = 5
+    USDT_LIVE_GAP_SAFETY_OFFSET = 0
     USDT_OPTIMAL_ENTRY_GAP_KRW = 30
     USDT_OPTIMAL_EXIT_GAP_KRW = 10
 
@@ -5886,9 +5886,9 @@ HTML_CONTENT = """
         // 종목 동적 렌더링 및 UI 스위칭
         // ══════════════════════════════════════════════════════════════
         const SYSTEM_TICKERS = ['BTC', 'ETH', 'XRP', 'USDT'];
-        const USDT_DEFAULT_GAP = 35;
+        const USDT_DEFAULT_GAP = 33;
         const USDT_DEFAULT_EXIT_TP = 3.0;
-        const USDT_LIVE_GAP_OFFSET = 5;
+        const USDT_LIVE_GAP_OFFSET = 0;
         const OPTIMIZER_RETRAIN_INTERVAL_DAYS = 14;
         const OPTIMIZER_SCHEDULE_HOUR_KST = 2;
 

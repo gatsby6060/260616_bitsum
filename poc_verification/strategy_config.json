@@ -1478,18 +1478,18 @@
         "long_term_ma_period": 400,
         "usdt_fx": {
             "reference_krw": 0,
-            "min_consider_gap_krw": 35,
+            "min_consider_gap_krw": 30,
             "min_target_profit_pct": 3.0,
             "sell_premium_pct": 0.15,
             "fx_refresh_minutes": 10,
             "fee_one_way_pct": 0.25,
             "bb_period": 20,
             "bb_std_dev": 2.0,
-            "exit_gap_krw": 15,
+            "exit_gap_krw": 10,
             "exit_convergence_pct": 90,
             "optimal_min_consider_gap_krw": 30,
             "optimal_exit_gap_krw": 10,
-            "live_gap_safety_offset": 5
+            "live_gap_safety_offset": 0
         },
         "tactics": {
             "BULL": {
