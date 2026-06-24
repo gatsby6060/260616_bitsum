@@ -909,18 +909,18 @@
             "enabled": true,
             "weight": 1.0,
             "timeframe": "15m",
-            "min_consider_gap_krw": 30,
+            "min_consider_gap_krw": 33,
             "min_target_profit_pct": 3.0,
-            "exit_gap_krw": 10,
+            "exit_gap_krw": 19,
             "exit_convergence_pct": 90,
             "bb_period": 20,
             "bb_std_dev": 2.0
           }
         },
         "usdt_fx_filter": {
-          "min_consider_gap_krw": 30,
+          "min_consider_gap_krw": 33,
           "min_target_profit_pct": 3.0,
-          "exit_gap_krw": 10,
+          "exit_gap_krw": 19,
           "exit_convergence_pct": 90
         },
         "logic": "OR",
@@ -1005,18 +1005,18 @@
           "enabled": true,
           "weight": 1.0,
           "timeframe": "15m",
-          "min_consider_gap_krw": 30,
+          "min_consider_gap_krw": 33,
           "min_target_profit_pct": 3.0,
-          "exit_gap_krw": 10,
+          "exit_gap_krw": 19,
           "exit_convergence_pct": 90,
           "bb_period": 20,
           "bb_std_dev": 2.0
         }
       },
       "usdt_fx_filter": {
-        "min_consider_gap_krw": 30,
+        "min_consider_gap_krw": 33,
         "min_target_profit_pct": 3.0,
-        "exit_gap_krw": 10,
+        "exit_gap_krw": 19,
         "exit_convergence_pct": 90
       },
       "logic": "OR",
@@ -1052,18 +1052,18 @@
             "enabled": true,
             "weight": 1.0,
             "timeframe": "15m",
-            "min_consider_gap_krw": 30,
+            "min_consider_gap_krw": 33,
             "min_target_profit_pct": 3.0,
-            "exit_gap_krw": 10,
+            "exit_gap_krw": 19,
             "exit_convergence_pct": 90,
             "bb_period": 20,
             "bb_std_dev": 2.0
           }
         },
         "usdt_fx_filter": {
-          "min_consider_gap_krw": 30,
+          "min_consider_gap_krw": 33,
           "min_target_profit_pct": 3.0,
-          "exit_gap_krw": 10,
+          "exit_gap_krw": 19,
           "exit_convergence_pct": 90
         },
         "logic": "OR",
@@ -1148,18 +1148,18 @@
           "enabled": true,
           "weight": 1.0,
           "timeframe": "15m",
-          "min_consider_gap_krw": 30,
+          "min_consider_gap_krw": 33,
           "min_target_profit_pct": 3.0,
-          "exit_gap_krw": 10,
+          "exit_gap_krw": 19,
           "exit_convergence_pct": 90,
           "bb_period": 20,
           "bb_std_dev": 2.0
         }
       },
       "usdt_fx_filter": {
-        "min_consider_gap_krw": 30,
+        "min_consider_gap_krw": 33,
         "min_target_profit_pct": 3.0,
-        "exit_gap_krw": 10,
+        "exit_gap_krw": 19,
         "exit_convergence_pct": 90
       },
       "logic": "OR",
@@ -1192,14 +1192,14 @@
   "usdt_daily_tuning": {
     "tuned_at": "2026-06-24T12:51:00.015641+09:00",
     "min_target_profit_pct": 3.0,
-    "min_consider_gap_krw": 30,
-    "exit_gap_krw": 10,
+    "min_consider_gap_krw": 33,
+    "exit_gap_krw": 19,
     "exit_convergence_pct": 90,
     "bb_period": 20,
     "bb_std": 2.0,
     "backtest_trades": 8,
     "backtest_return_pct": 9.03,
     "avg_hold_days": 4.4,
-    "reason": "역사 환율 학습 — 진입 gap 30원 · 탈출 gap≤10원 / TP 3.0%"
+    "reason": "역사 환율 학습 — 진입 gap 33원 · 탈출 gap≤19원 / TP 3.0%"
   }
 }

@@ -1478,17 +1478,17 @@
         "long_term_ma_period": 400,
         "usdt_fx": {
             "reference_krw": 0,
-            "min_consider_gap_krw": 30,
+            "min_consider_gap_krw": 33,
             "min_target_profit_pct": 3.0,
             "sell_premium_pct": 0.15,
             "fx_refresh_minutes": 10,
             "fee_one_way_pct": 0.25,
             "bb_period": 20,
             "bb_std_dev": 2.0,
-            "exit_gap_krw": 10,
+            "exit_gap_krw": 19,
             "exit_convergence_pct": 90,
-            "optimal_min_consider_gap_krw": 30,
-            "optimal_exit_gap_krw": 10,
+            "optimal_min_consider_gap_krw": 33,
+            "optimal_exit_gap_krw": 19,
             "live_gap_safety_offset": 0
         },
         "tactics": {
@@ -1502,9 +1502,9 @@
                         "weight": 1.0,
                         "timeframe": "15m",
                         "params": {
-                            "min_consider_gap_krw": 30,
+                            "min_consider_gap_krw": 33,
                             "min_target_profit_pct": 3.0,
-                            "exit_gap_krw": 10,
+                            "exit_gap_krw": 19,
                             "exit_convergence_pct": 90,
                             "sell_premium_pct": 0.15,
                             "reference_krw": 0,
@@ -1534,9 +1534,9 @@
                         "weight": 1.0,
                         "timeframe": "15m",
                         "params": {
-                            "min_consider_gap_krw": 30,
+                            "min_consider_gap_krw": 33,
                             "min_target_profit_pct": 3.0,
-                            "exit_gap_krw": 10,
+                            "exit_gap_krw": 19,
                             "exit_convergence_pct": 90,
                             "sell_premium_pct": 0.15,
                             "reference_krw": 0,
@@ -1566,9 +1566,9 @@
                         "weight": 1.0,
                         "timeframe": "15m",
                         "params": {
-                            "min_consider_gap_krw": 30,
+                            "min_consider_gap_krw": 33,
                             "min_target_profit_pct": 3.0,
-                            "exit_gap_krw": 10,
+                            "exit_gap_krw": 19,
                             "exit_convergence_pct": 90,
                             "sell_premium_pct": 0.15,
                             "reference_krw": 0,
@@ -1591,7 +1591,7 @@
         },
         "selected_usdt_strategy": "auto",
         "usdt_auto_pick": "fixed_fusion",
-        "usdt_auto_pick_reason": "역사 환율 학습 — 진입 gap 30원 · 탈출 gap≤10원 / TP 3.0%",
+        "usdt_auto_pick_reason": "역사 환율 학습 — 진입 gap 33원 · 탈출 gap≤19원 / TP 3.0%",
         "resolved_usdt_strategy": "fixed_fusion",
         "usdt_tactics_cache": {
             "fixed_fusion": {
@@ -1604,9 +1604,9 @@
                         "weight": 1.0,
                         "timeframe": "15m",
                         "params": {
-                            "min_consider_gap_krw": 30,
+                            "min_consider_gap_krw": 33,
                             "min_target_profit_pct": 3.0,
-                            "exit_gap_krw": 10,
+                            "exit_gap_krw": 19,
                             "exit_convergence_pct": 90,
                             "sell_premium_pct": 0.15,
                             "reference_krw": 0,
@@ -1689,7 +1689,7 @@
                 "expected_profit_3d": 0.03,
                 "expected_profit_1w": 0.07,
                 "expected_profit_3w": 0.2,
-                "best_gap_krw": 30
+                "best_gap_krw": 33
             },
             "learned_mixed": {
                 "strategies": [
@@ -1720,7 +1720,7 @@
             "resolved_bear_strategy": null,
             "bear_auto_pick_reason": null,
             "resolved_usdt_strategy": "fixed_fusion",
-            "usdt_auto_pick_reason": "역사 환율 학습 — 진입 gap 30원 · 탈출 gap≤10원 / TP 3.0%",
+            "usdt_auto_pick_reason": "역사 환율 학습 — 진입 gap 33원 · 탈출 gap≤19원 / TP 3.0%",
             "usdt_strategy_compare": {
                 "fixed_fusion": {
                     "strategies": [
@@ -1735,7 +1735,7 @@
                     "expected_profit_3d": 0.03,
                     "expected_profit_1w": 0.07,
                     "expected_profit_3w": 0.2,
-                    "best_gap_krw": 30
+                    "best_gap_krw": 33
                 },
                 "learned_mixed": {
                     "strategies": [
@@ -1800,24 +1800,24 @@
                     "expected_profit_3d": 0.03,
                     "expected_profit_1w": 0.07,
                     "expected_profit_3w": 0.2,
-                    "best_gap_krw": 30,
+                    "best_gap_krw": 33,
                     "usdt_variant": "fixed_fusion",
-                    "usdt_pick_reason": "역사 환율 학습 — 진입 gap 30원 · 탈출 gap≤10원 / TP 3.0%"
+                    "usdt_pick_reason": "역사 환율 학습 — 진입 gap 33원 · 탈출 gap≤19원 / TP 3.0%"
                 }
             }
         },
         "usdt_daily_tuning": {
             "tuned_at": "2026-06-24T12:51:00.015641+09:00",
             "min_target_profit_pct": 3.0,
-            "min_consider_gap_krw": 30,
-            "exit_gap_krw": 10,
+            "min_consider_gap_krw": 33,
+            "exit_gap_krw": 19,
             "exit_convergence_pct": 90,
             "bb_period": 20,
             "bb_std": 2.0,
             "backtest_trades": 8,
             "backtest_return_pct": 9.03,
             "avg_hold_days": 4.4,
-            "reason": "역사 환율 학습 — 진입 gap 30원 · 탈출 gap≤10원 / TP 3.0%"
+            "reason": "역사 환율 학습 — 진입 gap 33원 · 탈출 gap≤19원 / TP 3.0%"
         },
         "usdt_position_meta": {
             "entry_fair_krw": 1538.2
