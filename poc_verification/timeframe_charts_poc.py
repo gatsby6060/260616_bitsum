@@ -1,6 +1,16 @@
 import os
 import sys
 import json
+
+# .env 파일 로드 로직 추가 (환경변수 자동 로딩)
+env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+if os.path.exists(env_path):
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ[key.strip()] = val.strip()
 import uuid
 import asyncio
 import queue
