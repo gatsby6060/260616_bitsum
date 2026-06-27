@@ -3132,14 +3132,39 @@ class MultiTickerUIEngine(TradingEngine):
             }
             ui_event_queue.put(ui_event)
             
-            # [AI Agent 연동] 매매 이벤트 발생 시 LangGraph 기반 AI 분석 및 텔레그램/이메일 알림 실행
+            # [AI Agent / n8n 연동] 매매 이벤트 발생 시 알림 및 데이터 파이프라인 트리거
             try:
-                from ai_agent_notifier import process_trade_event
-                process_trade_event(ui_event["data"])
+                import os
+                n8n_url = os.getenv("N8N_WEBHOOK_URL") or os.getenv("N8N_WEBHOOK_URL", "").strip()
+                if n8n_url and not n8n_url.startswith("http://your-n8n-webhook") and not n8n_url.endswith("/webhook/path"):
+                    import requests
+                    import threading
+                    
+                    def send_n8n_webhook(data):
+                        try:
+                            data_copy = data.copy()
+                            data_copy["formatted_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                            
+                            print(f"[System] n8n 웹훅 전송 시작: {data_copy['ticker']} {data_copy['signal']}")
+                            resp = requests.post(n8n_url, json=data_copy, timeout=8)
+                            print(f"[System] n8n 웹훅 전송 완료 (Status: {resp.status_code})")
+                        except Exception as webhook_err:
+                            print(f"[System] n8n 웹훅 전송 실패 (로컬 알림 백업 가동): {webhook_err}")
+                            try:
+                                from ai_agent_notifier import process_trade_event
+                                process_trade_event(data)
+                            except Exception as local_err:
+                                print(f"[System] 백업 로컬 AI 알림 실행 실패: {local_err}")
+                    
+                    threading.Thread(target=send_n8n_webhook, args=(ui_event["data"],), daemon=True).start()
+                else:
+                    # n8n 웹훅이 없으면 기존 로컬 LangGraph 기반 알림 전송 (로컬 라벨 포함)
+                    from ai_agent_notifier import process_trade_event
+                    process_trade_event(ui_event["data"])
             except ImportError:
                 print("[System] ai_agent_notifier 모듈을 찾을 수 없어 AI 알림을 생략합니다.")
             except Exception as e:
-                print(f"[System] AI Agent 실행 중 오류 발생: {e}")
+                print(f"[System] AI Agent/n8n 실행 중 오류 발생: {e}")
         except Exception as outer_e:
 
             import traceback

@@ -216,19 +216,19 @@ async def _send_telegram_async(message: str) -> bool:
             return False
 
 def notify_telegram(state: AgentState) -> AgentState:
-    """분석 결과를 텔레그램으로 전송합니다."""
+    """분석 결과를 텔레그램으로 전송합니다. (로컬 라벨 표시)"""
     data     = state["trade_data"]
     analysis = state["analysis_result"]
 
     signal_emoji = "🟢" if data.get("signal") == "BUY" else "🔴"
     ts = _format_timestamp(data.get("timestamp"))
     message = (
-        f"{signal_emoji} *자동매매 체결 알림* {signal_emoji}\n\n"
+        f"{signal_emoji} *자동매매 체결 알림 (로컬)* {signal_emoji}\n\n"
         f"📌 *종목*: {data.get('ticker')}\n"
         f"⚖️ *구분*: {data.get('signal')}\n"
         f"💰 *단가*: {float(data.get('price') or 0):,.0f} 원\n"
         f"🕐 *시간*: {ts}\n\n"
-        f"🧠 *AI 에이전트 분석*:\n{analysis}"
+        f"🧠 *AI 에이전트 분석 (Local Engine)*:\n{analysis}"
     )
 
     _log(f"\n[Telegram 메시지 미리보기]\n{message}\n")
@@ -247,7 +247,7 @@ def notify_telegram(state: AgentState) -> AgentState:
 # 5. 노드 3: 이메일 알림 전송
 # ==============================================================================
 def notify_email(state: AgentState) -> AgentState:
-    """분석 결과를 이메일로 전송합니다. Gmail SMTP(포트 587) 사용."""
+    """분석 결과를 이메일로 전송합니다. Gmail SMTP(포트 587) 사용. (로컬 라벨 표시)"""
     data     = state["trade_data"]
     analysis = state["analysis_result"]
 
@@ -262,7 +262,7 @@ def notify_email(state: AgentState) -> AgentState:
     signal_label = "매수 (BUY)" if data.get("signal") == "BUY" else "매도 (SELL)"
     from email.header import Header
     subject = Header(
-        f"[자동매매 알림] {data.get('ticker')} {signal_label} 체결 — {data.get('timestamp')}",
+        f"[자동매매 알림 (로컬)] {data.get('ticker')} {signal_label} 체결 — {data.get('timestamp')}",
         "utf-8",
     ).encode()
 
@@ -271,7 +271,7 @@ def notify_email(state: AgentState) -> AgentState:
     <html>
     <body style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: auto;">
         <h2 style="color: {'#27ae60' if data.get('signal') == 'BUY' else '#e74c3c'};">
-            {'🟢 매수 체결' if data.get('signal') == 'BUY' else '🔴 매도 체결'} — {data.get('ticker')}
+            {'🟢 로컬 엔진 매수 체결' if data.get('signal') == 'BUY' else '🔴 로컬 엔진 매도 체결'} — {data.get('ticker')}
         </h2>
         <table style="width:100%; border-collapse:collapse;">
             <tr style="background:#f2f2f2;">
@@ -302,7 +302,7 @@ def notify_email(state: AgentState) -> AgentState:
         </div>
         <br>
         <p style="font-size:12px; color:#999;">
-            본 메일은 자동매매 시스템에 의해 자동 발송되었습니다.
+            본 메일은 로컬 파이썬 자동매매 시스템(Local Engine)에 의해 자동 발송되었습니다.
         </p>
     </body>
     </html>
