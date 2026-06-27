@@ -1,6 +1,6 @@
 {
-  "min_consider_gap_krw": 33,
-  "exit_gap_krw": 19,
+  "min_consider_gap_krw": 31,
+  "exit_gap_krw": 18,
   "min_target_profit_pct": 3.0,
   "updated_at": "2026-06-24T12:51:00.006018+09:00",
   "backtest_trades": 8,

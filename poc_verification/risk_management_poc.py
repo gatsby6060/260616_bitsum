@@ -3256,17 +3256,25 @@ def get_historical_candles(
         return {"error": "Invalid timeframe"}
 
     def _parse_candle_time(c: dict) -> int:
-        if timeframe in ["D", "W", "M"]:
-            dt = datetime.strptime(c["candle_date_time_utc"], "%Y-%m-%dT%H:%M:%S")
-            return int(dt.replace(tzinfo=timezone.utc).timestamp())
+        if "candle_date_time_utc" in c:
+            try:
+                dt = datetime.strptime(c["candle_date_time_utc"], "%Y-%m-%dT%H:%M:%S")
+                return int(dt.replace(tzinfo=timezone.utc).timestamp())
+            except Exception:
+                pass
         ts_ms = c.get("timestamp")
         if ts_ms:
             return int(ts_ms // 1000)
-        kst_str = c.get("candle_date_time_kst") or c.get("candle_date_time_utc", "")
-        dt = datetime.fromisoformat(kst_str.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=KST)
-        return int(dt.timestamp())
+        kst_str = c.get("candle_date_time_kst") or ""
+        if kst_str:
+            try:
+                dt = datetime.fromisoformat(kst_str.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=KST)
+                return int(dt.timestamp())
+            except Exception:
+                pass
+        return int(time.time())
 
     try:
         raw_candles = []
@@ -5504,18 +5512,11 @@ HTML_CONTENT = """
 
         function formatKstChartLabel(unixSec) {
             const d = new Date(unixSec * 1000);
-            const datePart = d.toLocaleDateString('ko-KR', {
-                timeZone: KST_TIMEZONE,
-                month: 'numeric',
-                day: 'numeric'
-            });
-            const timePart = d.toLocaleTimeString('ko-KR', {
-                timeZone: KST_TIMEZONE,
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: false
-            });
-            return `${datePart} ${timePart}`;
+            const month = d.getUTCMonth() + 1;
+            const day = d.getUTCDate();
+            const hour = String(d.getUTCHours()).padStart(2, '0');
+            const minute = String(d.getUTCMinutes()).padStart(2, '0');
+            return `${month}. ${day}. ${hour}:${minute}`;
         }
 
         function alignCandleTimeKst(timestampSec, intervalSec) {
@@ -5626,7 +5627,20 @@ HTML_CONTENT = """
                         timeScale: {
                             timeVisible: true,
                             secondsVisible: false,
-                            borderColor: 'rgba(255, 255, 255, 0.08)'
+                            borderColor: 'rgba(255, 255, 255, 0.08)',
+                            tickMarkFormatter: (time, tickMarkType, locale) => {
+                                if (typeof time === 'number') {
+                                    const d = new Date(time * 1000);
+                                    if (tickMarkType <= 2) {
+                                        return `${d.getUTCDate()}일`;
+                                    } else {
+                                        const hour = String(d.getUTCHours()).padStart(2, '0');
+                                        const minute = String(d.getUTCMinutes()).padStart(2, '0');
+                                        return `${hour}:${minute}`;
+                                    }
+                                }
+                                return String(time);
+                            }
                         },
                         rightPriceScale: {
                             borderColor: 'rgba(255, 255, 255, 0.08)'
@@ -5698,7 +5712,20 @@ HTML_CONTENT = """
                     timeScale: {
                         timeVisible: true,
                         secondsVisible: false,
-                        borderColor: 'rgba(255, 255, 255, 0.08)'
+                        borderColor: 'rgba(255, 255, 255, 0.08)',
+                        tickMarkFormatter: (time, tickMarkType, locale) => {
+                            if (typeof time === 'number') {
+                                const d = new Date(time * 1000);
+                                if (tickMarkType <= 2) {
+                                    return `${d.getUTCDate()}일`;
+                                } else {
+                                    const hour = String(d.getUTCHours()).padStart(2, '0');
+                                    const minute = String(d.getUTCMinutes()).padStart(2, '0');
+                                    return `${hour}:${minute}`;
+                                }
+                            }
+                            return String(time);
+                        }
                     },
                     rightPriceScale: {
                         borderColor: 'rgba(255, 255, 255, 0.08)'
@@ -5757,13 +5784,14 @@ HTML_CONTENT = """
                     return;
                 }
                 
-                candleCache[cacheKey] = validData;
+                const shiftedData = validData.map(c => ({ ...c, time: c.time + 9 * 3600 }));
+                candleCache[cacheKey] = shiftedData;
                 
                 if (ticker === activeTicker && timeframe === activeTimeframe && candlestickSeries) {
-                    candlestickSeries.setData(validData);
+                    candlestickSeries.setData(shiftedData);
                     
                     if (ticker === 'USDT' && gapSeries) {
-                        const gapData = validData.map(c => {
+                        const gapData = shiftedData.map(c => {
                             const fair = c.fair_krw || c.close;
                             return {
                                 time: c.time,
@@ -5852,7 +5880,10 @@ HTML_CONTENT = """
             }
             
             if (ticker === activeTicker && candlestickSeries) {
-                candlestickSeries.update(targetCandle);
+                candlestickSeries.update({
+                    ...targetCandle,
+                    time: targetCandle.time + 9 * 3600
+                });
             }
             
             if (ticker === 'USDT' && gapSeries) {
@@ -5875,7 +5906,7 @@ HTML_CONTENT = """
                 
                 if (activeTicker === 'USDT') {
                     gapSeries.update({
-                        time: targetCandle.time,
+                        time: targetCandle.time + 9 * 3600,
                         value: Math.round(fair - price)
                     });
                 }
@@ -5886,7 +5917,7 @@ HTML_CONTENT = """
         // 종목 동적 렌더링 및 UI 스위칭
         // ══════════════════════════════════════════════════════════════
         const SYSTEM_TICKERS = ['BTC', 'ETH', 'XRP', 'USDT'];
-        const USDT_DEFAULT_GAP = 33;
+        const USDT_DEFAULT_GAP = 32;
         const USDT_DEFAULT_EXIT_TP = 3.0;
         const USDT_LIVE_GAP_OFFSET = 0;
         const OPTIMIZER_RETRAIN_INTERVAL_DAYS = 14;
