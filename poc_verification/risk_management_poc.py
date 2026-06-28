@@ -5657,7 +5657,18 @@ HTML_CONTENT = """
                                 if (typeof time === 'number') {
                                     const d = new Date(time * 1000);
                                     if (tickMarkType <= 2) {
-                                        return `${d.getUTCDate()}일`;
+                                        const year = d.getUTCFullYear();
+                                        const month = d.getUTCMonth() + 1;
+                                        const day = d.getUTCDate();
+                                        if (activeTimeframe === 'M') {
+                                            return `${String(year).slice(-2)}년 ${month}월`;
+                                        } else if (activeTimeframe === 'W') {
+                                            return `${String(year).slice(-2)}년 ${month}월 ${day}일`;
+                                        } else if (activeTimeframe === 'D') {
+                                            return `${month}월 ${day}일`;
+                                        } else {
+                                            return `${month}월 ${day}일`;
+                                        }
                                     } else {
                                         const hour = String(d.getUTCHours()).padStart(2, '0');
                                         const minute = String(d.getUTCMinutes()).padStart(2, '0');
@@ -5742,7 +5753,18 @@ HTML_CONTENT = """
                             if (typeof time === 'number') {
                                 const d = new Date(time * 1000);
                                 if (tickMarkType <= 2) {
-                                    return `${d.getUTCDate()}일`;
+                                    const year = d.getUTCFullYear();
+                                    const month = d.getUTCMonth() + 1;
+                                    const day = d.getUTCDate();
+                                    if (activeTimeframe === 'M') {
+                                        return `${String(year).slice(-2)}년 ${month}월`;
+                                    } else if (activeTimeframe === 'W') {
+                                        return `${String(year).slice(-2)}년 ${month}월 ${day}일`;
+                                    } else if (activeTimeframe === 'D') {
+                                        return `${month}월 ${day}일`;
+                                    } else {
+                                        return `${month}월 ${day}일`;
+                                    }
                                 } else {
                                     const hour = String(d.getUTCHours()).padStart(2, '0');
                                     const minute = String(d.getUTCMinutes()).padStart(2, '0');

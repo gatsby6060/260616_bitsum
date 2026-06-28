@@ -1806,10 +1806,49 @@ HTML_CONTENT = """
                         vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
                         horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
                     },
+                    localization: {
+                        locale: 'ko-KR',
+                        timeFormatter: (time) => {
+                            if (typeof time === 'number') {
+                                const d = new Date((time + 9 * 3600) * 1000);
+                                const year = d.getUTCFullYear();
+                                const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+                                const day = String(d.getUTCDate()).padStart(2, '0');
+                                const hour = String(d.getUTCHours()).padStart(2, '0');
+                                const minute = String(d.getUTCMinutes()).padStart(2, '0');
+                                return `${year}-${month}-${day} ${hour}:${minute}`;
+                            }
+                            return String(time);
+                        },
+                    },
                     timeScale: {
                         timeVisible: true,
                         secondsVisible: false,
-                        borderColor: 'rgba(255, 255, 255, 0.08)'
+                        borderColor: 'rgba(255, 255, 255, 0.08)',
+                        tickMarkFormatter: (time, tickMarkType, locale) => {
+                            if (typeof time === 'number') {
+                                const d = new Date((time + 9 * 3600) * 1000);
+                                if (tickMarkType <= 2) {
+                                    const year = d.getUTCFullYear();
+                                    const month = d.getUTCMonth() + 1;
+                                    const day = d.getUTCDate();
+                                    if (activeTimeframe === 'M') {
+                                        return `${String(year).slice(-2)}년 ${month}월`;
+                                    } else if (activeTimeframe === 'W') {
+                                        return `${String(year).slice(-2)}년 ${month}월 ${day}일`;
+                                    } else if (activeTimeframe === 'D') {
+                                        return `${month}월 ${day}일`;
+                                    } else {
+                                        return `${month}월 ${day}일`;
+                                    }
+                                } else {
+                                    const hour = String(d.getUTCHours()).padStart(2, '0');
+                                    const minute = String(d.getUTCMinutes()).padStart(2, '0');
+                                    return `${hour}:${minute}`;
+                                }
+                            }
+                            return String(time);
+                        }
                     },
                     rightPriceScale: {
                         borderColor: 'rgba(255, 255, 255, 0.08)'
