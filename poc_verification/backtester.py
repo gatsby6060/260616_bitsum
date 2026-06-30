@@ -1687,7 +1687,7 @@ def _parallel_simulate(
 
     workers = min(max_workers, len(params_list))
     if HAS_GPU:
-        workers = min(workers, 2)
+        workers = min(workers, 6)
     if workers <= 1 or len(params_list) < PARALLEL_MIN_BATCH:
         sim = StrategySimulator()
         out = []
@@ -1701,7 +1701,7 @@ def _parallel_simulate(
     done = 0
     last_t = time.time()
     ctx = multiprocessing.get_context("spawn")
-    chunk_size = 500 if HAS_GPU else 1000
+    chunk_size = 600 if HAS_GPU else 1000
     with ProcessPoolExecutor(
         max_workers=workers,
         mp_context=ctx,
