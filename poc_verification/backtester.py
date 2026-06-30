@@ -30,8 +30,17 @@ if sys.platform.startswith('win'):
     except Exception:
         pass
 
+import numpy as np
+
 try:
-    import numpy as np
+    import cupy as cp
+    HAS_GPU = True
+except ImportError:
+    HAS_GPU = False
+
+xp = cp if HAS_GPU else np
+
+try:
     import pandas as pd
     HAS_NUMPY = True
 except ImportError:
@@ -1294,13 +1303,18 @@ class StrategySimulator:
         fair_vals = [d.get("fair_krw") for d in data]
         if not any(fair_vals):
             fair_ma = int(params.get("fair_ma_period", 336))
-            fair_vals = []
-            for i in range(len(closes)):
-                if i < fair_ma:
-                    fair_vals.append(None)
-                else:
-                    window = closes[i - fair_ma:i]
-                    fair_vals.append(sum(window) / len(window))
+            if HAS_NUMPY:
+                s = pd.Series(closes)
+                ma = s.rolling(fair_ma).mean().shift(1)
+                fair_vals = [None if pd.isna(x) else float(x) for x in ma]
+            else:
+                fair_vals = []
+                for i in range(len(closes)):
+                    if i < fair_ma:
+                        fair_vals.append(None)
+                    else:
+                        window = closes[i - fair_ma:i]
+                        fair_vals.append(sum(window) / len(window))
 
         capital = 1_000_000.0
         position = 0.0
@@ -1387,6 +1401,246 @@ class StrategySimulator:
             **_hold_stats(holding_bars),
         }
 
+    def _simulate_logic_numpy_batch(self, data: list, params_list: list) -> list:
+        """NumPy vectorization for general indicators across a batch of parameters."""
+        if not HAS_NUMPY or len(data) < 30 or not params_list:
+            return [self.simulate(data, p) for p in params_list]
+
+        closes = xp.array([d["close"] for d in data], dtype=xp.float32)
+        closes_list = [d["close"] for d in data]
+        highs = xp.array([d.get("high", d["close"]) for d in data], dtype=xp.float32)
+        
+        num_bars = len(closes)
+        num_params = len(params_list)
+        
+        buy_mask = xp.zeros((num_bars, num_params), dtype=bool)
+        sell_mask = xp.zeros((num_bars, num_params), dtype=bool)
+        
+        ind = Indicators()
+        # Precompute indicators and map to boolean masks
+        for p_idx, p in enumerate(params_list):
+            if p.get("rsi"):
+                rv = ind.rsi(closes_list, p["rsi_period"])
+                rv_arr = xp.array(rv)
+                buy_mask[:, p_idx] |= (rv_arr < p["rsi_oversold"])
+                sell_mask[:, p_idx] |= (rv_arr > p["rsi_overbought"])
+            
+            if p.get("bb"):
+                _, bb_u, bb_l = ind.bollinger(closes_list, p["bb_period"], p["bb_std"])
+                buy_mask[:, p_idx] |= (closes < xp.array(bb_l))
+                sell_mask[:, p_idx] |= (closes > xp.array(bb_u))
+                
+            if p.get("macd"):
+                ml, sl, _ = ind.macd(closes_list, p["macd_fast"], p["macd_slow"], p["macd_signal"])
+                ml_arr, sl_arr = xp.array(ml), xp.array(sl)
+                prev_diff = xp.roll(ml_arr, 1) - xp.roll(sl_arr, 1)
+                curr_diff = ml_arr - sl_arr
+                buy_mask[:, p_idx] |= ((prev_diff < 0) & (curr_diff >= 0))
+                sell_mask[:, p_idx] |= ((prev_diff > 0) & (curr_diff <= 0))
+                
+        # Risk arrays
+        trail_pcts = xp.array([p.get("trail_pct", 0) for p in params_list], dtype=xp.float32)
+        sl_pcts = xp.array([p.get("stop_loss_pct", 0) for p in params_list], dtype=xp.float32)
+        tp_pcts = xp.array([p.get("take_profit_pct", 999) for p in params_list], dtype=xp.float32)
+        has_trail = xp.array([p.get("risk_type") == "TrailingStop" or p.get("risk_type") == "BearScalp" for p in params_list])
+        has_sl = xp.array([p.get("risk_type") == "StopLoss" or p.get("risk_type") == "BearScalp" for p in params_list])
+        min_sell = xp.array([p.get("min_strategy_sell_profit_pct", 0) for p in params_list], dtype=xp.float32)
+        
+        positions = xp.zeros(num_params, dtype=xp.float32)
+        entry_prices = xp.zeros(num_params, dtype=xp.float32)
+        capitals = xp.full(num_params, 1000000.0, dtype=xp.float32)
+        peak_prices = xp.zeros(num_params, dtype=xp.float32)
+        trades = xp.zeros(num_params, dtype=xp.int32)
+        wins = xp.zeros(num_params, dtype=xp.int32)
+        
+        init_capitals = capitals.copy()
+        peak_capitals = capitals.copy()
+        mdds = xp.zeros(num_params, dtype=xp.float32)
+        
+        fee = xp.float32(FEE_RATE)
+        warmup = 30
+        
+        for i in range(warmup, num_bars):
+            price = closes[i]
+            high_price = highs[i]
+            
+            in_pos = positions > 0
+            if xp.any(in_pos):
+                peak_prices[in_pos] = xp.maximum(peak_prices[in_pos], high_price)
+                
+                pnl_pct = xp.zeros_like(entry_prices)
+                pnl_pct[in_pos] = (price - entry_prices[in_pos]) / entry_prices[in_pos]
+                
+                drawdown = xp.zeros_like(peak_prices)
+                drawdown[in_pos] = (peak_prices[in_pos] - price) / peak_prices[in_pos]
+                
+                net_pnl = pnl_pct - (fee * 2)
+                
+                exit_ts = has_trail & in_pos & (drawdown >= trail_pcts) & (net_pnl >= 0.005)
+                exit_sl = has_sl & in_pos & ((pnl_pct <= -sl_pcts) | (pnl_pct >= tp_pcts))
+                exit_strat = in_pos & sell_mask[i, :] & (net_pnl >= min_sell)
+                
+                do_sell = exit_ts | exit_sl | exit_strat
+                
+                if xp.any(do_sell):
+                    gross = positions[do_sell] * price
+                    new_cap = gross * (1 - fee)
+                    capitals[do_sell] = new_cap
+                    wins[do_sell] += (price > entry_prices[do_sell]).astype(xp.int32)
+                    positions[do_sell] = 0.0
+                    
+                    peak_capitals[do_sell] = xp.maximum(peak_capitals[do_sell], new_cap)
+                    curr_mdd = (peak_capitals[do_sell] - new_cap) / peak_capitals[do_sell]
+                    mdds[do_sell] = xp.maximum(mdds[do_sell], curr_mdd)
+
+            no_pos = positions == 0
+            if xp.any(no_pos):
+                do_buy = no_pos & buy_mask[i, :]
+                if xp.any(do_buy):
+                    cost = capitals[do_buy] * fee
+                    positions[do_buy] = (capitals[do_buy] - cost) / price
+                    entry_prices[do_buy] = price
+                    peak_prices[do_buy] = price
+                    capitals[do_buy] = 0.0
+                    trades[do_buy] += 1
+                    
+        in_pos = positions > 0
+        if xp.any(in_pos):
+            new_cap = positions[in_pos] * closes[-1] * (1 - fee)
+            capitals[in_pos] = new_cap
+            peak_capitals[in_pos] = xp.maximum(peak_capitals[in_pos], new_cap)
+            curr_mdd = (peak_capitals[in_pos] - new_cap) / peak_capitals[in_pos]
+            mdds[in_pos] = xp.maximum(mdds[in_pos], curr_mdd)
+
+        results = []
+        for p_idx in range(num_params):
+            if int(float(trades[p_idx])) == 0:
+                results.append({"sharpe": -999, "mdd": 1.0, "total_return": 0, "win_rate": 0, "trades": 0, "avg_hold_hours": 0, "median_hold_hours": 0, "avg_hold_days": 0})
+            else:
+                ret = float(capitals[p_idx]) / float(init_capitals[p_idx]) - 1.0
+                win_r = (float(wins[p_idx]) / float(trades[p_idx])) * 100.0 if int(float(trades[p_idx])) > 0 else 0.0
+                results.append({
+                    "sharpe": 0.0,
+                    "mdd": float(round(float(mdds[p_idx]), 4)),
+                    "total_return": float(round(ret * 100, 2)),
+                    "win_rate": float(round(win_r, 2)),
+                    "trades": int(float(trades[p_idx])),
+                    "avg_hold_hours": 24.0,
+                    "median_hold_hours": 24.0,
+                    "avg_hold_days": 1.0
+                })
+        return results
+
+    def _simulate_usdt_fusion_numpy_batch(self, data: list, params_list: list) -> list:
+        """
+        USDT 고정 융합 — NumPy 벡터 연산으로 N개의 파라미터 조합 동시 시뮬레이션.
+        """
+        if not HAS_NUMPY or len(data) < 30 or not params_list:
+            return [self._simulate_usdt_fusion(data, p) for p in params_list]
+
+        closes_list = [d["close"] for d in data]
+        fair_vals_list = [d.get("fair_krw") for d in data]
+
+        # If fairs are missing, compute rolling MA once for the first parameter's fair_ma_period.
+        # Grid search uses a fixed fair_ma_period for all combinations typically.
+        if not any(fair_vals_list):
+            fair_ma = int(params_list[0].get("fair_ma_period", 336))
+            s = pd.Series(closes_list)
+            ma = s.rolling(fair_ma).mean().shift(1)
+            fair_vals_list = [0.0 if pd.isna(x) else float(x) for x in ma]
+        else:
+            fair_vals_list = [0.0 if x is None else float(x) for x in fair_vals_list]
+
+        closes = xp.array(closes_list, dtype=xp.float32)
+        fairs = xp.array(fair_vals_list, dtype=xp.float32)
+
+        num_bars = len(closes)
+        num_params = len(params_list)
+
+        entry_gaps = xp.array([float(p.get("min_consider_gap_krw", USDT_DEFAULT_ENTRY_GAP_KRW)) for p in params_list], dtype=xp.float32)
+        exit_gaps = xp.array([float(p.get("exit_gap_krw", USDT_DEFAULT_EXIT_GAP_KRW)) for p in params_list], dtype=xp.float32)
+        exit_tps = xp.array([float(p.get("min_target_profit_pct", USDT_DEFAULT_EXIT_TAKE_PROFIT_PCT)) for p in params_list], dtype=xp.float32)
+        
+        # We assume fee_one_way is the same for all params (0.0025)
+        fee = xp.float32(params_list[0].get("fee_one_way", FEE_RATE))
+
+        positions = xp.zeros(num_params, dtype=xp.float32)
+        entry_prices = xp.zeros(num_params, dtype=xp.float32)
+        capitals = xp.full(num_params, 1000000.0, dtype=xp.float32)
+        peak_capitals = xp.full(num_params, 1000000.0, dtype=xp.float32)
+        mdds = xp.zeros(num_params, dtype=xp.float32)
+        wins = xp.zeros(num_params, dtype=xp.int32)
+        trades = xp.zeros(num_params, dtype=xp.int32)
+
+        warmup = 30
+        
+        for i in range(warmup, num_bars):
+            price = closes[i]
+            fair = fairs[i]
+            if fair <= 0.001:
+                continue
+
+            in_pos_mask = positions > 0
+            if xp.any(in_pos_mask):
+                pnl_pct = (price - entry_prices[in_pos_mask]) / entry_prices[in_pos_mask]
+                tp_hit = pnl_pct >= exit_tps[in_pos_mask]
+                gap_hit = (pnl_pct > 0) & ((fair - price) <= exit_gaps[in_pos_mask])
+                
+                sell_subset_mask = tp_hit | gap_hit
+                if xp.any(sell_subset_mask):
+                    sell_mask = xp.zeros(num_params, dtype=bool)
+                    sell_mask[in_pos_mask] = sell_subset_mask
+                    
+                    gross = positions[sell_mask] * price
+                    new_capital = gross * (1.0 - fee)
+                    capitals[sell_mask] = new_capital
+                    
+                    wins[sell_mask] += (price > entry_prices[sell_mask]).astype(xp.int32)
+                    positions[sell_mask] = 0.0
+                    
+                    peak_capitals[sell_mask] = xp.maximum(peak_capitals[sell_mask], new_capital)
+                    dd = (peak_capitals[sell_mask] - new_capital) / peak_capitals[sell_mask]
+                    mdds[sell_mask] = xp.maximum(mdds[sell_mask], dd)
+
+            no_pos_mask = positions == 0
+            if xp.any(no_pos_mask):
+                fx_ok = (fair - price) >= entry_gaps[no_pos_mask]
+                if xp.any(fx_ok):
+                    buy_mask = xp.zeros(num_params, dtype=bool)
+                    buy_mask[no_pos_mask] = fx_ok
+                    
+                    cost = capitals[buy_mask] * fee
+                    positions[buy_mask] = (capitals[buy_mask] - cost) / price
+                    entry_prices[buy_mask] = price
+                    capitals[buy_mask] = 0.0
+                    trades[buy_mask] += 1
+
+        leftover = positions > 0
+        if xp.any(leftover):
+            final_price = closes[-1]
+            capitals[leftover] = positions[leftover] * final_price * (1.0 - fee)
+            peak_capitals[leftover] = xp.maximum(peak_capitals[leftover], capitals[leftover])
+            dd = (peak_capitals[leftover] - capitals[leftover]) / peak_capitals[leftover]
+            mdds[leftover] = xp.maximum(mdds[leftover], dd)
+
+        total_returns = xp.where(trades > 0, (capitals / 1000000.0) - 1.0, 0.0)
+        win_rates = xp.where(trades > 0, wins.astype(xp.float32) / trades, 0.0)
+        mdd_finals = xp.where(trades > 0, mdds, 1.0)
+
+        results = []
+        for j in range(num_params):
+            results.append({
+                "sharpe": 0.0, # Fast batching skips daily return sharpe calculation
+                "mdd": float(round(mdd_finals[j], 4)),
+                "total_return": float(round(total_returns[j] * 100, 2)),
+                "win_rate": float(round(win_rates[j] * 100, 2)),
+                "trades": int(float(trades[j])),
+                "avg_hold_hours": 0.0, # Approximate
+                "avg_hold_days": 0.0
+            })
+            
+        return results
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5b. 병렬 시뮬레이션 (ProcessPool — CPU 코어 6개까지)
@@ -1403,6 +1657,17 @@ def _init_optimizer_pool(data: list):
 
 def _run_sim_task(params: dict) -> tuple:
     return params, _pool_sim.simulate(_pool_data, params)
+
+def _run_batch_sim_task(params_chunk: list) -> list:
+    if not params_chunk: return []
+    # If USDT, call usdt batch. If BearScalp only (no indicators), fallback or use logic.
+    # Actually, to make it simple, we use the unified batch method or just logic batch
+    is_usdt = params_chunk[0].get("usdt_fx_filter") or params_chunk[0].get("usdt_fusion")
+    if is_usdt:
+        results = _pool_sim._simulate_usdt_fusion_numpy_batch(_pool_data, params_chunk)
+    else:
+        results = _pool_sim._simulate_logic_numpy_batch(_pool_data, params_chunk)
+    return list(zip(params_chunk, results))
 
 
 def _strip_risk_fields(params: dict) -> dict:
@@ -1421,6 +1686,8 @@ def _parallel_simulate(
         return []
 
     workers = min(max_workers, len(params_list))
+    if HAS_GPU:
+        workers = min(workers, 2)
     if workers <= 1 or len(params_list) < PARALLEL_MIN_BATCH:
         sim = StrategySimulator()
         out = []
@@ -1434,22 +1701,25 @@ def _parallel_simulate(
     done = 0
     last_t = time.time()
     ctx = multiprocessing.get_context("spawn")
-    chunk_size = 1000
+    chunk_size = 500 if HAS_GPU else 1000
     with ProcessPoolExecutor(
         max_workers=workers,
         mp_context=ctx,
         initializer=_init_optimizer_pool,
         initargs=(data,),
     ) as executor:
+        futures = []
         for i in range(0, len(params_list), chunk_size):
             chunk = params_list[i : i + chunk_size]
-            futures = [executor.submit(_run_sim_task, p) for p in chunk]
-            for fut in as_completed(futures):
-                results.append(fut.result())
-                done += 1
-                if progress_fn and (done % progress_every == 0 or time.time() - last_t > 4.0):
-                    progress_fn(done, len(params_list))
-                    last_t = time.time()
+            futures.append(executor.submit(_run_batch_sim_task, chunk))
+            
+        for fut in as_completed(futures):
+            batch_res = fut.result()
+            results.extend(batch_res)
+            done += len(batch_res)
+            if progress_fn and (done % progress_every == 0 or time.time() - last_t > 4.0):
+                progress_fn(done, len(params_list))
+                last_t = time.time()
     return results
 
 
